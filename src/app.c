@@ -452,11 +452,30 @@ static void stars_tick(void)
  * is drawn here as the code says, index 6, and the photograph is left
  * disagreeing until something explains it.
  */
-static const struct { const char *code; const char *what; } PANEL_UNKNOWN[] = {
-    { "@1w", "DS:0x3c1e, the speed the boot menu picks" },
-    { "@?",  "DS:0x3b3a, which sound driver started" },
-    { "@4w", "DS:0xc4e8, the kilobytes the cache driver took" }
-};
+/* Three of the panel's numbers are written after the boot menu runs, so what
+ * PROG.DAT carries for them is the state before anything was detected - and
+ * two of the three live above the end of PROG.DAT altogether.  This port
+ * answers for itself:
+ *
+ *   DS:0x3c1e  the speed the boot menu picks.  3 is the shipped default and
+ *              what ss0.jpg was taken at.
+ *   DS:0x3b3a  which sound driver started.  Nought means the beeper, and
+ *              nought is what the file holds because nothing had looked for a
+ *              board yet; this port renders an OPN, so it says so.
+ *   DS:0xc4e8  the kilobytes the cache driver took.  There is no cache here.
+ */
+static int panel_runtime(unsigned addr, int *answered)
+{
+    *answered = 1;
+    switch (addr) {
+    case 0x3c1e: return 3;
+    case 0x3b3a: return 1;
+    case 0xc4e8: return 0;
+    default: break;
+    }
+    *answered = 0;
+    return 0;
+}
 
 /* One line of the panel.  `at` is the byte after the two that gave the screen
  * offset; the return is where the next entry starts.
@@ -518,24 +537,37 @@ static unsigned panel_line(unsigned di, unsigned at, int *colour)
                 const unsigned char *cell = dat_at(addr, 2);
                 int value = cell ? (cell[0] | (cell[1] << 8)) : 0;
 
+                int answered = 0;
+                int mine = panel_runtime(addr, &answered);
+
                 op += 2;
-                /* Everything these three point at is written after the boot
-                 * menu runs, and two of the three are above what PROG.DAT
-                 * carries, so the port has nothing to read.  It prints what it
-                 * can answer for and nothing else - see PANEL_UNKNOWN. */
-                if (!cell) value = (addr == 0x3c1e) ? 3 : 0;
+                if (answered || !cell) value = answered ? mine : 0;
                 n += snprintf(out + n, sizeof out - n, "%*d",
                               width ? width : 1, value);
             } else if (*q == '?') {
+                /* 0x7763: three words - a selector and the two strings.  The
+                 * word at the selector's address decides, and nought picks
+                 * the *second* of the two (0x776c jumps to [bx+4] when it is
+                 * zero and falls into [bx+2] when it is not).  This had the
+                 * branch the other way round and still printed "FM", because
+                 * the byte it was reading happened to be zero. */
                 const unsigned char *sel = dat_at(op, 6);
-                unsigned pick = 0, addr;
-                const unsigned char *str;
+                unsigned addr, at2;
+                const unsigned char *val, *str;
+                int zero = 1;
 
                 if (!sel) break;
                 addr = (unsigned)(sel[0] | (sel[1] << 8));
-                str = dat_at(addr, 1);
-                if (str) pick = *str ? 1 : 0;
-                addr = (unsigned)(sel[2 + pick * 2] | (sel[3 + pick * 2] << 8));
+                val = dat_at(addr, 2);
+                if (val) zero = !(val[0] | val[1]);
+                {
+                    int answered = 0;
+                    int mine = panel_runtime(addr, &answered);
+
+                    if (answered) zero = !mine;
+                }
+                at2 = zero ? 4 : 2;
+                addr = (unsigned)(sel[at2] | (sel[at2 + 1] << 8));
                 op += 6;
                 for (str = dat_at(addr, 1); str && *str; str++)
                     if (n < (int)sizeof out - 1) out[n++] = (char)*str;
