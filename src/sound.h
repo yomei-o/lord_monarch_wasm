@@ -225,6 +225,21 @@ typedef struct {
     int live[6], algo[3], fmTl[3];
     Ssg chip;
     Opn opn;
+    /* An effect, on the same chip.  The driver has two effect voices at
+     * DS:0x3afa and DS:0x3b1a, but only the first is ever started (see
+     * snd_start), and its channel byte is 1 - so an effect takes SSG channel
+     * B away from the music while it sounds.
+     *
+     *   0x0e67  marks the music voice two structures back - DS:0x3aba, which
+     *           is that same channel - as borrowed, bit 6 of [si+0x1f]
+     *   0x0f2d  sees that bit and puts 0xff in [0x3b43]; sub_740d returns
+     *           without writing while that is set, so the borrowed voice
+     *           keeps its place in the sequence and simply is not heard
+     *   0x12d1  hands the channel back and rewrites its registers
+     */
+    SndVoice fx;
+    int fxLive, borrowed, refresh;
+
     int mixer, sampleRate, perTick;
     int pending;                /* samples still owed from the current tick */
     int done;
@@ -237,6 +252,15 @@ int snd_song_open(SndSong *s, const unsigned char *progDat, unsigned progDatSize
 /* Up to `samples` more, written (not added) to `out`.  Returns how many it
  * made; 0 means the song has finished. */
 int snd_song_fill(SndSong *s, short *out, int samples);
+
+/* Starts one of the game's effects on this song's own chip, taking SSG
+ * channel B from the music the way the driver does.  A second effect while
+ * one is sounding replaces it, which is what loading the voice again does.
+ * Returns 0 if the effect has no sequence. */
+int snd_song_effect(SndSong *s, int id);
+
+/* Which SSG channel an effect takes: DS:0x3afa's own +0x1e. */
+#define SND_FX_CHANNEL 1
 
 int snd_render_song(const unsigned char *progDat, unsigned progDatSize,
                     const unsigned char *song, unsigned songSize,

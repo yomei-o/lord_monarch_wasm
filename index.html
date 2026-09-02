@@ -134,10 +134,10 @@
 <!-- BUILD is bumped by "make wasm".  Without it a browser will happily hold
      on to a monarch.js from an earlier build and then fail on whichever
      function was added since - which is exactly what happened once. -->
-<script src="monarch.js?v=8fa98eb2"></script>
+<script src="monarch.js?v=99ef00e1"></script>
 <script>
   // Stamped by tools/stamp.py from the wasm's own hash.
-  window.LM_BUILD = '8fa98eb2';
+  window.LM_BUILD = '99ef00e1';
 
 (function () {
   'use strict';
@@ -325,6 +325,16 @@
     var id = (req >> 8) & 0xff;
     var ac = audioReady();
     if (!ac || !mod) return;
+    // On the machine this came off an effect does not play beside the music:
+    // it takes one of the SSG's channels away from it and gives it back
+    // after.  So when a song is running the effect goes on the same chip and
+    // comes out of the same buffer; the standalone render below is only for
+    // when nothing is playing.
+    if (bgm.playing && mod._lm_song_effect(id)) {
+      lastSound = 'id ' + id + ' — 曲と同じチップで';
+      showAudioState();
+      return;
+    }
     var buf = pcmCache[id];
     if (buf === undefined) {
       var made = mod._lm_effect(id, ac.sampleRate | 0);

@@ -110,6 +110,12 @@ int app_song_start(int number, int rate);
 int app_song_fill(short *out, int frames);
 int app_song_playing(void);
 
+/* Fires one of the game's effects on the song's own chip, which is where the
+ * driver puts it: an effect takes SSG channel B from the music while it
+ * sounds and hands it back after.  Returns 0 when no song is playing, and
+ * then app_effect_pcm is the way to hear it on its own. */
+int app_song_effect(int id);
+
 void app_sound(int idAndPriority);
 
 /* Takes the pending request and clears it, or 0 when there is none. */

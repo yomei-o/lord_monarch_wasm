@@ -117,6 +117,10 @@ EMSCRIPTEN_KEEPALIVE int lm_song_fill(int frames)
 EMSCRIPTEN_KEEPALIVE short *lm_song_pcm(void) { return songBuf; }
 EMSCRIPTEN_KEEPALIVE int lm_song_max(void) { return LM_SONG_MAX; }
 
+/* An effect on the song's own chip, so it takes a channel from the music the
+ * way the driver does.  0 means no song is playing and lm_effect is the way. */
+EMSCRIPTEN_KEEPALIVE int lm_song_effect(int id) { return app_song_effect(id); }
+
 EMSCRIPTEN_KEEPALIVE int lm_dialog(void) { return app_dialog(); }
 EMSCRIPTEN_KEEPALIVE int lm_dialog_lines(void) { return app_dialog_lines(); }
 EMSCRIPTEN_KEEPALIVE int lm_dialog_pick(void) { return app_dialog_pick(); }

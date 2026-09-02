@@ -1333,6 +1333,12 @@ int app_song_fill(short *out, int frames)
 
 int app_song_playing(void) { return songOn; }
 
+int app_song_effect(int id)
+{
+    if (!songOn) return 0;
+    return snd_song_effect(&song, id);
+}
+
 int app_japanese(void) { return fontRom.loaded; }
 
 int app_font_rom(const unsigned char *data, unsigned n)

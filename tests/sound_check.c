@@ -248,6 +248,74 @@ int main(int argc, char **argv)
                differ, both);
     }
 
+    /* An effect takes SSG channel B from the music and gives it back.  Two
+     * renders of the same song, one with an effect fired a second in: they
+     * have to differ while it sounds, and the music has to be as loud as ever
+     * afterwards.  Sample for sample they never come back together - the
+     * channel restarts its square wave on a different phase - so what is
+     * compared after is the loudness. */
+    {
+        enum { R = 22050, SECS = 4, NN = R * SECS, W = R / 50 };
+        static SndSong a, b;
+        static short plain[NN], mixed[NN];
+        unsigned sn = 0;
+        unsigned char *sd = disk_read_bz(d, "FM001.DAT", &sn);
+        int i, made, at = R, differed = 0;
+        double sa = 0, sb = 0;
+        int slices = 0;
+
+        if (!sd || !snd_song_open(&a, dat, n, sd, sn, R) ||
+            !snd_song_open(&b, dat, n, sd, sn, R)) {
+            printf("FAIL  FM001 would not open twice\n");
+            failures++;
+        } else {
+            for (made = 0; made < NN; ) {
+                int got = snd_song_fill(&a, plain + made, NN - made);
+
+                if (got <= 0) break;
+                made += got;
+            }
+            for (made = 0; made < NN; ) {
+                int want = NN - made;
+
+                if (made < at && made + want > at) want = at - made;
+                if (made == at) { snd_song_effect(&b, 6); at = -1; }
+                {
+                    int got = snd_song_fill(&b, mixed + made, want);
+
+                    if (got <= 0) break;
+                    made += got;
+                }
+            }
+            for (i = R; i < R * 2 && !differed; i++)
+                if (plain[i] != mixed[i]) differed = 1;
+            if (!differed) {
+                printf("FAIL  firing an effect changed nothing\n");
+                failures++;
+            }
+            for (i = R * 3; i + W < NN; i += W) {
+                double pa = 0, pb = 0;
+                int k;
+
+                for (k = i; k < i + W; k++) {
+                    pa += (double)plain[k] * plain[k];
+                    pb += (double)mixed[k] * mixed[k];
+                }
+                sa += sqrt(pa / W);
+                sb += sqrt(pb / W);
+                slices++;
+            }
+            if (slices && (sb / slices) < (sa / slices) * 0.85) {
+                printf("FAIL  the music came back quieter: %.0f then %.0f\n",
+                       sa / slices, sb / slices);
+                failures++;
+            }
+            printf("  an effect borrows a channel and hands it back: "
+                   "%.0f before, %.0f after\n", sa / slices, sb / slices);
+        }
+        free(sd);
+    }
+
     free(dat);
     disk_close(d);
     if (failures) {

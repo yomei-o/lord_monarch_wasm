@@ -641,6 +641,66 @@ int snd_song_open(SndSong *s, const unsigned char *progDat,
     return 1;
 }
 
+/* One tick of one SSG voice.  `c` is the chip channel; `mute` drops every
+ * write, which is what [0x3b43] does to a voice whose channel an effect has
+ * borrowed - sub_740d returns without writing while it is set, so the voice
+ * keeps its place in the sequence and simply is not heard. */
+static void ssg_voice_tick(SndSong *s, SndVoice *v, int *live, int c,
+                           int mute, int *any)
+{
+    int keyed = 0, level;
+
+    if (!snd_tick(v, &keyed)) {
+        snd_env_release(v, s->env);
+        if (v->spent) {
+            *live = 0;
+            if (!mute) {
+                ssg_write(&s->chip, 8 + c, 0);
+                s->mixer |= (1 << c) | (8 << c);
+                ssg_write(&s->chip, 7, s->mixer);
+            }
+        }
+    } else {
+        *any = 1;
+        if (v->chipPending) {
+            int r = v->chipReg & 0x0f;
+
+            if (!mute) {
+                if (r == 7) s->mixer = v->chipVal;
+                ssg_write(&s->chip, r, v->chipVal);
+            }
+            v->chipPending = 0;
+        }
+        /* Either a new note, or the channel just came back from an effect and
+         * has to be told again what it was playing. */
+        if (keyed || (s->refresh && !mute && c == SND_FX_CHANNEL &&
+                      v != &s->fx && v->keyed)) {
+            int p = ssg_period(s->periods, v->note, 0);
+            int a4 = v->algo;
+
+            if (!mute) {
+                ssg_write(&s->chip, c * 2, p & 0xff);
+                ssg_write(&s->chip, c * 2 + 1, (p >> 8) & 0x0f);
+                /* sub_10ee: [si+4] is this channel's half of register 7.
+                 * Bit 7 is tone only - and skips the noise period - bit 6 is
+                 * noise only, and the low bits are the noise period. */
+                if (!(a4 & 0x80)) ssg_write(&s->chip, 6, a4 & 0x1f);
+                s->mixer &= ~((1 << c) | (8 << c));
+                if (a4 & 0x40) s->mixer |= 1 << c;
+                if (a4 & 0x80) s->mixer |= 8 << c;
+                ssg_write(&s->chip, 7, s->mixer);
+            }
+            if (keyed) snd_env_key(v, s->env);
+            if (!mute && c == SND_FX_CHANNEL && v != &s->fx) s->refresh = 0;
+        }
+        if (v->keyed && v->tie && v->wait <= v->tieAt + 1 && !(v->stage & 8))
+            snd_env_release(v, s->env);
+    }
+    level = v->keyed ? snd_env_step(v, s->env) : 0;
+    level = (level * (v->volume + 1)) >> 8;
+    if (!mute) ssg_write(&s->chip, 8 + c, level > 15 ? 15 : level);
+}
+
 /* One tick of the driver.  Returns 0 when every part has finished. */
 static int song_tick(SndSong *s)
 {
@@ -689,51 +749,20 @@ static int song_tick(SndSong *s)
             }
         }
 
-        /* The three SSG parts. */
-        for (ch = 3; ch < 6; ch++) {
-            int c = ch - 3, keyed = 0, level;
-
-            if (!s->live[ch]) continue;
-            if (!snd_tick(&s->v[ch], &keyed)) {
-                snd_env_release(&s->v[ch], s->env);
-                if (s->v[ch].spent) {
-                    s->live[ch] = 0;
-                    ssg_write(&s->chip, 8 + c, 0);
-                    s->mixer |= (1 << c) | (8 << c);
-                    ssg_write(&s->chip, 7, s->mixer);
-                }
-            } else {
-                any = 1;
-                if (s->v[ch].chipPending) {
-                    int r = s->v[ch].chipReg & 0x0f;
-
-                    if (r == 7) s->mixer = s->v[ch].chipVal;
-                    ssg_write(&s->chip, r, s->v[ch].chipVal);
-                    s->v[ch].chipPending = 0;
-                }
-                if (keyed) {
-                    int p = ssg_period(s->periods, s->v[ch].note, 0);
-                    int a4 = s->v[ch].algo;
-
-                    ssg_write(&s->chip, c * 2, p & 0xff);
-                    ssg_write(&s->chip, c * 2 + 1, (p >> 8) & 0x0f);
-                    /* sub_10ee: [si+4] is this channel's half of register 7.
-                     * Bit 7 is tone only - and skips the noise period - bit 6
-                     * is noise only, and the low bits are the noise period. */
-                    if (!(a4 & 0x80)) ssg_write(&s->chip, 6, a4 & 0x1f);
-                    s->mixer &= ~((1 << c) | (8 << c));
-                    if (a4 & 0x40) s->mixer |= 1 << c;
-                    if (a4 & 0x80) s->mixer |= 8 << c;
-                    ssg_write(&s->chip, 7, s->mixer);
-                    snd_env_key(&s->v[ch], s->env);
-                }
-                if (s->v[ch].keyed && s->v[ch].tie &&
-                    s->v[ch].wait <= s->v[ch].tieAt + 1 && !(s->v[ch].stage & 8))
-                    snd_env_release(&s->v[ch], s->env);
+        /* The three SSG parts, then the effect on the one it has taken. */
+        for (ch = 3; ch < 6; ch++)
+            if (s->live[ch])
+                ssg_voice_tick(s, &s->v[ch], &s->live[ch], ch - 3,
+                               ch - 3 == SND_FX_CHANNEL && s->borrowed, &any);
+        if (s->fxLive) {
+            ssg_voice_tick(s, &s->fx, &s->fxLive, SND_FX_CHANNEL, 0, &any);
+            if (!s->fxLive) {
+                /* 0x12d1: the channel goes back to the music, and its
+                 * registers are written again because nothing has reached
+                 * the chip from it while the effect was on. */
+                s->borrowed = 0;
+                s->refresh = 1;
             }
-            level = s->v[ch].keyed ? snd_env_step(&s->v[ch], s->env) : 0;
-            level = (level * (s->v[ch].volume + 1)) >> 8;
-            ssg_write(&s->chip, 8 + c, level > 15 ? 15 : level);
         }
     return any;
 }
@@ -761,6 +790,17 @@ int snd_song_fill(SndSong *s, short *out, int samples)
         s->pending -= room;
     }
     return made;
+}
+
+int snd_song_effect(SndSong *s, int id)
+{
+    if (!snd_start(&s->fx, s->progDat, s->progDatSize, id)) return 0;
+    s->fx.chan = SND_FX_CHANNEL;
+    s->fx.envRam = s->env;
+    s->fxLive = 1;
+    s->borrowed = 1;                    /* 0x0e67 */
+    s->done = 0;                        /* an effect can outlive the song */
+    return 1;
 }
 
 int snd_render_song(const unsigned char *progDat, unsigned progDatSize,
