@@ -64,6 +64,33 @@ int app_dialog(void);
 /* A PC-98 font ROM, handed over by whoever is running this - it is the
  * machine's, not the game's, so it is never shipped here.  With one the dialogs
  * are in the original's own Japanese; without one they are in English. */
+/* Sound, as the original asks for it.  sub_0d12 is a priority latch: it keeps
+ * one pending request in [0x3b46] as (id << 8) | priority, and a new one only
+ * replaces it when its priority is at least as high.  Something else reads and
+ * clears it.  So the port does the same, and the host is what turns an id into
+ * a noise.
+ *
+ * The ids come from the calls themselves rather than from any table:
+ *
+ *   0x0602  a click that was taken - a unit picked up, a panel icon pressed
+ *   0x0402  refused - not your unit, or the square will not take that order
+ *   0x0702  the order was taken but could not be carried out
+ *   0x0302  a country has fallen
+ *   0x0f03  the game is over
+ *
+ * That distinction is the point: without it there is no way to tell a refusal
+ * from something this port has not got round to implementing. */
+#define APP_SND_OK      0x0602
+#define APP_SND_NO      0x0402
+#define APP_SND_FAILED  0x0702
+#define APP_SND_FALLEN  0x0302
+#define APP_SND_OVER    0x0f03
+
+void app_sound(int idAndPriority);
+
+/* Takes the pending request and clears it, or 0 when there is none. */
+int app_sound_take(void);
+
 int app_font_rom(const unsigned char *data, unsigned n);
 int app_japanese(void);
 int app_dialog_lines(void);

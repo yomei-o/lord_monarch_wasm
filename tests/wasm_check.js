@@ -280,6 +280,33 @@ LordMonarch().then((m) => {
     if (broke < 0) process.exit(1);
   }
 
+  // The noises.  A refusal has to sound different from something taken, since
+  // that is the whole reason for having them: without it there is no telling a
+  // refusal from a thing this port has not implemented.
+  {
+    m._lm_key(KEY.TITLE);
+    m._lm_key(KEY.START);
+    m._lm_key(KEY.TILE16);
+    m._lm_sound();                        // clear whatever start-up left
+    // The cursor starts in the gate, on one of ours.
+    m._lm_key(KEY.START);
+    const took = m._lm_sound();
+    console.log(`${took === 0x0602 ? 'ok  ' : 'FAIL'}  picking a unit up asks ` +
+                `for the "taken" sound (${took.toString(16)})`);
+    m._lm_key(KEY.BACK);                  // put it down
+    m._lm_sound();
+    // Two squares up is the castle wall, where nothing of ours stands.
+    m._lm_key(KEY.UP);
+    m._lm_key(KEY.UP);
+    m._lm_key(KEY.START);
+    const refused = m._lm_sound();
+    console.log(`${refused === 0x0402 ? 'ok  ' : 'FAIL'}  and a square with ` +
+                `nothing of ours asks for "refused" (${refused.toString(16)})`);
+    const empty = m._lm_sound();
+    console.log(`${empty === 0 ? 'ok  ' : 'FAIL'}  taking it clears the latch`);
+    if (took !== 0x0602 || refused !== 0x0402 || empty !== 0) process.exit(1);
+  }
+
   // The lord gets no menu - sub_20f0 skips it for anything with bit 0x20 - and
   // it does walk, which it has to: taking a castle means walking your own
   // monarch into it.

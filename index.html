@@ -121,6 +121,7 @@
   <button data-key="2">[</button>
   <button data-key="3">]</button>
   <button data-key="15">タイトル</button>
+  <button id="mute" type="button">音を止める</button>
 </div>
 
 <div id="keys">
@@ -136,6 +137,11 @@
   <b>[ ]</b><span>前後のマップ（全 52 面）。解析用で、原作にこの操作は無い</span>
   <b>C</b><span>城とユニットに印をつける（解析用。原作にこの表示は無い）</span>
   <b>T</b><span>タイトルに戻る</span>
+  <b>音</b><span>受理・拒否・失敗・滅亡を短い音で鳴らします。原作が
+    <code>sub_0d12</code> に積む要求（0x06 受理 / 0x04 拒否 / 0x07 実行不能 /
+    0x03 滅亡 / 0x0f 終了）をそのまま拾っているので、<b>断られたのか未実装なのかが
+    音で分かります</b>。ディスクの <code>FM001〜FM025.DAT</code> の曲は
+    まだ鳴りません（YM2203 の実装が要る）</span>
   <b>マウス</b><span>アイコンや升を直接クリックしても同じことができます。
     原作にマウスは無いので、これはこの移植の足しものです</span>
 </div>
@@ -175,6 +181,8 @@
       ctx.putImageData(image, 0, 0);
       // While a dialog is up its heading goes here too, so what the screen is
       // asking is also readable as text.
+      var snd = mod._lm_sound();
+      if (snd) playSound(snd);
       if (mod._lm_dialog()) {
         statusEl.textContent = 'dialog: ' + dialogLine(0) + '  —  ' +
           dialogLine(Math.max(0, mod._lm_dialog_pick()) + 2);
@@ -281,6 +289,57 @@
     return !!ok;
   }
 
+  // Sound.  The game asks for one of a handful of noises through a priority
+  // latch (sub_0d12) and something else picks the request up; lm_sound() is that
+  // pick-up.  What the ids mean:
+  //
+  //   0x06  a click that was taken      0x04  refused
+  //   0x07  taken but could not be done 0x03  a country has fallen
+  //   0x0f  the game is over
+  //
+  // The point of having them at all is that a refusal now sounds different from
+  // something this port has not implemented, which you otherwise cannot tell
+  // apart.  These are short synthesised tones, not the original's music - the
+  // disk's FM001..FM025.DAT still wait for an OPN to play them.
+  var audio = null, muted = false;
+  function audioReady() {
+    if (muted) return null;
+    if (audio) return audio;
+    var C = window.AudioContext || window.webkitAudioContext;
+    if (!C) return null;
+    try { audio = new C(); } catch (e) { audio = null; }
+    return audio;
+  }
+
+  function tone(at, freq, ms, gain, type) {
+    var ac = audioReady();
+    if (!ac) return;
+    var o = ac.createOscillator(), g = ac.createGain();
+    o.type = type || 'square';
+    o.frequency.value = freq;
+    // A quick fade at each end, or a square wave clicks louder than it plays.
+    var t0 = ac.currentTime + at, t1 = t0 + ms / 1000;
+    g.gain.setValueAtTime(0, t0);
+    g.gain.linearRampToValueAtTime(gain, t0 + 0.004);
+    g.gain.setValueAtTime(gain, t1 - 0.006);
+    g.gain.linearRampToValueAtTime(0, t1);
+    o.connect(g); g.connect(ac.destination);
+    o.start(t0); o.stop(t1 + 0.01);
+  }
+
+  function playSound(req) {
+    var id = (req >> 8) & 0xff;
+    switch (id) {
+      case 0x06: tone(0, 1320, 40, 0.06); break;               // taken
+      case 0x04: tone(0, 180, 110, 0.07); break;               // refused
+      case 0x07: tone(0, 520, 70, 0.06); tone(0.07, 330, 90, 0.06); break;
+      case 0x03: tone(0, 220, 200, 0.08); tone(0.2, 165, 320, 0.08); break;
+      case 0x0f: tone(0, 440, 140, 0.08); tone(0.14, 660, 140, 0.08);
+                 tone(0.28, 880, 260, 0.08); break;
+      default:   tone(0, 880, 30, 0.05); break;
+    }
+  }
+
   // The dialog lines are the game's own bytes, which with a font ROM loaded are
   // Shift-JIS rather than ASCII, so they are decoded rather than read as UTF-8.
   var sjis = window.TextDecoder ? new TextDecoder('shift_jis') : null;
@@ -295,6 +354,15 @@
   function setFontState(t) {
     var el = document.getElementById('fontstate');
     if (el) el.textContent = t;
+  }
+
+  var muteBtn = document.getElementById('mute');
+  if (muteBtn) {
+    muteBtn.addEventListener('click', function () {
+      muted = !muted;
+      if (muted && audio) { audio.close(); audio = null; }
+      muteBtn.textContent = muted ? '音を出す' : '音を止める';
+    });
   }
 
   var fontInput = document.getElementById('fontrom');

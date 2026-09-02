@@ -540,6 +540,7 @@ static void icon_press(int idx)
     switch (idx) {
     case ICON_GO:
         /* The original's GO leaves the panel and the world starts moving. */
+        app_sound(APP_SND_OK);
         running = !running;
         panelIcon = -1;
         snprintf(status, sizeof status, "GO: %s",
@@ -551,6 +552,7 @@ static void icon_press(int idx)
                  viewMode ? "on" : "off");
         break;
     case ICON_TAX:   dlg_open_tax();   break;
+    /* every case below falls through to the sound at the end */
     case ICON_INFO:  dlg_open_info();  break;
     case ICON_SPEED: dlg_open_speed(); break;
     case ICON_ZOOM:  dlg_open_zoom();  break;
@@ -559,6 +561,7 @@ static void icon_press(int idx)
         app_show_map(mapNumber + 1 >= MAP_COUNT ? 0 : mapNumber + 1, tileSize);
         break;
     default:
+        app_sound(APP_SND_NO);          /* not a refusal by the game: by me */
         snprintf(status, sizeof status,
                  "%s is in the original but not in this port yet",
                  idx == ICON_EDIT ? "EDIT" :
@@ -621,11 +624,13 @@ static void dlg_confirm(void)
             break;
         }
         if (value == 0) {
+            app_sound(APP_SND_NO);
             snprintf(status, sizeof status, "no order given");
             break;
         }
         if (value == 2) {
             len = game_order_move(&game, who, cx, cy);
+            app_sound(len ? APP_SND_OK : APP_SND_FAILED);
             snprintf(status, sizeof status, len ? "walking to %d,%d, %d squares"
                                                 : "no way to %d,%d",
                      cx, cy, len);
@@ -636,6 +641,7 @@ static void dlg_confirm(void)
             };
             const char *name = what[value & 15] ? what[value & 15] : "order";
             len = game_order(&game, who, cx, cy, value);
+            app_sound(len ? APP_SND_OK : APP_SND_FAILED);
             if (len)
                 snprintf(status, sizeof status,
                          "%s %d,%d - %d squares to walk first", name, cx, cy,
@@ -903,6 +909,22 @@ int app_selected(void) { return selected; }
 /* Which dialog is up, 0 for none, so a headless run can see the same thing a
  * player sees.  The values are the DLG_* order: INFO TAX SPEED ZOOM ALLY
  * ORDER. */
+/* sub_0d12, and the read that empties it. */
+static int pendingSound;
+
+void app_sound(int idAndPriority)
+{
+    if ((idAndPriority & 0xff) >= (pendingSound & 0xff))
+        pendingSound = idAndPriority;
+}
+
+int app_sound_take(void)
+{
+    int s = pendingSound;
+    pendingSound = 0;
+    return s;
+}
+
 int app_japanese(void) { return fontRom.loaded; }
 
 int app_font_rom(const unsigned char *data, unsigned n)
@@ -927,10 +949,12 @@ static void confirm_at(int cx, int cy)
     if (selected < 0) {
         int who = game_cell_occupant(&game, index);
         if (who < 0 || game_unit_side(&game, who) != game.human) {
+            app_sound(APP_SND_NO);              /* 0x22c5 */
             snprintf(status, sizeof status,
                      "%d,%d: none of yours there", cx, cy);
             return;
         }
+        app_sound(APP_SND_OK);                  /* 0x2201 */
         selected = who;
         snprintf(status, sizeof status,
                  "picked up the unit on %d,%d carrying %d - now say where "
@@ -945,6 +969,7 @@ static void confirm_at(int cx, int cy)
      * thing it can do, which is walk. */
     if (game.unit[selected].state & 0x20) {
         int len = game_order_move(&game, selected, cx, cy);
+        app_sound(len ? APP_SND_OK : APP_SND_FAILED);
         snprintf(status, sizeof status, len
                  ? "the lord is walking to %d,%d, %d squares"
                  : "no way for the lord to reach %d,%d",
