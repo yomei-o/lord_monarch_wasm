@@ -155,6 +155,12 @@ void gfx_bank_name(const Map *m, int size, char *out, int outSize)
     snprintf(out, (size_t)outSize, "B_%03d%c.CH4", m->terrain, c);
 }
 
+/* Index 15 is the transparent colour, and that comes straight out of the
+ * original's blitter (sub_8789): it builds `~(B & R & G & E)` as a mask and
+ * hands the four plane bytes to the GRCG, so a pixel with all four planes set -
+ * index 15 - leaves the screen alone.  The terrain banks bear this out: the
+ * 16x16 sets contain **exactly no** index 15, while the character banks are
+ * 18-27% of it, which is their sprite background. */
 void gfx_blit_tile(Screen *s, const Bank *b, int tile, int x, int y)
 {
     const unsigned char *src;
@@ -167,8 +173,9 @@ void gfx_blit_tile(Screen *s, const Bank *b, int tile, int x, int y)
         if (dy < 0 || dy >= SCR_H) continue;
         for (tx = 0; tx < b->size; tx++) {
             int dx = x + tx;
-            if (dx < 0 || dx >= SCR_W) continue;
-            s->px[(size_t)dy * SCR_W + dx] = src[ty * b->size + tx];
+            unsigned char v = src[ty * b->size + tx];
+            if (dx < 0 || dx >= SCR_W || v == 15) continue;
+            s->px[(size_t)dy * SCR_W + dx] = v;
         }
     }
 }
