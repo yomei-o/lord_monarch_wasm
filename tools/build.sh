@@ -22,6 +22,11 @@ APP="src/app.c src/game.c $SND $CORE"
 mkdir -p tmp
 IMG=$(ls orig/*.FIM | head -1)
 [ -f tmp/monarch.fim ] || cp "$IMG" tmp/monarch.fim
+# The LOGiN magazine's three extra maps, if that disk is here.  It carries the
+# maps and their names and nothing else, so the game's own disk is still what
+# everything else comes off.
+LOGIN=$(ls orig/*.hdm 2>/dev/null | head -1)
+[ -z "$LOGIN" ] || cp "$LOGIN" tmp/login.hdm
 
 what=${1:-all}
 
@@ -40,6 +45,7 @@ if [ "$what" = all ] || [ "$what" = wasm ]; then
     "$EMSDK/upstream/emscripten/emcc.exe" -O2 -std=c99 -o monarch.js \
         src/main_wasm.c $APP \
         --embed-file tmp/monarch.fim@/monarch.fim \
+        ${LOGIN:+--embed-file tmp/login.hdm@/login.hdm} \
         --embed-file font/shinonome.fnt@/shinonome.fnt \
         -s MODULARIZE=1 -s EXPORT_NAME=LordMonarch \
         -s EXPORTED_RUNTIME_METHODS=ccall,cwrap,UTF8ToString,HEAPU8,HEAPU32 \

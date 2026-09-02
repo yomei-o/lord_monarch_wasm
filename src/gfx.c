@@ -215,6 +215,42 @@ void gfx_grcg_line(Screen *s, int x0, int y0, int x1, int y1,
     }
 }
 
+/* One row of a window: the left cell, the middle cell repeated, the right. */
+static void window_row(Screen *s, const unsigned char *src, int x, int y,
+                       int middles)
+{
+    int i, k;
+
+    if (y < 0 || y >= SCR_H) return;
+    for (i = 0; i < 8; i++)
+        if (x + i >= 0 && x + i < SCR_W)
+            s->px[(size_t)y * SCR_W + x + i] = src[i];
+    x += 8;
+    for (k = 0; k < middles; k++, x += 8)
+        for (i = 0; i < 8; i++)
+            if (x + i >= 0 && x + i < SCR_W)
+                s->px[(size_t)y * SCR_W + x + i] = src[8 + i];
+    for (i = 0; i < 8; i++)
+        if (x + i >= 0 && x + i < SCR_W)
+            s->px[(size_t)y * SCR_W + x + i] = src[16 + i];
+}
+
+void gfx_window(Screen *s, const unsigned char art[16][24],
+                int x, int y, int cellsW, int cellsH)
+{
+    int middles = cellsW * 2, row = 0, i, k;
+
+    if (middles < 0) middles = 0;
+    for (i = 0; i < 8; i++)                     /* 0x9177: the top */
+        window_row(s, art[i], x, y + row++, middles);
+    for (k = 0; k < cellsH * 8; k++) {          /* 0x9184: the body */
+        window_row(s, art[8], x, y + row++, middles);
+        window_row(s, art[9], x, y + row++, middles);
+    }
+    for (i = 0; i < 8; i++)                     /* 0x9195: the bottom */
+        window_row(s, art[8 + i], x, y + row++, middles);
+}
+
 void gfx_clear(Screen *s, unsigned char index)
 {
     memset(s->px, index, sizeof s->px);
@@ -458,8 +494,12 @@ void gfx_free_bank(Bank *b)
 int gfx_load_map(Map *m, Disk *d, const char *name)
 {
     unsigned n = 0;
+    /* The game's own maps are BZ; the ones on the LOGiN disk are not stored
+     * compressed at all - 2306 bytes flat, which is the unpacked size.  Try
+     * the codec first and take the file as it stands when it says no. */
     unsigned char *data = disk_read_bz(d, name, &n);
 
+    if (!data) data = disk_read(d, name, &n);
     if (!data) return 0;
     if (n < MAP_W * MAP_H + 2) {
         free(data);

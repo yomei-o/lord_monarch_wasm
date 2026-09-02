@@ -16,7 +16,7 @@ const LordMonarch = require(path.join(root, 'monarch.js'));
 const KEY = {
   START: 1, PREV_MAP: 2, NEXT_MAP: 3, LEFT: 4, RIGHT: 5, UP: 6, DOWN: 7,
   TILE8: 8, TILE16: 9, TILE32: 10, BACK: 11, CASTLES: 12, RUN: 13, STEP: 14,
-  TITLE: 15,
+  TITLE: 15, MONEY: 16, MAPSET: 17,
 };
 
 function dump(m, name) {
@@ -63,6 +63,9 @@ LordMonarch().then((m) => {
   }
 
   m._lm_key(KEY.START);          // title -> map view
+  // A session starts on the LOGiN disk's three maps; these checks are about
+  // the game's own fifty-two, so switch over first.
+  m._lm_key(KEY.MAPSET);
   m._lm_key(KEY.TILE8);
   {
     const n = m._lm_song_wanted();
@@ -73,9 +76,7 @@ LordMonarch().then((m) => {
   // The debug cheat.  It is not the game's, so nothing else would notice if
   // it stopped working.
   {
-    const KEY_MONEY = 16;
-
-    m._lm_key(KEY_MONEY);
+    m._lm_key(KEY.MONEY);
     const st = m.UTF8ToString(m._lm_status());
     const ok = /cheat: side 0 has 999999999 now/.test(st);
 

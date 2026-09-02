@@ -102,6 +102,25 @@ void gfx_grcg_fill(Screen *s, int x0, int y0, int x1, int y1,
 void gfx_grcg_line(Screen *s, int x0, int y0, int x1, int y1,
                    int mask, int colour);
 
+/* The game's own window, built the way sub_9167 builds it.
+ *
+ * The frame is not drawn: it is *taken off the screen*.  sub_977e copies three
+ * bytes a row for sixteen rows from (96, 8) of every plane - the corner of the
+ * frame WAKU already puts round the map - into DS:0x5f1c, and every window is
+ * made out of that one 24 x 16 piece.  Each row of the window is its left
+ * byte, its middle byte repeated as far as the window is wide, and its right
+ * byte (sub_919f); the top is source rows 0..7, the body alternates rows 8 and
+ * 9, and the bottom is rows 8..15.
+ *
+ * So a window is (cellsW * 2 + 2) bytes across and 16 * cellsH + 16 rows down,
+ * measured in the sixteen-pixel cells the descriptors at DS:0x1189 and
+ * DS:0x11ef count in - and `cellsH` is exactly the number of lines it holds,
+ * each sixteen rows apart starting sixteen pixels in and eight rows down.
+ *
+ * `art` is the piece, as indices: sixteen rows of twenty-four. */
+void gfx_window(Screen *s, const unsigned char art[16][24],
+                int x, int y, int cellsW, int cellsH);
+
 /* A filled rectangle with a one-pixel edge, which is all a dialog needs. */
 void gfx_box(Screen *s, int x, int y, int w, int h, unsigned char fill,
              unsigned char edge);

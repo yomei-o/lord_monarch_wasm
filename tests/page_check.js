@@ -173,6 +173,13 @@ setTimeout(() => {
   check(/\.MAP/.test(els.status.textContent),
         `status shows "${els.status.textContent}"`);
 
+  // A session starts on the LOGiN disk's three maps.  These checks are about
+  // the game's own fifty-two, so switch over with L first.
+  press('l');
+  pump(4);
+  check(/^B_000\.MAP/.test(els.status.textContent),
+        `L switched to the game's own maps: "${els.status.textContent}"`);
+
   // The arrows move the cursor while playing; choosing a map is on [ and ].
   const before = els.status.textContent;
   press('ArrowRight');

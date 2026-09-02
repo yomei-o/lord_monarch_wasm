@@ -19,6 +19,12 @@
 
 #define MAP_COUNT 52
 
+/* The LOGiN disk's three, numbered from 100.  They are stored uncompressed,
+ * which gfx_load_map allows for, and their terrain words are 10, 20 and 40 -
+ * so the tiles and the palette still come off the game's own disk. */
+#define LOGIN_FIRST 100
+#define LOGIN_COUNT 3
+
 /* The panel down the left of WAKU: two columns of 32x32 icons, seven rows.
  *
  * The original stores no rectangles at all.  sub_4db2 keeps a single index in
@@ -236,6 +242,15 @@ static int selected = -1;                 /* a unit slot */
 static int mode = APP_MODE_TITLE;
 static int mapNumber, tileSize = 16, scrollX, scrollY;
 
+/* 0 = the LOGiN three, 1 = the game's own fifty-two.  mapNumber is the index
+ * within whichever is in force, not the file's number. */
+static int mapSet;
+static Disk *loginDisk;
+
+static int map_count(void) { return mapSet ? MAP_COUNT : LOGIN_COUNT; }
+static int map_file_number(int i) { return mapSet ? i : LOGIN_FIRST + i; }
+static Disk *map_disk(void) { return mapSet ? disk : loginDisk; }
+
 /* The tileset's own names - see gfx_load_names.  [1..5] are the countries and
  * [6..21] the sixteen unit states, so a state number indexes from 6. */
 static unsigned char names[GFX_NAMES][16];
@@ -249,6 +264,12 @@ static int namesOk;
  * colour control. */
 #define GRAPH_COLOURS_AT 0x3484
 static unsigned char sideColour[5] = { 4, 2, 7, 0, 15 };
+
+/* The window frame, taken off the screen the way sub_977e takes it: three
+ * bytes a row for sixteen rows from (96, 8), which is the corner of the frame
+ * WAKU already draws round the map.  Every dialog is built out of this. */
+static unsigned char frameArt[16][24];
+static int frameOk;
 
 /* For the thumbnail of the square under the cursor: the tileset's own 32x32
  * composition table and the 16x16 bank its pieces come from. */
@@ -299,6 +320,21 @@ int app_init(const char *imagePath)
             if (!font_rom_from_file("font/shinonome.fnt"))
                 font_rom_from_file("shinonome.fnt");
     }
+    /* The LOGiN disk, if it is to be found.  It holds three maps and their
+     * names and nothing else, so everything but B_1nn.MAP still comes off the
+     * game's own disk.  Without it the port falls back to the fifty-two. */
+    {
+        static const char *where[] = {
+            "/login.hdm",                                   /* the wasm embed */
+            "tmp/login.hdm",
+            "orig/Lord Monarch (LOGiN Original Maps).hdm"
+        };
+        unsigned i;
+
+        for (i = 0; i < sizeof where / sizeof *where && !loginDisk; i++)
+            loginDisk = disk_open(where[i]);
+    }
+    mapSet = loginDisk ? 0 : 1;
     return app_show_title();
 }
 
@@ -309,6 +345,8 @@ void app_shutdown(void)
     progDat = 0;
     disk_close(disk);
     disk = 0;
+    disk_close(loginDisk);
+    loginDisk = 0;
 }
 
 /* The palette travels with the tileset: the 48 bytes appended to B_0n0L.CH4,
@@ -685,10 +723,10 @@ int app_show_map(int number, int size)
 {
     char name[32], bankName[32];
 
-    if (number < 0) number = MAP_COUNT - 1;
-    if (number >= MAP_COUNT) number = 0;
-    snprintf(name, sizeof name, "B_%03d.MAP", number);
-    if (!gfx_load_map(&map, disk, name)) {
+    if (number < 0) number = map_count() - 1;
+    if (number >= map_count()) number = 0;
+    snprintf(name, sizeof name, "B_%03d.MAP", map_file_number(number));
+    if (!gfx_load_map(&map, map_disk(), name)) {
         snprintf(status, sizeof status, "%s: %s", name, disk_error());
         return 0;
     }
@@ -743,6 +781,14 @@ int app_show_map(int number, int size)
     gfx_clear(&bg, 0);
     if (!gfx_load_screen(&bg, disk, "WAKU"))
         snprintf(status, sizeof status, "WAKU: %s", disk_error());
+    {
+        int r, k;
+
+        for (r = 0; r < 16; r++)
+            for (k = 0; k < 24; k++)
+                frameArt[r][k] = bg.px[(size_t)(8 + r) * SCR_W + 96 + k];
+        frameOk = 1;
+    }
     snapshot_dim_icons();
     mode = APP_MODE_MAP;
     mapNumber = number;
@@ -967,7 +1013,8 @@ static void icon_press(int idx)
     case ICON_ALLY:  app_sound(APP_SND_OK); dlg_open_ally();  break;
     case ICON_MAP:
         app_sound(APP_SND_OK);
-        app_show_map(mapNumber + 1 >= MAP_COUNT ? 0 : mapNumber + 1, tileSize);
+        app_show_map(mapNumber + 1 >= map_count() ? 0 : mapNumber + 1,
+                     tileSize);
         break;
     default:
         app_sound(APP_SND_NO);          /* not a refusal by the game: by me */
@@ -1182,6 +1229,9 @@ void app_key(int key)
     case APP_KEY_RUN:       running = !running; break;
     case APP_KEY_STEP:      running = 0; app_tick(); break;
     case APP_KEY_TITLE:     app_show_title(); break;
+    case APP_KEY_MAPSET:
+        app_map_set(!mapSet);
+        break;
     case APP_KEY_MONEY:
         if (mode == APP_MODE_MAP && game.human >= 0 && game.human < PLAYERS) {
             game.side[game.human].funds = APP_MONEY_MAX;
@@ -1444,6 +1494,21 @@ int app_song_effect(int id)
 {
     if (!songOn) return 0;
     return snd_song_effect(&song, id);
+}
+
+int app_map_set_now(void) { return mapSet; }
+int app_map_count(void) { return map_count(); }
+
+int app_map_set(int which)
+{
+    int want = (which && 1) || !loginDisk;
+
+    if (want != mapSet) {
+        mapSet = want;
+        mapNumber = 0;
+    }
+    app_show_map(mapNumber, tileSize);
+    return mapSet;
 }
 
 int app_japanese(void) { return fontRom.loaded; }
@@ -1884,21 +1949,50 @@ void app_render(void)
             outline_icon(panelIcon, iconLive[panelIcon] ? 7 : 2);
     }
 
-    /* The dialog over everything, as the original's windows are. */
-    if (dlg.what != DLG_NONE) {
-        int i, h = dlg.lines * DLG_LINE + 16;
-        gfx_box(&scr, DLG_X, DLG_Y, DLG_W, h, 1, 7);
+    /* The dialog, in the game's own window rather than a box of this port's
+     * invention.  sub_4a4d takes a descriptor of (position, size) in sixteen
+     * pixel cells off the map frame's corner at (96, 8), hands it to sub_4b61
+     * which builds the frame with sub_9167, and then draws its lines sixteen
+     * pixels in and eight rows down, one every sixteen rows.  DS:0x1189 and
+     * DS:0x11ef are two real ones: eleven cells by one line at (112, 24) and
+     * fifteen by one at (160, 296).
+     *
+     * The width here is taken from the longest line rather than fixed, which
+     * is what those descriptors do by carrying their own. */
+    if (dlg.what != DLG_NONE && frameOk) {
+        int i, longest = 0, cellsW, x, y;
+
         for (i = 0; i < dlg.lines; i++) {
-            int ly = DLG_Y + 8 + i * DLG_LINE;
+            int n = gfx_text_sjis_width(&fontRom, dlg.line[i]);
+
+            if (n > longest) longest = n;
+        }
+        /* The text starts sixteen pixels in and the right border is eight
+         * wide, so a window of cellsW cells has cellsW * 16 - 8 pixels to
+         * write in. */
+        cellsW = (longest + 8 + 15) / 16;
+        if (cellsW < 4) cellsW = 4;
+        if (cellsW > 33) cellsW = 33;
+        x = DLG_X & ~7;
+        y = DLG_Y;
+        if (x + cellsW * 16 + 16 > SCR_W - 8) x = SCR_W - 8 - cellsW * 16 - 16;
+        if (y + dlg.lines * 16 + 16 > SCR_H - 8) y = SCR_H - 8 - dlg.lines * 16 - 16;
+        if (x < 0) x = 0;
+        if (y < 0) y = 0;
+        gfx_window(&scr, frameArt, x, y, cellsW, dlg.lines);
+        for (i = 0; i < dlg.lines; i++) {
+            int ly = y + 8 + i * 16;
             int chosen = dlg.count && i == dlg.first + dlg.pick;
+
             if (chosen) {
                 int j, k;
-                for (j = 0; j < DLG_LINE; j++)
-                    for (k = 0; k < DLG_W - 8; k++)
-                        scr.px[(size_t)(ly + j) * SCR_W + DLG_X + 4 + k] = 9;
+
+                for (j = 0; j < 16; j++)
+                    for (k = 0; k < cellsW * 16 - 8; k++)
+                        scr.px[(size_t)(ly + j) * SCR_W + x + 16 + k] = 2;
             }
-            gfx_text_sjis(&scr, &font, &fontRom, DLG_X + 8, ly, dlg.line[i],
-                          (unsigned char)(chosen ? 6 : 7));
+            gfx_text_sjis(&scr, &font, &fontRom, x + 16, ly, dlg.line[i],
+                          (unsigned char)(chosen ? 7 : 7));
         }
     }
 }
