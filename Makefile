@@ -15,13 +15,22 @@ IMAGE   ?= $(firstword $(wildcard orig/*.FIM))
 CORE = src/disk.c src/gfx.c src/bz.c src/lmz.c
 APP  = src/app.c src/game.c $(CORE)
 
-all: $(OUT)/monarch.exe $(OUT)/monarch_shot.exe
+all: $(OUT)/monarch.exe $(OUT)/monarch_shot.exe $(OUT)/game_check.exe
 
 $(OUT)/monarch.exe: src/main_win32.c $(APP) | $(OUT)
 	$(CC) $(CFLAGS) -mwindows -municode -o $@ $^ -lgdi32
 
 $(OUT)/monarch_shot.exe: src/main_shot.c src/png.c $(APP) | $(OUT)
 	$(CC) $(CFLAGS) -o $@ $^
+
+$(OUT)/game_check.exe: tests/game_check.c src/game.c $(CORE) | $(OUT)
+	$(CC) $(CFLAGS) -Isrc -o $@ $^
+
+# The rules, checked against what the disk and the disassembly say.
+check: $(OUT)/game_check.exe $(OUT)/monarch.fim
+	$(OUT)/game_check.exe $(OUT)/monarch.fim
+	node tests/wasm_check.js
+	node tests/page_check.js
 
 $(OUT):
 	mkdir -p $(OUT)
@@ -43,6 +52,6 @@ docs/monarch.js: src/main_wasm.c $(APP) $(OUT)/monarch.fim
 	$(EMCC) -O2 -std=c99 -o $@ src/main_wasm.c $(APP) --embed-file $(OUT)/monarch.fim@/monarch.fim -s MODULARIZE=1 -s EXPORT_NAME=LordMonarch -s EXPORTED_RUNTIME_METHODS=ccall,cwrap,UTF8ToString,HEAPU8,HEAPU32 -s ALLOW_MEMORY_GROWTH=1 -s ENVIRONMENT=web,worker,node
 
 clean:
-	rm -f $(OUT)/monarch.exe $(OUT)/monarch_shot.exe docs/monarch.js docs/monarch.wasm
+	rm -f $(OUT)/monarch.exe $(OUT)/monarch_shot.exe $(OUT)/game_check.exe docs/monarch.js docs/monarch.wasm
 
-.PHONY: all shots wasm clean
+.PHONY: all shots wasm check clean

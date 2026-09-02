@@ -53,9 +53,21 @@ typedef struct {
     unsigned char amount;       /* starts at 100, caps at 255 */
 } Cell;
 
+/* The eight directions, from the table at DS:2827, and the deltas it holds.
+ * Direction 0 is up and they run anticlockwise; the initialiser faces new units
+ * 6, which is right, and puts the second unit on the square to the right. */
+enum { DIR_UP, DIR_UPLEFT, DIR_LEFT, DIR_DOWNLEFT,
+       DIR_DOWN, DIR_DOWNRIGHT, DIR_RIGHT, DIR_UPRIGHT };
+extern const signed char GAME_DX[8], GAME_DY[8];
+
+/* sub_ad80 rejects anything outside 1..0x2e in either axis, so the outermost
+ * ring of the map is off limits - the "外周部当り" of the message table. */
+#define MAP_MIN 1
+#define MAP_MAX 0x2e
+
 typedef struct {
     unsigned char flags;        /* +0x00, bit 7 = the slot is free */
-    unsigned char timer;        /* +0x01, the initialiser writes 6 */
+    unsigned char facing;       /* +0x01, a direction; new units get 6 */
     unsigned short pos;         /* +0x02, (y << 8) | x */
     unsigned short at;          /* +0x04, the cell as a byte offset (index * 2) */
     unsigned short carrying;    /* +0x06 */
@@ -63,6 +75,8 @@ typedef struct {
     unsigned char state;        /* +0x0a */
     unsigned char link;         /* +0x0b, a unit slot, 0xff for none */
     unsigned char side;         /* +0x0c, 0..4 */
+    unsigned char want;         /* +0x0e, the direction it turned towards */
+    unsigned char retry;        /* +0x0f, counts down while blocked */
 } Unit;
 
 /* 0x16 bytes.  The initialiser at 0x0326 writes every one of these. */
@@ -104,6 +118,17 @@ void game_init(Game *g, const Map *m);
 
 /* One pass of the unit updater: `0x40 >> speed` slots, stepping 31 at a time. */
 void game_step(Game *g);
+
+/* One step, following the sequence at 0x3793:
+ *
+ *   - if the unit is not already facing `dir`, turn and take no step
+ *   - otherwise work out the square, reject it if it leaves 1..46 in either
+ *     axis, if its tile is 0x30 or above, or if another unit is standing there
+ *   - on success move the occupancy word, [si+4] and [si+2] together
+ *
+ * Returns 1 if the unit moved, 0 if it turned or was blocked.
+ */
+int game_move(Game *g, int slot, int dir);
 
 /* Handy for the viewer and for tests. */
 int game_unit_count(const Game *g, int side);

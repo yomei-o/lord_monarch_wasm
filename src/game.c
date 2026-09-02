@@ -2,7 +2,44 @@
 
 #include <string.h>
 
+/* DS:2827, eight words of (dy << 8) | dx. */
+const signed char GAME_DX[8] = { 0, -1, -1, -1,  0,  1,  1,  1 };
+const signed char GAME_DY[8] = {-1, -1,  0,  1,  1,  1,  0, -1 };
+
 int game_cell_index(int x, int y) { return y * MAP_W + x; }
+
+int game_move(Game *g, int slot, int dir)
+{
+    Unit *u = &g->unit[slot];
+    int x, y, nx, ny, from, to;
+
+    dir &= 7;
+    if (u->facing != dir) {             /* turning costs the step */
+        u->want = (unsigned char)dir;
+        u->facing = (unsigned char)dir;
+        return 0;
+    }
+    x = u->pos & 0xff;
+    y = u->pos >> 8;
+    nx = x + GAME_DX[dir];
+    ny = y + GAME_DY[dir];
+    if (nx < MAP_MIN || nx > MAP_MAX || ny < MAP_MIN || ny > MAP_MAX) {
+        u->state = UNIT_STATE_FOLLOW;   /* 0x37fe writes 1 and clears the link */
+        u->link = 0xff;
+        return 0;
+    }
+    from = game_cell_index(x, y);
+    to = game_cell_index(nx, ny);
+    if (g->cell[to].tile >= CELL_IMPASSABLE || g->occupant[to] >= 0) {
+        if (u->retry) u->retry--;       /* 0x37ec counts down and gives up */
+        return 0;
+    }
+    g->occupant[to] = (short)slot;
+    g->occupant[from] = -1;
+    u->at = (unsigned short)(to * 2);
+    u->pos = (unsigned short)((ny << 8) | nx);
+    return 1;
+}
 
 /* sub_add0: the first slot whose byte 0 has bit 7 set, scanning from the front.
  * Returns -1 when the field is full, which the original signals with CF. */
@@ -32,7 +69,7 @@ static int place(Game *g, int index, int side, unsigned char state,
     u = &g->unit[slot];
     memset(u, 0, sizeof *u);
     u->flags = 0;                       /* [si] = 0 clears the free bit */
-    u->timer = 6;                       /* [si+1] = 6 */
+    u->facing = DIR_RIGHT;              /* [si+1] = 6 */
     u->pos = pack_pos(index);
     u->at = (unsigned short)(index * 2);
     u->carrying = carrying;
