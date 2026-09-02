@@ -147,10 +147,14 @@ int app_show_map(int number, int size)
     scrollX = scrollY = 0;
     game_init(&game, &map);
     snprintf(status, sizeof status,
-             "%s  terrain %d  %s  %dx%d  castles %d,%d %d,%d %d,%d %d,%d",
+             "%s  terrain %d  %s  %dx%d  castles %d,%d %d,%d %d,%d %d,%d  "
+             "units %d (neutral %d)",
              name, map.terrain, bankName, size, size,
-             game.castleX[0], game.castleY[0], game.castleX[1], game.castleY[1],
-             game.castleX[2], game.castleY[2], game.castleX[3], game.castleY[3]);
+             game.side[0].pos & 0xff, game.side[0].pos >> 8,
+             game.side[1].pos & 0xff, game.side[1].pos >> 8,
+             game.side[2].pos & 0xff, game.side[2].pos >> 8,
+             game.side[3].pos & 0xff, game.side[3].pos >> 8,
+             game_unit_count(&game, -1), game_unit_count(&game, 4));
     return 1;
 }
 
@@ -219,10 +223,18 @@ void app_render(void)
     gfx_draw_map(&scr, &map, &bank, VIEW_X, VIEW_Y, scrollX, scrollY,
                  VIEW_W / bank.size + 1, VIEW_H / bank.size + 1);
     if (showCastles) {
-        /* 6 is the yellow of the interface palette, which no terrain uses. */
+        /* The starting state, as the original builds it.  These marks are ours;
+         * the game draws no such thing.  Index 6 is the interface yellow and 2
+         * its red, neither of which the terrain uses. */
         int i;
-        for (i = 0; i < SIDES; i++)
-            if (game.castleX[i] >= 0)
-                outline_cell(game.castleX[i], game.castleY[i], 6);
+        for (i = 0; i < UNIT_SLOTS; i++) {
+            const Unit *u = &game.unit[i];
+            if (u->flags & 0x80) continue;
+            outline_cell(u->pos & 0xff, u->pos >> 8,
+                         u->side >= PLAYERS ? 2 : 6);
+        }
+        for (i = 0; i < PLAYERS; i++)
+            if (game.side[i].alive)
+                outline_cell(game.side[i].pos & 0xff, game.side[i].pos >> 8, 7);
     }
 }
