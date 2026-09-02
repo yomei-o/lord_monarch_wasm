@@ -56,7 +56,7 @@ static void planes_to_indices(unsigned char *out, const unsigned char *pl[4],
     }
 }
 
-int gfx_load_screen(Screen *s, Disk *d, const char *name)
+static int load_screen(Screen *s, Disk *d, const char *name, int under)
 {
     static const char *ext[4] = {"B1", "R1", "G1", "E1"};
     unsigned char *own[4] = {0, 0, 0, 0};
@@ -76,9 +76,30 @@ int gfx_load_screen(Screen *s, Disk *d, const char *name)
         pl[i] = own[i];
         if (own[i]) ok = 1;
     }
-    if (ok) planes_to_indices(s->px, pl, SCR_W, SCR_H);
+    if (ok) {
+        if (under < 0) {
+            planes_to_indices(s->px, pl, SCR_W, SCR_H);
+        } else {
+            static unsigned char tmp[SCR_W * SCR_H];
+            size_t n;
+            planes_to_indices(tmp, pl, SCR_W, SCR_H);
+            for (n = 0; n < (size_t)SCR_W * SCR_H; n++)
+                s->px[n] = tmp[n] ? tmp[n] : (unsigned char)under;
+        }
+    }
     for (i = 0; i < 4; i++) free(own[i]);
     return ok;
+}
+
+int gfx_load_screen(Screen *s, Disk *d, const char *name)
+{
+    return load_screen(s, d, name, -1);
+}
+
+int gfx_load_screen_over(Screen *s, Disk *d, const char *name,
+                         unsigned char under)
+{
+    return load_screen(s, d, name, under);
 }
 
 int gfx_load_bank(Bank *b, Disk *d, const char *name, int size)

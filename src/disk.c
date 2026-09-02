@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "bz.h"
+#include "lmz.h"
 
 #define MAX_ENTRIES 256
 #define MAX_UNPACKED (1u << 21)
@@ -219,6 +220,32 @@ unsigned char *disk_read(Disk *d, const char *name, unsigned *sizeOut)
     if (got != d->ent[i].size) {
         snprintf(errbuf, sizeof errbuf, "%s: chain ended after %u of %u bytes",
                  name, got, d->ent[i].size);
+        free(out);
+        return 0;
+    }
+    if (sizeOut) *sizeOut = got;
+    return out;
+}
+
+unsigned char *disk_read_lz(Disk *d, const char *name, unsigned *sizeOut)
+{
+    unsigned packed = 0, want, got;
+    unsigned char *in = disk_read(d, name, &packed), *out;
+
+    if (sizeOut) *sizeOut = 0;
+    if (!in) return 0;
+    want = lmz_size(in, packed);
+    if (want == 0) {
+        snprintf(errbuf, sizeof errbuf, "%s: no LZSS header", name);
+        free(in);
+        return 0;
+    }
+    out = (unsigned char *)malloc(want);
+    got = lmz_unpack(in, packed, out, want);
+    free(in);
+    if (got != want) {
+        snprintf(errbuf, sizeof errbuf, "%s: unpacked %u of %u bytes",
+                 name, got, want);
         free(out);
         return 0;
     }

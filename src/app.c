@@ -17,16 +17,22 @@
 
 #define MAP_COUNT 52
 
-/* Measured off ss0.jpg.  The title has no terrain bank to carry a palette - the
- * in-game tables ride along on B_0n0L.CH4 - and the real title table has not
- * been found in PROG.BIN either, so these seven stay measured for now.  DS7TTL
- * has no E1 plane, so only 0..6 are ever used. */
-static const unsigned char TITLE_PAL[16][3] = {
-    {0, 0, 0}, {0, 2, 2}, {4, 14, 10}, {0, 8, 8},
-    {4, 7, 7}, {7, 10, 10}, {10, 12, 12}, {0, 0, 0},
-    {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0},
-    {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0},
-};
+/* PROG.DAT, unpacked, as the game has it at DS:1000.  It holds the palette
+ * tables, the message strings and the filename table, so the port reads them
+ * from the original rather than carrying copies. */
+#define DAT_BASE 0x1000
+#define PAL_TITLE_AT 0x24fb        /* the table the title fades to */
+
+static unsigned char *progDat;
+static unsigned progDatSize;
+
+/* A pointer to a DS: address inside PROG.DAT, or 0 if it is outside. */
+static const unsigned char *dat_at(unsigned addr, unsigned need)
+{
+    unsigned off = addr - DAT_BASE;
+    if (!progDat || addr < DAT_BASE || off + need > progDatSize) return 0;
+    return progDat + off;
+}
 
 static Screen scr;
 /* The backdrop - the title image, or the frame - is decompressed once per mode
@@ -51,12 +57,19 @@ int app_init(const char *imagePath)
         snprintf(status, sizeof status, "%s", disk_error());
         return 0;
     }
+    progDat = disk_read_lz(disk, "PROG.DAT", &progDatSize);
+    if (!progDat) {
+        snprintf(status, sizeof status, "PROG.DAT: %s", disk_error());
+        return 0;
+    }
     return app_show_title();
 }
 
 void app_shutdown(void)
 {
     gfx_free_bank(&bank);
+    free(progDat);
+    progDat = 0;
     disk_close(disk);
     disk = 0;
 }
@@ -83,10 +96,20 @@ static int palette_from_terrain(int terrain)
 
 int app_show_title(void)
 {
+    const unsigned char *t = dat_at(PAL_TITLE_AT, 48);
+
     mode = APP_MODE_TITLE;
-    gfx_set_palette_rgb(&scr, TITLE_PAL);
-    gfx_clear(&bg, 0);
-    if (!gfx_load_screen(&bg, disk, "DS7TTL")) {
+    if (!t) {
+        snprintf(status, sizeof status, "no title palette in PROG.DAT");
+        return 0;
+    }
+    gfx_set_palette(&scr, t);
+    /* Index 0 is transparent here.  The stored table has 0 = a blue that never
+     * shows: the game clears the screen first and lays DS7TTL over it, so what
+     * you see behind the logo is index 1, black.  Checked against ss0.jpg -
+     * index 1 and index 3 come out exactly right that way. */
+    gfx_clear(&bg, 1);
+    if (!gfx_load_screen_over(&bg, disk, "DS7TTL", 1)) {
         snprintf(status, sizeof status, "DS7TTL: %s", disk_error());
         return 0;
     }

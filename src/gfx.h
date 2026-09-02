@@ -53,6 +53,13 @@ void gfx_rgb(const Screen *s, int index, unsigned char *r, unsigned char *g,
  * zero, which is how the title (no .E1) is stored. */
 int gfx_load_screen(Screen *s, Disk *d, const char *name);
 
+/* The same, but index 0 is transparent and the screen is filled with `under`
+ * first.  The title is drawn this way: DS7TTL's background is index 0, and the
+ * palette it runs with (PROG.DAT DS:24fb) has 0 = a blue that never appears on
+ * screen while 1 is the black you actually see behind the logo. */
+int gfx_load_screen_over(Screen *s, Disk *d, const char *name,
+                         unsigned char under);
+
 /* Loads a .CH4 tile bank.  `size` picks how the bytes are cut up; the S/M/L
  * files hold 8x8, 16x16 and 32x32 of the same terrain set. */
 int gfx_load_bank(Bank *b, Disk *d, const char *name, int size);

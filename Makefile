@@ -12,7 +12,7 @@ OUT     ?= tmp
 EMCC    ?= C:/prog/emsdk/emsdk/upstream/emscripten/emcc.exe
 IMAGE   ?= $(firstword $(wildcard orig/*.FIM))
 
-CORE = src/disk.c src/gfx.c src/bz.c
+CORE = src/disk.c src/gfx.c src/bz.c src/lmz.c
 APP  = src/app.c $(CORE)
 
 all: $(OUT)/monarch.exe $(OUT)/monarch_shot.exe

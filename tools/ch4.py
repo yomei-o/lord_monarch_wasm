@@ -57,15 +57,27 @@ def palette_for(terrain, where='disk'):
     return tail_palette(os.path.join(where, 'B_%03dL.CH4' % terrain))
 
 
-# The title screen has no terrain bank, so its table is not on the disk in this
-# form and has not been found in PROG.BIN either.  These seven are **measured**
-# off ss0.jpg: per index, the median of the screenshot pixels at the centre of a
-# run of >= 6 same-index pixels, which is what survives the JPEG.  DS7TTL has no
-# E1 plane, so the title only ever uses 0..6.
-PAL_TITLE = _scale([
-    (0, 0, 0), (0, 2, 2), (4, 14, 10), (0, 8, 8),
-    (4, 7, 7), (7, 10, 10), (10, 12, 12),
-] + [(0, 0, 0)] * 9)
+# The title has no terrain bank, so its table is not appended to a .CH4 - it is
+# inside PROG.DAT, which is packed with the boot sector's LZSS (lmz.py).  The
+# game fades to the table at DS:24fb, and index 0 there is a blue that never
+# shows: the screen is cleared first and DS7TTL laid over it with index 0
+# transparent, so what you see behind the logo is index 1, black.  Checked
+# against ss0.jpg - indices 1 and 3 come out exactly right that way.
+PAL_TITLE_AT = 0x24fb
+DAT_BASE = 0x1000
+
+
+def palette_at(addr, where='disk'):
+    """A 48-byte table at a DS: address inside PROG.DAT."""
+    import lmz
+    with open(os.path.join(where, 'PROG.DAT'), 'rb') as f:
+        dat = lmz.unpack(f.read())[0]
+    t = dat[addr - DAT_BASE: addr - DAT_BASE + 48]
+    return _scale([(t[i * 3 + 1], t[i * 3 + 2], t[i * 3]) for i in range(16)])
+
+
+def palette_title(where='disk'):
+    return palette_at(PAL_TITLE_AT, where)
 
 
 def _default():
@@ -173,7 +185,7 @@ def main():
     pal = DEFAULT_PAL
     if '--pal' in sys.argv:
         which = sys.argv[sys.argv.index('--pal') + 1]
-        pal = PAL_TITLE if which == 'title' else palette_for(int(which))
+        pal = palette_title() if which == 'title' else palette_for(int(which))
 
     if screen:
         pl = []

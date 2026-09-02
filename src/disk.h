@@ -21,9 +21,15 @@ const char *disk_error(void);
  * is case-insensitive.  Returns malloc'd bytes the caller frees, or 0. */
 unsigned char *disk_read(Disk *d, const char *name, unsigned *sizeOut);
 
-/* Same, then BZ-decompressed.  Every data file on the disk is compressed;
- * PROG.BIN and PROG.DAT are not, and for those this fails - use disk_read. */
+/* Same, then BZ-decompressed.  Every data file on the disk is BZ; PROG.BIN and
+ * PROG.DAT are not - they use the boot sector's own LZSS, so for those this
+ * fails and disk_read_lz is the one to call. */
 unsigned char *disk_read_bz(Disk *d, const char *name, unsigned *sizeOut);
+
+/* Same, then unpacked with the boot sector's LZSS.  That is how PROG.BIN and
+ * PROG.DAT are stored - see lmz.c - and they are the only two files that use it;
+ * everything else on the disk is BZ. */
+unsigned char *disk_read_lz(Disk *d, const char *name, unsigned *sizeOut);
 
 /* Number of root-directory entries, and the i'th name, for listing. */
 int disk_count(Disk *d);
