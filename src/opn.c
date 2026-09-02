@@ -34,6 +34,20 @@
 
 enum { OPN_ATT, OPN_DEC, OPN_SUS, OPN_REL, OPN_OFF };
 
+/* How deep a modulator goes.  An operator here puts out -1..1, and this is how
+ * many turns of the next one's phase a full-scale modulator swings.  On the
+ * chip it is a shift: NP2's opngen adds the modulator's level to the phase
+ * counter shifted by (FREQ_BITS - (TL_BITS - 2)), and MAME's fm.c adds the raw
+ * operator output shifted right by one into a phase index of 1024 a turn.
+ *
+ * These two numbers decide the whole character of a voice, and they are the
+ * part of this core that is fitted rather than read.  Too much and every voice
+ * turns to noise, which is what the first cut did: feedback came out at two
+ * whole turns on a voice asking for FB 7, and FM001's first voice asks for
+ * exactly that. */
+#define MOD_TURNS 1.0           /* a full-scale modulator, one turn */
+#define FB_TURNS  0.5           /* the most feedback FB 7 can ask for */
+
 /* 1024 units of attenuation is 96 dB, which is the chip's envelope range. */
 #define ATT_MAX 1023.0
 #define ATT_DB  (96.0 / 1024.0)
@@ -242,51 +256,53 @@ static double channel_sample(OpnCh *c, double inc[OPN_OPS])
     double fb, m1, m2, m3, out = 0.0;
     int i;
 
-    /* Operator 1's feedback is the average of its last two outputs. */
-    fb = c->feedback ? (c->op[0].prev + c->op[0].out) / 2.0 *
-                       (1 << c->feedback) / 64.0
+    /* Operator 1 modulates itself with the average of its last two outputs.
+     * The register is 0..7 and the chip turns it into a shift, so each step is
+     * a halving: 7 is the most and 0 is none at all. */
+    fb = c->feedback ? (c->op[0].prev + c->op[0].out) / 2.0 * FB_TURNS /
+                       (double)(1 << (7 - c->feedback))
                      : 0.0;
 
     switch (c->algorithm) {
     case 0:  /* 1 -> 2 -> 3 -> 4 */
         m1 = op_sample(&c->op[0], fb);
-        m2 = op_sample(&c->op[2], m1 / 2.0);
-        m3 = op_sample(&c->op[1], m2 / 2.0);
-        out = op_sample(&c->op[3], m3 / 2.0);
+        m2 = op_sample(&c->op[2], m1 * MOD_TURNS);
+        m3 = op_sample(&c->op[1], m2 * MOD_TURNS);
+        out = op_sample(&c->op[3], m3 * MOD_TURNS);
         break;
     case 1:  /* (1 + 2) -> 3 -> 4 */
         m1 = op_sample(&c->op[0], fb);
         m2 = op_sample(&c->op[2], 0.0);
-        m3 = op_sample(&c->op[1], (m1 + m2) / 2.0);
-        out = op_sample(&c->op[3], m3 / 2.0);
+        m3 = op_sample(&c->op[1], (m1 + m2) * MOD_TURNS);
+        out = op_sample(&c->op[3], m3 * MOD_TURNS);
         break;
     case 2:  /* 1 + (2 -> 3) -> 4 */
         m1 = op_sample(&c->op[0], fb);
         m2 = op_sample(&c->op[2], 0.0);
-        m3 = op_sample(&c->op[1], m2 / 2.0);
-        out = op_sample(&c->op[3], (m1 + m3) / 2.0);
+        m3 = op_sample(&c->op[1], m2 * MOD_TURNS);
+        out = op_sample(&c->op[3], (m1 + m3) * MOD_TURNS);
         break;
     case 3:  /* (1 -> 2) + 3 -> 4 */
         m1 = op_sample(&c->op[0], fb);
-        m2 = op_sample(&c->op[2], m1 / 2.0);
+        m2 = op_sample(&c->op[2], m1 * MOD_TURNS);
         m3 = op_sample(&c->op[1], 0.0);
-        out = op_sample(&c->op[3], (m2 + m3) / 2.0);
+        out = op_sample(&c->op[3], (m2 + m3) * MOD_TURNS);
         break;
     case 4:  /* (1 -> 2) + (3 -> 4) */
         m1 = op_sample(&c->op[0], fb);
-        m2 = op_sample(&c->op[2], m1 / 2.0);
+        m2 = op_sample(&c->op[2], m1 * MOD_TURNS);
         m3 = op_sample(&c->op[1], 0.0);
-        out = m2 + op_sample(&c->op[3], m3 / 2.0);
+        out = m2 + op_sample(&c->op[3], m3 * MOD_TURNS);
         break;
     case 5:  /* 1 -> (2, 3, 4) */
         m1 = op_sample(&c->op[0], fb);
-        out = op_sample(&c->op[2], m1 / 2.0) +
-              op_sample(&c->op[1], m1 / 2.0) +
-              op_sample(&c->op[3], m1 / 2.0);
+        out = op_sample(&c->op[2], m1 * MOD_TURNS) +
+              op_sample(&c->op[1], m1 * MOD_TURNS) +
+              op_sample(&c->op[3], m1 * MOD_TURNS);
         break;
     case 6:  /* (1 -> 2) + 3 + 4 */
         m1 = op_sample(&c->op[0], fb);
-        out = op_sample(&c->op[2], m1 / 2.0) +
+        out = op_sample(&c->op[2], m1 * MOD_TURNS) +
               op_sample(&c->op[1], 0.0) +
               op_sample(&c->op[3], 0.0);
         break;
