@@ -36,6 +36,9 @@
     grid-template-columns: auto 1fr; color: #9aa2ad; max-width: 640px;
   }
   #keys b { color: #d8dbe0; font-weight: 600; white-space: nowrap; }
+  #fontrow { margin-top: 12px; font-size: 12px; color: #9aa2ad; }
+  #fontrow input { font: inherit; font-size: 12px; }
+  #fontstate { margin-left: 8px; }
   #buttons { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 6px; }
   button {
     font: inherit; font-size: 12px; padding: 6px 12px;
@@ -92,6 +95,17 @@
 <!-- Keys, and nothing more.  Everything the game does is on the game's own
      screen now - the left panel and its dialogs - so these are here only so a
      touch screen has something to press. -->
+<!-- A PC-98 font ROM makes the dialogs come out in the original's own
+     Japanese.  It is NEC's font, not the game's and not ours, so it is not
+     shipped here: this reads one off your own machine, in your own browser,
+     and nothing leaves it. -->
+<div id="fontrow">
+  <label>font.rom（あれば日本語表示になります）:
+    <input type="file" id="fontrom" accept=".rom,application/octet-stream">
+  </label>
+  <span id="fontstate">未読み込み — 英語表示</span>
+</div>
+
 <div id="buttons">
   <button data-key="4">←</button>
   <button data-key="6">↑</button>
@@ -157,16 +171,26 @@
       // While a dialog is up its heading goes here too, so what the screen is
       // asking is also readable as text.
       if (mod._lm_dialog()) {
-        statusEl.textContent = 'dialog: ' +
-          mod.UTF8ToString(mod._lm_dialog_line(0)) + '  —  ' +
-          mod.UTF8ToString(mod._lm_dialog_line(
-            Math.max(0, mod._lm_dialog_pick()) + 2));
+        statusEl.textContent = 'dialog: ' + dialogLine(0) + '  —  ' +
+          dialogLine(Math.max(0, mod._lm_dialog_pick()) + 2);
       } else {
         statusEl.textContent = mod.UTF8ToString(mod._lm_status());
       }
       dirty = false;
     }
     requestAnimationFrame(frame);
+  }
+
+  // If a font.rom happens to sit next to this page, use it without being asked.
+  // On GitHub Pages there is none, and that is the point.
+  function tryLocalFontRom() {
+    if (!window.fetch) return;
+    fetch('font.rom').then(function (r) {
+      if (!r.ok) throw 0;
+      return r.arrayBuffer();
+    }).then(function (b) {
+      useFontRom(new Uint8Array(b));
+    }).catch(function () { /* none there; English it is */ });
   }
 
   var running = false;
@@ -235,6 +259,50 @@
     dirty = true;
   });
 
+  // Hand a font ROM to the wasm side: write into its own buffer and tell it how
+  // much.  Nothing is uploaded anywhere - this is all in the page.
+  function useFontRom(bytes) {
+    if (!mod) return false;
+    var cap = mod._lm_font_rom_capacity();
+    if (bytes.length > cap) {
+      setFontState('大きすぎます (' + bytes.length + ' > ' + cap + ')');
+      return false;
+    }
+    var p = mod._lm_font_rom_buffer();
+    mod.HEAPU8.set(bytes, p);
+    var ok = mod._lm_font_rom(bytes.length);
+    setFontState(ok ? '読み込みました — 日本語表示' : '形式が違うようです');
+    dirty = true;
+    return !!ok;
+  }
+
+  // The dialog lines are the game's own bytes, which with a font ROM loaded are
+  // Shift-JIS rather than ASCII, so they are decoded rather than read as UTF-8.
+  var sjis = window.TextDecoder ? new TextDecoder('shift_jis') : null;
+  function dialogLine(i) {
+    var p = mod._lm_dialog_line(i), end = p;
+    while (mod.HEAPU8[end]) end++;
+    var bytes = mod.HEAPU8.subarray(p, end);
+    if (!sjis) return mod.UTF8ToString(p);
+    try { return sjis.decode(bytes); } catch (e) { return mod.UTF8ToString(p); }
+  }
+
+  function setFontState(t) {
+    var el = document.getElementById('fontstate');
+    if (el) el.textContent = t;
+  }
+
+  var fontInput = document.getElementById('fontrom');
+  if (fontInput) {
+    fontInput.addEventListener('change', function (e) {
+      var f = e.target.files && e.target.files[0];
+      if (!f) return;
+      var r = new FileReader();
+      r.onload = function () { useFontRom(new Uint8Array(r.result)); };
+      r.readAsArrayBuffer(f);
+    });
+  }
+
   window.addEventListener('keydown', function (e) {
     var k = fromEvent(e);
     if (!k) return;
@@ -260,6 +328,7 @@
       fail('起動できませんでした: ' + m.UTF8ToString(m._lm_status()));
       return;
     }
+    tryLocalFontRom();
     frame();
   }).catch(function (e) {
     fail('起動できませんでした: ' + e);

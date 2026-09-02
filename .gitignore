@@ -10,3 +10,9 @@
 /tests/*.exe
 /monarch.exe
 *.o
+
+# The PC-98 font ROM.  It is NEC's, not ours: the port can use one if you drop
+# it here, but it is never committed or shipped.
+FONT.ROM*
+font.rom
+*.ROM

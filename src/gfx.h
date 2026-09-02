@@ -44,6 +44,40 @@ typedef struct {
     int loaded;
 } Font;
 
+/* A PC-98 font ROM, if one has been supplied.  The kanji in the original's
+ * messages live in the machine's font ROM, not on the floppy, so without one
+ * only the disk's own ASCII can be drawn.  The layout was measured from a
+ * 288768-byte image rather than looked up:
+ *
+ *   0x0000 + code * 16      8 x 8 ANK
+ *   0x0800 + code * 16      8 x 16 ANK   (0x41 is a clean "A")
+ *   0x1800 + n * 32         16 x 16, sixteen bytes of the left half then
+ *                           sixteen of the right, where
+ *                             n = (jisHi - 0x21) * 96 + (jisLo - 0x21) + 1
+ *
+ * 96 rather than 94 to the row, and the extra +1, were pinned down from the
+ * blank runs: "0".."9" is a run of exactly ten at index 208, "A".."Z" twenty-six
+ * at 225, hiragana eighty-three at 289 and NEC's row 13 thirty at 1153.  All
+ * four fall out of that one formula and no other.
+ *
+ * The ROM is the machine's, not the game's, so it is never shipped with this:
+ * it is loaded at runtime if the person running it has one. */
+typedef struct {
+    unsigned char *rom;
+    unsigned size;
+    int loaded;
+} FontRom;
+
+int gfx_font_rom(FontRom *f, const unsigned char *data, unsigned n);
+void gfx_font_rom_free(FontRom *f);
+
+/* Draws Shift-JIS.  Single bytes come from the ROM's 8 x 16 ANK when there is a
+ * ROM and from the disk's own font otherwise; double bytes need the ROM and are
+ * skipped without one. */
+void gfx_text_sjis(Screen *s, const Font *ank, const FontRom *rom,
+                   int x, int y, const char *text, unsigned char colour);
+int gfx_text_sjis_width(const FontRom *rom, const char *text);
+
 int gfx_load_font(Font *f, Disk *d);
 void gfx_text(Screen *s, const Font *f, int x, int y, const char *t,
               unsigned char colour);

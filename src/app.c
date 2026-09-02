@@ -1,5 +1,6 @@
 #include "app.h"
 #include "game.h"
+#include "jp.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -112,6 +113,10 @@ static Bank bank;
 static Bank chars;
 static int charsOk;
 static Font font;
+/* The machine's font ROM, if one has been handed over.  With it the dialogs say
+ * what the original says; without it they fall back to English, because the
+ * kanji simply are not on the floppy.  See src/jp.h. */
+static FontRom fontRom;
 
 /* An on-screen dialog, which is where the game's own answers belong: the
  * original draws its windows and menus on the 640 x 400 screen (sub_4a4d lays
@@ -372,20 +377,20 @@ static void dlg_open_info(void)
     int i;
     dlg_close();
     dlg.what = DLG_INFO;
-    dlg_say("THE FOUR COUNTRIES");
+    dlg_say(JP_INFO_TITLE);
     dlg_say("");
-    dlg_say("     LAND  HELD   FUNDS");
+    dlg_say(JP_INFO_HEAD);
     for (i = 0; i < PLAYERS; i++) {
         int plain, claimed;
         char buf[DLG_TEXT];
         game_land_count(&game, i, &plain, &claimed);
         snprintf(buf, sizeof buf, " %s%d  %4d  %4d  %6lu%s",
                  i == game.human ? ">" : " ", i, plain, claimed,
-                 game.side[i].funds, game.side[i].alive ? "" : "  GONE");
+                 game.side[i].funds, game.side[i].alive ? "" : JP_GONE);
         dlg_say(buf);
     }
     dlg_say("");
-    dlg_choice("CLOSE", 0);
+    dlg_choice(JP_CLOSE, 0);
 }
 
 static void dlg_open_tax(void)
@@ -394,11 +399,11 @@ static void dlg_open_tax(void)
     int i;
     dlg_close();
     dlg.what = DLG_TAX;
-    dlg_sayf("TAX RATE - NOW %d OF 256", game.side[0].rate, 0, 0);
+    dlg_sayf(JP_TAX_TITLE, game.side[0].rate, 0, 0);
     dlg_say("");
     for (i = 0; i < 6; i++) {
         char buf[DLG_TEXT];
-        snprintf(buf, sizeof buf, "%2d OF 256 PER SQUARE", rate[i]);
+        snprintf(buf, sizeof buf, JP_TAX_ITEM, rate[i]);
         dlg_choice(buf, rate[i]);
     }
 }
@@ -407,22 +412,22 @@ static void dlg_open_speed(void)
 {
     dlg_close();
     dlg.what = DLG_SPEED;
-    dlg_say("SPEED");
+    dlg_say(JP_SPEED_TITLE);
     dlg_say("");
-    dlg_choice("FAST", 0);
-    dlg_choice("NORMAL", 1);
-    dlg_choice("SLOW", 2);
+    dlg_choice(JP_FAST, 0);
+    dlg_choice(JP_NORMAL, 1);
+    dlg_choice(JP_SLOW, 2);
 }
 
 static void dlg_open_zoom(void)
 {
     dlg_close();
     dlg.what = DLG_ZOOM;
-    dlg_say("SQUARE SIZE");
+    dlg_say(JP_ZOOM_TITLE);
     dlg_say("");
-    dlg_choice("16 X 16", 16);
-    dlg_choice("32 X 32", 32);
-    dlg_choice("8 X 8   (WHOLE MAP)", 8);
+    dlg_choice(JP_ZOOM16, 16);
+    dlg_choice(JP_ZOOM32, 32);
+    dlg_choice(JP_ZOOM8, 8);
 }
 
 static void dlg_open_ally(void)
@@ -430,16 +435,20 @@ static void dlg_open_ally(void)
     int i;
     dlg_close();
     dlg.what = DLG_ALLY;
-    dlg_say("ALLIANCE");
+    dlg_say(JP_ALLY_TITLE);
     dlg_say("");
     for (i = 0; i < PLAYERS; i++) {
         char buf[DLG_TEXT];
         if (i == game.human || !game.side[i].alive) continue;
-        snprintf(buf, sizeof buf, "ALLY WITH COUNTRY %d%s", i,
-                 game.side[game.human].ally == i ? "   (NOW)" : "");
+        {
+            char head[DLG_TEXT];
+            snprintf(head, sizeof head, JP_ALLY_ITEM, i);
+            snprintf(buf, sizeof buf, "%s%s", head,
+                     game.side[game.human].ally == i ? JP_ALLY_NOW : "");
+        }
         dlg_choice(buf, i);
     }
-    dlg_choice("NO ALLIANCE", 0x80);
+    dlg_choice(JP_ALLY_NONE, 0x80);
 }
 
 /* The order menu, which is what sub_20f0 puts up once a destination has been
@@ -452,25 +461,25 @@ static void dlg_open_order(int cx, int cy)
     dlg_close();
     dlg.what = DLG_ORDER;
     dlg.value[0] = (cy << 8) | cx;              /* remembered in value[0] */
-    dlg_sayf("SQUARE %d,%d - TILE %02x", cx, cy, t);
+    dlg_sayf(JP_ORDER_TITLE, cx, cy, t);
     dlg_say("");
-    dlg_choice("WALK THERE", 2);
+    dlg_choice(JP_WALK, 2);
     if (t == CELL_ROCK || (t >= CELL_IMPASSABLE && t < CELL_WATER_END))
-        dlg_choice("BRIDGE IT  30 A DEPTH", UNIT_STATE_BRIDGE);
+        dlg_choice(JP_BRIDGE, UNIT_STATE_BRIDGE);
     if (t == CELL_WOOD) {
-        dlg_choice("CLEAR THE WOOD", UNIT_STATE_FELL);
-        dlg_choice("THICKEN THE WOOD", UNIT_STATE_PLANT);
+        dlg_choice(JP_FELL, UNIT_STATE_FELL);
+        dlg_choice(JP_THICKEN, UNIT_STATE_PLANT);
     }
     if (t == 0 || (t >= CELL_TERRITORY0 + 4 && t < CELL_TERRITORY0 + 8))
-        dlg_choice("PLANT A WOOD", UNIT_STATE_PLANT);
+        dlg_choice(JP_PLANT, UNIT_STATE_PLANT);
     if (t >= CELL_TERRITORY0 && t < CELL_TERRITORY0 + PLAYERS &&
         t - CELL_TERRITORY0 != mine)
-        dlg_choice("ATTACK THE GROUND", UNIT_STATE_PLANT);
+        dlg_choice(JP_ATTACK, UNIT_STATE_PLANT);
     if (t >= CELL_BRIDGE && t < CELL_BRIDGE_END)
-        dlg_choice("BREAK THE BRIDGE", UNIT_STATE_BREAK);
+        dlg_choice(JP_BREAK, UNIT_STATE_BREAK);
     if (t == CELL_NEST)
-        dlg_choice("PULL THE NEST DOWN", UNIT_STATE_NEST);
-    dlg_choice("NOTHING", 0);
+        dlg_choice(JP_NEST, UNIT_STATE_NEST);
+    dlg_choice(JP_NOTHING, 0);
 }
 
 /* Press one of the panel's fourteen.  The ones this port cannot do say so
@@ -845,6 +854,13 @@ int app_selected(void) { return selected; }
 /* Which dialog is up, 0 for none, so a headless run can see the same thing a
  * player sees.  The values are the DLG_* order: INFO TAX SPEED ZOOM ALLY
  * ORDER. */
+int app_japanese(void) { return fontRom.loaded; }
+
+int app_font_rom(const unsigned char *data, unsigned n)
+{
+    return gfx_font_rom(&fontRom, data, n);
+}
+
 int app_dialog(void) { return dlg.what; }
 int app_dialog_lines(void) { return dlg.lines; }
 const char *app_dialog_line(int i)
@@ -1051,8 +1067,8 @@ void app_render(void)
                     for (k = 0; k < DLG_W - 8; k++)
                         scr.px[(size_t)(ly + j) * SCR_W + DLG_X + 4 + k] = 9;
             }
-            gfx_text(&scr, &font, DLG_X + 8, ly, dlg.line[i],
-                     (unsigned char)(chosen ? 6 : 7));
+            gfx_text_sjis(&scr, &font, &fontRom, DLG_X + 8, ly, dlg.line[i],
+                          (unsigned char)(chosen ? 6 : 7));
         }
     }
 }

@@ -60,6 +60,12 @@ int app_selected(void);
  * answers goes into one of these rather than into the host's own furniture, the
  * way the original draws its windows on its own screen. */
 int app_dialog(void);
+
+/* A PC-98 font ROM, handed over by whoever is running this - it is the
+ * machine's, not the game's, so it is never shipped here.  With one the dialogs
+ * are in the original's own Japanese; without one they are in English. */
+int app_font_rom(const unsigned char *data, unsigned n);
+int app_japanese(void);
 int app_dialog_lines(void);
 const char *app_dialog_line(int i);
 int app_dialog_pick(void);

@@ -4,6 +4,123 @@
 #include <stdlib.h>
 #include <string.h>
 
+int gfx_font_rom(FontRom *f, const unsigned char *data, unsigned n)
+{
+    gfx_font_rom_free(f);
+    if (!data || n < 0x1800 + 32) return 0;
+    f->rom = (unsigned char *)malloc(n);
+    if (!f->rom) return 0;
+    memcpy(f->rom, data, n);
+    f->size = n;
+    f->loaded = 1;
+    return 1;
+}
+
+void gfx_font_rom_free(FontRom *f)
+{
+    free(f->rom);
+    f->rom = 0;
+    f->size = 0;
+    f->loaded = 0;
+}
+
+/* Shift-JIS to JIS, the usual two-step: undo the row pairing and the gap the
+ * second byte leaves around 0x7f. */
+static void sjis_to_jis(unsigned char hi, unsigned char lo,
+                        unsigned char *jhi, unsigned char *jlo)
+{
+    int c1 = hi, c2 = lo;
+
+    c1 -= c1 <= 0x9f ? 0x71 : 0xb1;
+    c1 = c1 * 2 + 1;
+    if (c2 > 0x7f) c2--;
+    if (c2 >= 0x9e) {
+        c2 -= 0x7d;
+        c1++;
+    } else {
+        c2 -= 0x1f;
+    }
+    *jhi = (unsigned char)c1;
+    *jlo = (unsigned char)c2;
+}
+
+static int is_sjis_lead(unsigned char c)
+{
+    return (c >= 0x81 && c <= 0x9f) || (c >= 0xe0 && c <= 0xef);
+}
+
+/* One 8-wide, 16-tall column of bits. */
+static void blit_column(Screen *s, const unsigned char *rows, int x, int y,
+                        unsigned char colour)
+{
+    int r, bit;
+    for (r = 0; r < 16; r++) {
+        int gy = y + r;
+        if (gy < 0 || gy >= SCR_H) continue;
+        for (bit = 0; bit < 8; bit++) {
+            int gx = x + bit;
+            if (gx < 0 || gx >= SCR_W) continue;
+            if (rows[r] & (0x80 >> bit))
+                s->px[(size_t)gy * SCR_W + gx] = colour;
+        }
+    }
+}
+
+void gfx_text_sjis(Screen *s, const Font *ank, const FontRom *rom,
+                   int x, int y, const char *text, unsigned char colour)
+{
+    const unsigned char *t = (const unsigned char *)text;
+    int i = 0;
+
+    while (t[i]) {
+        if (is_sjis_lead(t[i]) && t[i + 1]) {
+            unsigned char jhi, jlo;
+            unsigned long n, off;
+            if (!rom->loaded) {                 /* nothing to draw it with */
+                i += 2;
+                x += 16;
+                continue;
+            }
+            sjis_to_jis(t[i], t[i + 1], &jhi, &jlo);
+            n = (unsigned long)(jhi - 0x21) * 96 + (jlo - 0x21) + 1;
+            off = 0x1800 + n * 32;
+            if (off + 32 <= rom->size) {
+                blit_column(s, rom->rom + off, x, y, colour);
+                blit_column(s, rom->rom + off + 16, x + 8, y, colour);
+            }
+            i += 2;
+            x += 16;
+            continue;
+        }
+        if (rom->loaded) {
+            unsigned long off = 0x0800 + (unsigned long)t[i] * 16;
+            if (off + 16 <= rom->size)
+                blit_column(s, rom->rom + off, x, y, colour);
+        } else if (ank->loaded) {
+            blit_column(s, ank->glyph[t[i]], x, y, colour);
+        }
+        i++;
+        x += 8;
+    }
+}
+
+int gfx_text_sjis_width(const FontRom *rom, const char *text)
+{
+    const unsigned char *t = (const unsigned char *)text;
+    int i = 0, w = 0;
+    (void)rom;
+    while (t[i]) {
+        if (is_sjis_lead(t[i]) && t[i + 1]) {
+            w += 16;
+            i += 2;
+        } else {
+            w += 8;
+            i++;
+        }
+    }
+    return w;
+}
+
 int gfx_load_font(Font *f, Disk *d)
 {
     unsigned n = 0;

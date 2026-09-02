@@ -186,6 +186,29 @@ int main(int argc, char **argv)
         number = atoi(argv[3]);
         size = atoi(argv[4]);
         disk_close(d);
+        /* --fontrom PATH, or font.rom in the working directory: with one the
+         * dialogs come out in the original's own Japanese. */
+        {
+            const char *rp = "font.rom";
+            int i;
+            FILE *f;
+            for (i = 1; i + 1 < argc; i++)
+                if (!strcmp(argv[i], "--fontrom")) rp = argv[i + 1];
+            f = fopen(rp, "rb");
+            if (f) {
+                long n;
+                unsigned char *buf;
+                fseek(f, 0, SEEK_END);
+                n = ftell(f);
+                fseek(f, 0, SEEK_SET);
+                buf = (unsigned char *)malloc((size_t)n);
+                if (buf && fread(buf, 1, (size_t)n, f) == (size_t)n)
+                    printf("%s: %s\n", rp,
+                           app_font_rom(buf, (unsigned)n) ? "loaded" : "no use");
+                free(buf);
+                fclose(f);
+            }
+        }
         if (!app_init(argv[1])) {
             fprintf(stderr, "%s\n", app_status());
             return 1;

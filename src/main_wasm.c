@@ -53,6 +53,21 @@ void lm_click(int x, int y) { app_click(x, y); }
 EMSCRIPTEN_KEEPALIVE
 int lm_selected(void) { return app_selected(); }
 
+/* A font ROM handed over by the page.  The buffer lives here rather than being
+ * malloc'd from JS so that nothing but the lm_* functions has to be exported:
+ * the page writes into lm_font_rom_buffer() and then calls lm_font_rom() with
+ * how many bytes it wrote. */
+static unsigned char romBuf[0x50000];
+
+EMSCRIPTEN_KEEPALIVE unsigned char *lm_font_rom_buffer(void) { return romBuf; }
+EMSCRIPTEN_KEEPALIVE int lm_font_rom_capacity(void) { return (int)sizeof romBuf; }
+EMSCRIPTEN_KEEPALIVE int lm_font_rom(int n)
+{
+    if (n <= 0 || (unsigned)n > sizeof romBuf) return 0;
+    return app_font_rom(romBuf, (unsigned)n);
+}
+EMSCRIPTEN_KEEPALIVE int lm_japanese(void) { return app_japanese(); }
+
 EMSCRIPTEN_KEEPALIVE int lm_dialog(void) { return app_dialog(); }
 EMSCRIPTEN_KEEPALIVE int lm_dialog_lines(void) { return app_dialog_lines(); }
 EMSCRIPTEN_KEEPALIVE int lm_dialog_pick(void) { return app_dialog_pick(); }
