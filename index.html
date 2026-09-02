@@ -134,10 +134,10 @@
 <!-- BUILD is bumped by "make wasm".  Without it a browser will happily hold
      on to a monarch.js from an earlier build and then fail on whichever
      function was added since - which is exactly what happened once. -->
-<script src="monarch.js?v=749e854e"></script>
+<script src="monarch.js?v=ab3ed6d7"></script>
 <script>
   // Stamped by tools/stamp.py from the wasm's own hash.
-  window.LM_BUILD = '749e854e';
+  window.LM_BUILD = 'ab3ed6d7';
 
 (function () {
   'use strict';
@@ -186,6 +186,7 @@
       }
       dirty = false;
     }
+    bgmSync();
     requestAnimationFrame(frame);
   }
 
@@ -262,8 +263,8 @@
   //
   // The point of having them at all is that a refusal now sounds different from
   // something this port has not implemented, which you otherwise cannot tell
-  // apart.  These are short synthesised tones, not the original's music - the
-  // disk's FM001..FM025.DAT still wait for an OPN to play them.
+  // apart.  The music is the disk's own FM00n.DAT, played by the OPN in
+  // src/opn.c - see the bgm* functions below.
   var audio = null, muted = false, lastSound = '';
 
   // A browser will only let an AudioContext run if it was created or resumed
@@ -353,6 +354,66 @@
     showAudioState();
   }
 
+  // The music.  The wasm side renders a few thousand samples at a time rather
+  // than a whole song, because the ending's FM006 is three and a half minutes
+  // long; a ScriptProcessorNode pulls from it.  That node is deprecated and an
+  // AudioWorklet would be tidier, but a worklet runs in its own scope and
+  // cannot reach into the wasm heap without shipping the module twice.
+  var bgm = { node: null, gain: null, playing: 0, want: 0 };
+
+  function bgmStop() {
+    if (bgm.node) { try { bgm.node.disconnect(); } catch (e) {} }
+    if (bgm.gain) { try { bgm.gain.disconnect(); } catch (e) {} }
+    bgm.node = bgm.gain = null;
+    bgm.playing = 0;
+  }
+
+  function bgmStart(n) {
+    var ac = audioReady();
+    if (!ac || !mod || !n) return;
+    if (!ac.createScriptProcessor) return;
+    if (!mod._lm_song_start(n, ac.sampleRate | 0)) return;
+    bgmStop();
+    bgm.playing = n;
+    bgm.gain = ac.createGain();
+    bgm.gain.gain.value = 0.35;          // under the effects, as on the chip
+    bgm.node = ac.createScriptProcessor(4096, 0, 1);
+    bgm.node.onaudioprocess = function (ev) {
+      var out = ev.outputBuffer.getChannelData(0);
+      var frames = out.length, at = 0;
+
+      while (at < frames) {
+        var made = mod._lm_song_fill(frames - at);
+        if (made <= 0) {
+          // The song ran out: start it again, which is what the driver does.
+          if (!mod._lm_song_start(bgm.playing, ac.sampleRate | 0)) {
+            while (at < frames) out[at++] = 0;
+            break;
+          }
+          made = mod._lm_song_fill(frames - at);
+          if (made <= 0) { while (at < frames) out[at++] = 0; break; }
+        }
+        var src = new Int16Array(mod.HEAPU8.buffer, mod._lm_song_pcm(), made);
+        for (var i = 0; i < made; i++) out[at + i] = src[i] / 32768;
+        at += made;
+      }
+    };
+    bgm.node.connect(bgm.gain);
+    bgm.gain.connect(ac.destination);
+  }
+
+  // Called every frame: the screen decides which song it wants, so changing
+  // screens changes the music without anything here having to know why.
+  function bgmSync() {
+    if (!mod) return;
+    if (muted) { if (bgm.playing) bgmStop(); return; }
+    if (!audio || audio.state !== 'running') return;
+    var n = mod._lm_song_wanted();
+    if (n === bgm.playing) return;
+    if (!n) { bgmStop(); return; }
+    bgmStart(n);
+  }
+
   // The dialog lines are the game's own bytes, which with a font ROM loaded are
   // Shift-JIS rather than ASCII, so they are decoded rather than read as UTF-8.
   var sjis = window.TextDecoder ? new TextDecoder('shift_jis') : null;
@@ -369,6 +430,7 @@
   if (muteBtn) {
     muteBtn.addEventListener('click', function () {
       muted = !muted;
+      if (muted) bgmStop();
       if (muted && audio) { audio.close(); audio = null; }
       muteBtn.textContent = muted ? '音を出す' : '音を止める';
       if (!muted) audioKick();

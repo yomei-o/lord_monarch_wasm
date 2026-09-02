@@ -42,6 +42,9 @@
 #ifndef SOUND_H
 #define SOUND_H
 
+#include "ssg.h"
+#include "opn.h"
+
 /* The chromatic table at DS:0x244d, and the octave in bits 3..5 of the high
  * byte, which is where the YM2203 wants its block.  At block 4 it comes out as
  * concert pitch to two decimal places, so the reading is not in doubt. */
@@ -177,6 +180,35 @@ int snd_song_track(const unsigned char *song, unsigned songSize, int track,
  * algorithm sub_1488 needs.
  *
  * So playing these songs properly needs a four-operator OPN core. */
+/* A song in progress.
+ *
+ * snd_render_song renders one whole song in a single call, which is all a
+ * WAV needs; a machine that is playing has to hand the sound card a few
+ * hundred samples at a time and come back for more.  Both go through this.
+ *
+ * `progDat` and `song` are borrowed, not copied - they have to outlive the
+ * SndSong.  Nothing here allocates. */
+typedef struct {
+    const unsigned char *progDat, *song, *periods, *fnums;
+    unsigned progDatSize, songSize;
+    unsigned char env[256];     /* writable: command 0xf9 fills it in */
+    SndVoice v[6];
+    int live[6], algo[3], fmTl[3];
+    Ssg chip;
+    Opn opn;
+    int mixer, sampleRate, perTick;
+    int pending;                /* samples still owed from the current tick */
+    int done;
+} SndSong;
+
+/* Returns 0 if the song has no tracks this can play. */
+int snd_song_open(SndSong *s, const unsigned char *progDat, unsigned progDatSize,
+                  const unsigned char *song, unsigned songSize, int sampleRate);
+
+/* Up to `samples` more, written (not added) to `out`.  Returns how many it
+ * made; 0 means the song has finished. */
+int snd_song_fill(SndSong *s, short *out, int samples);
+
 int snd_render_song(const unsigned char *progDat, unsigned progDatSize,
                     const unsigned char *song, unsigned songSize,
                     short *out, int maxSamples, int sampleRate);

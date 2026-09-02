@@ -42,6 +42,40 @@ function elem(id) {
   };
 }
 
+// Enough of an AudioContext for the page's own audio path to run.  Without
+// one, audioKick() gives up and the music is never asked for at all - which
+// is how a check can pass while the thing it is meant to cover does nothing.
+const processors = [];
+function FakeAudio() {
+  const nul = {connect() {}, disconnect() {}};
+  return {
+    state: 'running',
+    sampleRate: 48000,
+    currentTime: 0,
+    destination: nul,
+    resume() { this.state = 'running'; },
+    close() {},
+    createGain: () => ({
+      gain: {value: 1, setValueAtTime() {}, linearRampToValueAtTime() {}},
+      connect() {}, disconnect() {},
+    }),
+    createOscillator: () => ({
+      type: '', frequency: {value: 0},
+      connect() {}, start() {}, stop() {},
+    }),
+    createBuffer: (ch, len) => ({
+      length: len, getChannelData: () => new Float32Array(len),
+    }),
+    createBufferSource: () => ({buffer: null, connect() {}, start() {}}),
+    createScriptProcessor: (n) => {
+      const node = {bufferSize: n, onaudioprocess: null,
+                    connect() {}, disconnect() {}};
+      processors.push(node);
+      return node;
+    },
+  };
+}
+
 const els = {screen: elem('screen'), status: elem('status')};
 const raf = [];
 const sandbox = {
@@ -65,6 +99,7 @@ const sandbox = {
     addEventListener: (t, f) => { (handlers['window:' + t] ||= []).push(f); },
     focus: () => {},
     TextDecoder,
+    AudioContext: FakeAudio,
   },
 };
 sandbox.window.document = sandbox.document;
@@ -183,6 +218,35 @@ setTimeout(() => {
   pump(2);
   check(/back to the map/.test(els.status.textContent),
         'cancel came back to the map');
+
+  // The music.  Everything above has already pressed keys, so the page's
+  // AudioContext is awake and bgmSync has had frames to run in.
+  {
+    pump(4);
+    check(processors.length > 0,
+          `the page opened ${processors.length} audio node(s) for the music`);
+    const node = processors[processors.length - 1];
+    check(node && typeof node.onaudioprocess === 'function',
+          'and gave it something to pull samples from');
+    if (node && node.onaudioprocess) {
+      const out = new Float32Array(node.bufferSize);
+      let loud = 0, peak = 0;
+
+      // Several buffers: the first tick of a song can legitimately be silent.
+      for (let k = 0; k < 8; k++) {
+        out.fill(0);
+        node.onaudioprocess({outputBuffer: {getChannelData: () => out}});
+        for (let i = 0; i < out.length; i++) {
+          const v = Math.abs(out[i]);
+          if (v > 1e-4) loud++;
+          if (v > peak) peak = v;
+        }
+      }
+      check(loud > node.bufferSize,
+            `it produced ${loud} sounding samples, peak ${peak.toFixed(3)}`);
+      check(peak <= 1.0, 'and nothing clipped past full scale');
+    }
+  }
 
   const buttonsWired = (handlers['button0:click'] || []).length > 0;
   check(buttonsWired, 'the on-screen buttons are wired up');

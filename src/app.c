@@ -1237,6 +1237,48 @@ int app_effect_pcm(int id, short *out, int maxSamples, int rate)
     return snd_render_effect(progDat, progDatSize, id, out, maxSamples, rate);
 }
 
+/* See app.h. */
+static SndSong song;
+static unsigned char *songData;
+static int songOn;
+
+int app_song_wanted(void)
+{
+    if (mode == APP_MODE_TITLE) return 4;       /* 0x00fe */
+    if (mode == APP_MODE_MAP) {                 /* 0x1945 */
+        int set = map.terrain / 10;
+
+        if (set < 1) return 0;
+        return 16 + 2 * (set - 1);
+    }
+    return 0;
+}
+
+int app_song_start(int number, int rate)
+{
+    char name[32];
+    unsigned n = 0;
+
+    songOn = 0;
+    free(songData);
+    songData = 0;
+    if (!disk || !progDat || number <= 0) return 0;
+    snprintf(name, sizeof name, "FM%03d.DAT", number);
+    songData = disk_read_bz(disk, name, &n);
+    if (!songData) return 0;
+    songOn = snd_song_open(&song, progDat, progDatSize, songData, n, rate);
+    if (!songOn) { free(songData); songData = 0; }
+    return songOn;
+}
+
+int app_song_fill(short *out, int frames)
+{
+    if (!songOn) return 0;
+    return snd_song_fill(&song, out, frames);
+}
+
+int app_song_playing(void) { return songOn; }
+
 int app_japanese(void) { return fontRom.loaded; }
 
 int app_font_rom(const unsigned char *data, unsigned n)

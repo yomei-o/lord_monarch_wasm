@@ -93,6 +93,23 @@ int app_running(void);
 /* Renders one of the game's own sound effects.  Returns the sample count. */
 int app_effect_pcm(int id, short *out, int maxSamples, int rate);
 
+/* The music.
+ *
+ * Which song a screen wants is the game's own choice, not this port's: the
+ * boot at 0x00fe puts 4 in [0x3bc6], and 0x1945 works a map's out as
+ * 16 + 2 * (terrain / 10 - 1) - so the ten songs FM016..FM025 are five
+ * terrains with a pair each, and 0x1979 sets the low bit to pick the second
+ * of a pair.  0xca59 uses 6 for the ending.
+ *
+ * app_song_start loads one and app_song_fill hands out as much of it as is
+ * asked for, so a host can keep a small buffer going rather than holding a
+ * whole song in memory.  Filling past the end returns short: that is where a
+ * caller loops by starting it again. */
+int app_song_wanted(void);
+int app_song_start(int number, int rate);
+int app_song_fill(short *out, int frames);
+int app_song_playing(void);
+
 void app_sound(int idAndPriority);
 
 /* Takes the pending request and clears it, or 0 when there is none. */

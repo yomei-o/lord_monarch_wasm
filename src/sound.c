@@ -550,89 +550,95 @@ static void fm_load_voice(Opn *opn, const unsigned char *song, unsigned songSize
     *algorithmOut = song[at + 24] & 7;
 }
 
-int snd_render_song(const unsigned char *progDat, unsigned progDatSize,
-                    const unsigned char *song, unsigned songSize,
-                    short *out, int maxSamples, int sampleRate)
+int snd_song_open(SndSong *s, const unsigned char *progDat,
+                  unsigned progDatSize, const unsigned char *song,
+                  unsigned songSize, int sampleRate)
 {
-    const unsigned char *periods, *fnums;
-    unsigned char env[256];         /* writable: command 0xf9 fills it in */
-    SndVoice v[6];
-    int live[6], algo[3], fmTl[3];
-    Ssg chip;
-    Opn opn;
-    int made = 0, ch, mixer;
-    int perTick = sampleRate / SND_TICK_HZ;
+    int ch;
 
+    memset(s, 0, sizeof *s);
     if (progDatSize < (unsigned)(SSG_PERIOD_AT - 0x1000) + 32) return 0;
     if (progDatSize < (unsigned)(SND_ENV_AT - 0x1000) + 256) return 0;
     if (progDatSize < (unsigned)(SND_FNUM_AT - 0x1000) + 32) return 0;
-    periods = progDat + (SSG_PERIOD_AT - 0x1000);
-    fnums = progDat + (SND_FNUM_AT - 0x1000);
-    memcpy(env, progDat + (SND_ENV_AT - 0x1000), sizeof env);
+    if (sampleRate < 4000) return 0;
+    s->progDat = progDat;
+    s->progDatSize = progDatSize;
+    s->song = song;
+    s->songSize = songSize;
+    s->sampleRate = sampleRate;
+    s->perTick = sampleRate / SND_TICK_HZ;
+    s->periods = progDat + (SSG_PERIOD_AT - 0x1000);
+    s->fnums = progDat + (SND_FNUM_AT - 0x1000);
+    memcpy(s->env, progDat + (SND_ENV_AT - 0x1000), sizeof s->env);
 
     for (ch = 0; ch < 6; ch++) {
         unsigned off = 0, len = 0;
 
-        live[ch] = snd_song_track(song, songSize, ch, &off, &len) &&
-                   snd_start_bytes(&v[ch], song + off, (int)len);
-        v[ch].chan = ch % 3;
-        v[ch].envRam = env;
-        v[ch].fm = ch < 3;
+        s->live[ch] = snd_song_track(song, songSize, ch, &off, &len) &&
+                      snd_start_bytes(&s->v[ch], song + off, (int)len);
+        s->v[ch].chan = ch % 3;
+        s->v[ch].envRam = s->env;
+        s->v[ch].fm = ch < 3;
         if (ch < 3 && progDatSize > (unsigned)(FM_VOL_AT - 0x1000) + 32)
-            v[ch].fmVol = progDat + (FM_VOL_AT - 0x1000);
+            s->v[ch].fmVol = progDat + (FM_VOL_AT - 0x1000);
     }
-    for (ch = 0; ch < 3; ch++) { algo[ch] = 0; fmTl[ch] = -1; }
-    if (!live[0] && !live[1] && !live[2] && !live[3] && !live[4] && !live[5])
+    for (ch = 0; ch < 3; ch++) { s->algo[ch] = 0; s->fmTl[ch] = -1; }
+    if (!s->live[0] && !s->live[1] && !s->live[2] &&
+        !s->live[3] && !s->live[4] && !s->live[5])
         return 0;
 
-    ssg_reset(&chip);
-    mixer = 0x3f;
-    ssg_write(&chip, 7, mixer);
-    opn_reset(&opn, (double)SND_CLOCK);
+    ssg_reset(&s->chip);
+    s->mixer = 0x3f;
+    ssg_write(&s->chip, 7, s->mixer);
+    opn_reset(&s->opn, (double)SND_CLOCK);
+    return 1;
+}
 
-    for (;;) {
-        int any = 0, room;
+/* One tick of the driver.  Returns 0 when every part has finished. */
+static int song_tick(SndSong *s)
+{
+    int any = 0, ch;
 
         /* The three FM parts. */
         for (ch = 0; ch < 3; ch++) {
             int keyed = 0;
 
-            if (!live[ch]) continue;
-            if (!snd_tick(&v[ch], &keyed)) {
-                live[ch] = 0;
-                opn_write(&opn, 0x28, ch);           /* key off */
+            if (!s->live[ch]) continue;
+            if (!snd_tick(&s->v[ch], &keyed)) {
+                s->live[ch] = 0;
+                opn_write(&s->opn, 0x28, ch);           /* key off */
                 continue;
             }
             any = 1;
-            if (v[ch].voiceWanted) {
-                fm_load_voice(&opn, song, songSize, ch, v[ch].timbre, &algo[ch]);
-                v[ch].voiceWanted = 0;
-                fmTl[ch] = 0xff;                     /* 0x147c: [si+0x1d]=0xff */
+            if (s->v[ch].voiceWanted) {
+                fm_load_voice(&s->opn, s->song, s->songSize, ch, s->v[ch].timbre, &s->algo[ch]);
+                s->v[ch].voiceWanted = 0;
+                s->fmTl[ch] = 0xff;                     /* 0x147c: [si+0x1d]=0xff */
             }
             /* Every tick, not only at key-on: see fm_write_tl. */
-            fm_write_tl(&opn, progDat, progDatSize, ch, algo[ch],
-                        v[ch].volume, &fmTl[ch]);
+            fm_write_tl(&s->opn, s->progDat, s->progDatSize, ch, s->algo[ch],
+                        s->v[ch].volume, &s->fmTl[ch]);
             /* 0x0e75: a note that is not tied lets go [si+9] ticks early, so
              * the voice's own release has somewhere to ring. */
-            if (!v[ch].tie && v[ch].tieAt && v[ch].waitWas == v[ch].tieAt)
-                opn_write(&opn, 0x28, ch);
-            if (v[ch].restEvent) {
-                opn_write(&opn, 0x28, ch);           /* 0x0ece */
-            } else if (v[ch].noteEvent) {
+            if (!s->v[ch].tie && s->v[ch].tieAt && s->v[ch].waitWas == s->v[ch].tieAt)
+                opn_write(&s->opn, 0x28, ch);
+            if (s->v[ch].restEvent) {
+                opn_write(&s->opn, 0x28, ch);           /* 0x0ece */
+            } else if (s->v[ch].noteEvent) {
                 /* 0x0e89: the note that just ended lets go only if it was not
                  * tied - and then 0x0ea9 keys on either way.  Writing 0x28
-                 * with the bits already set is what a legato is on this chip:
+                 * with the bits already set is what a legato is on this s->chip:
                  * the envelope only restarts on a nought-to-one edge, so
                  * keying off first, which is what this used to do whenever a
                  * tied note changed pitch, re-attacked every slur. */
-                if (!v[ch].prevTie) opn_write(&opn, 0x28, ch);
-                if (v[ch].pitchNew) {
-                    unsigned short f = snd_fnumber(fnums, v[ch].note, 0);
+                if (!s->v[ch].prevTie) opn_write(&s->opn, 0x28, ch);
+                if (s->v[ch].pitchNew) {
+                    unsigned short f = snd_fnumber(s->fnums, s->v[ch].note, 0);
 
-                    opn_write(&opn, 0xa4 + ch, f >> 8);
-                    opn_write(&opn, 0xa0 + ch, f & 0xff);
+                    opn_write(&s->opn, 0xa4 + ch, f >> 8);
+                    opn_write(&s->opn, 0xa0 + ch, f & 0xff);
                 }
-                opn_write(&opn, 0x28, 0xf0 | ch);
+                opn_write(&s->opn, 0x28, 0xf0 | ch);
             }
         }
 
@@ -640,56 +646,90 @@ int snd_render_song(const unsigned char *progDat, unsigned progDatSize,
         for (ch = 3; ch < 6; ch++) {
             int c = ch - 3, keyed = 0, level;
 
-            if (!live[ch]) continue;
-            if (!snd_tick(&v[ch], &keyed)) {
-                snd_env_release(&v[ch], env);
-                if (v[ch].spent) {
-                    live[ch] = 0;
-                    ssg_write(&chip, 8 + c, 0);
-                    mixer |= (1 << c) | (8 << c);
-                    ssg_write(&chip, 7, mixer);
+            if (!s->live[ch]) continue;
+            if (!snd_tick(&s->v[ch], &keyed)) {
+                snd_env_release(&s->v[ch], s->env);
+                if (s->v[ch].spent) {
+                    s->live[ch] = 0;
+                    ssg_write(&s->chip, 8 + c, 0);
+                    s->mixer |= (1 << c) | (8 << c);
+                    ssg_write(&s->chip, 7, s->mixer);
                 }
             } else {
                 any = 1;
-                if (v[ch].chipPending) {
-                    int r = v[ch].chipReg & 0x0f;
+                if (s->v[ch].chipPending) {
+                    int r = s->v[ch].chipReg & 0x0f;
 
-                    if (r == 7) mixer = v[ch].chipVal;
-                    ssg_write(&chip, r, v[ch].chipVal);
-                    v[ch].chipPending = 0;
+                    if (r == 7) s->mixer = s->v[ch].chipVal;
+                    ssg_write(&s->chip, r, s->v[ch].chipVal);
+                    s->v[ch].chipPending = 0;
                 }
                 if (keyed) {
-                    int p = ssg_period(periods, v[ch].note, 0);
-                    int a4 = v[ch].algo;
+                    int p = ssg_period(s->periods, s->v[ch].note, 0);
+                    int a4 = s->v[ch].algo;
 
-                    ssg_write(&chip, c * 2, p & 0xff);
-                    ssg_write(&chip, c * 2 + 1, (p >> 8) & 0x0f);
+                    ssg_write(&s->chip, c * 2, p & 0xff);
+                    ssg_write(&s->chip, c * 2 + 1, (p >> 8) & 0x0f);
                     /* sub_10ee: [si+4] is this channel's half of register 7.
                      * Bit 7 is tone only - and skips the noise period - bit 6
                      * is noise only, and the low bits are the noise period. */
-                    if (!(a4 & 0x80)) ssg_write(&chip, 6, a4 & 0x1f);
-                    mixer &= ~((1 << c) | (8 << c));
-                    if (a4 & 0x40) mixer |= 1 << c;
-                    if (a4 & 0x80) mixer |= 8 << c;
-                    ssg_write(&chip, 7, mixer);
-                    snd_env_key(&v[ch], env);
+                    if (!(a4 & 0x80)) ssg_write(&s->chip, 6, a4 & 0x1f);
+                    s->mixer &= ~((1 << c) | (8 << c));
+                    if (a4 & 0x40) s->mixer |= 1 << c;
+                    if (a4 & 0x80) s->mixer |= 8 << c;
+                    ssg_write(&s->chip, 7, s->mixer);
+                    snd_env_key(&s->v[ch], s->env);
                 }
-                if (v[ch].keyed && v[ch].tie &&
-                    v[ch].wait <= v[ch].tieAt + 1 && !(v[ch].stage & 8))
-                    snd_env_release(&v[ch], env);
+                if (s->v[ch].keyed && s->v[ch].tie &&
+                    s->v[ch].wait <= s->v[ch].tieAt + 1 && !(s->v[ch].stage & 8))
+                    snd_env_release(&s->v[ch], s->env);
             }
-            level = v[ch].keyed ? snd_env_step(&v[ch], env) : 0;
-            level = (level * (v[ch].volume + 1)) >> 8;
-            ssg_write(&chip, 8 + c, level > 15 ? 15 : level);
+            level = s->v[ch].keyed ? snd_env_step(&s->v[ch], s->env) : 0;
+            level = (level * (s->v[ch].volume + 1)) >> 8;
+            ssg_write(&s->chip, 8 + c, level > 15 ? 15 : level);
         }
+    return any;
+}
 
-        if (!any) break;
-        room = maxSamples - made;
-        if (room > perTick) room = perTick;
-        if (room <= 0) break;
-        ssg_render(&chip, out + made, room, sampleRate);
-        opn_render(&opn, out + made, room, sampleRate);
+int snd_song_fill(SndSong *s, short *out, int samples)
+{
+    int made = 0;
+
+    while (made < samples) {
+        int room;
+
+        if (s->pending <= 0) {
+            if (s->done) break;
+            if (!song_tick(s)) { s->done = 1; break; }
+            s->pending = s->perTick;
+            if (s->pending <= 0) { s->done = 1; break; }
+        }
+        room = samples - made;
+        if (room > s->pending) room = s->pending;
+        /* The SSG writes and the FM adds on top, which is the order the chip
+         * has them in. */
+        ssg_render(&s->chip, out + made, room, s->sampleRate);
+        opn_render(&s->opn, out + made, room, s->sampleRate);
         made += room;
+        s->pending -= room;
+    }
+    return made;
+}
+
+int snd_render_song(const unsigned char *progDat, unsigned progDatSize,
+                    const unsigned char *song, unsigned songSize,
+                    short *out, int maxSamples, int sampleRate)
+{
+    static SndSong s;           /* a kilobyte or so; not worth the stack */
+    int made = 0;
+
+    if (!snd_song_open(&s, progDat, progDatSize, song, songSize, sampleRate))
+        return 0;
+    while (made < maxSamples) {
+        int n = snd_song_fill(&s, out + made, maxSamples - made);
+
+        if (n <= 0) break;
+        made += n;
     }
     return made;
 }

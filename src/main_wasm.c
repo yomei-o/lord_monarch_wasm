@@ -72,10 +72,14 @@ EMSCRIPTEN_KEEPALIVE int lm_japanese(void) { return app_japanese(); }
 EMSCRIPTEN_KEEPALIVE int lm_sound(void) { return app_sound_take(); }
 EMSCRIPTEN_KEEPALIVE int lm_running(void) { return app_running(); }
 
-/* The game's own effects, rendered to samples for the page to play.  These are
- * the SSG's - the driver never programs an FM voice on this disk, so nothing
- * else is sounding.  The buffer is here rather than malloc'd so that only the
- * lm_* names need exporting. */
+/* The game's own effects, rendered to samples for the page to play.  The
+ * buffer is here rather than malloc'd so that only the lm_* names need
+ * exporting.
+ *
+ * ("the driver never programs an FM voice on this disk" used to stand here.
+ * It was wrong: the FM handlers sit behind an indirect jump that the flow
+ * disassembler never reached.  Effects really are SSG-only, but the songs are
+ * not - see lm_song below.) */
 #define LM_PCM_MAX 48000
 static short pcmBuf[LM_PCM_MAX];
 static int pcmLen;
@@ -86,6 +90,32 @@ EMSCRIPTEN_KEEPALIVE int lm_effect(int id, int rate)
     return pcmLen;
 }
 EMSCRIPTEN_KEEPALIVE short *lm_effect_pcm(void) { return pcmBuf; }
+
+/* The music.  The page keeps a small buffer going rather than holding a whole
+ * song: FM006, which the ending plays, is three and a half minutes long.
+ *
+ *   lm_song_wanted   which song this screen calls for, or 0 for none
+ *   lm_song_start    load it and begin
+ *   lm_song_fill     up to LM_SONG_MAX more samples; short means it ended,
+ *                    and starting it again is how it loops
+ */
+#define LM_SONG_MAX 8192
+static short songBuf[LM_SONG_MAX];
+
+EMSCRIPTEN_KEEPALIVE int lm_song_wanted(void) { return app_song_wanted(); }
+EMSCRIPTEN_KEEPALIVE int lm_song_start(int number, int rate)
+{
+    return app_song_start(number, rate);
+}
+EMSCRIPTEN_KEEPALIVE int lm_song_fill(int frames)
+{
+    if (frames > LM_SONG_MAX) frames = LM_SONG_MAX;
+    if (frames < 0) frames = 0;
+    memset(songBuf, 0, (size_t)frames * sizeof *songBuf);
+    return app_song_fill(songBuf, frames);
+}
+EMSCRIPTEN_KEEPALIVE short *lm_song_pcm(void) { return songBuf; }
+EMSCRIPTEN_KEEPALIVE int lm_song_max(void) { return LM_SONG_MAX; }
 
 EMSCRIPTEN_KEEPALIVE int lm_dialog(void) { return app_dialog(); }
 EMSCRIPTEN_KEEPALIVE int lm_dialog_lines(void) { return app_dialog_lines(); }
