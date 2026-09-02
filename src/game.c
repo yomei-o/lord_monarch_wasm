@@ -174,3 +174,123 @@ int game_unit_count(const Game *g, int side)
             (side < 0 || g->unit[i].side == side)) n++;
     return n;
 }
+
+/* ------------------------------------------------------------------ paths */
+
+/* The flood fill at 0xc050 is a scanline fill that writes a distance one
+ * greater than its neighbour's and stops where a cell already holds something
+ * smaller.  For a uniform cost that is a breadth-first search, so this is one -
+ * the distances come out the same and the code says what it means.
+ *
+ * The source cell gets 1, which is why the builder does `dec ax` on the target
+ * to get the number of steps and stops descending when it reaches 1.
+ */
+#define DIST_WALL 0xffffu
+#define DIST_OPEN 0u
+
+static unsigned short *fill_distances(Game *g, int from)
+{
+    static unsigned short dist[MAP_W * MAP_H];
+    static int queue[MAP_W * MAP_H];
+    int head = 0, tail = 0, i;
+
+    for (i = 0; i < MAP_W * MAP_H; i++)
+        dist[i] = g->cell[i].tile >= CELL_IMPASSABLE ? DIST_WALL : DIST_OPEN;
+    dist[from] = 1;
+    queue[tail++] = from;
+    while (head < tail) {
+        int c = queue[head++];
+        int x = c % MAP_W, y = c / MAP_W, k;
+        static const int dx[4] = {0, 1, 0, -1};
+        static const int dy[4] = {1, 0, -1, 0};
+        for (k = 0; k < 4; k++) {
+            int nx = x + dx[k], ny = y + dy[k], n;
+            if (nx < MAP_MIN || nx > MAP_MAX || ny < MAP_MIN || ny > MAP_MAX)
+                continue;
+            n = ny * MAP_W + nx;
+            if (dist[n] != DIST_OPEN) continue;      /* wall, or already seen */
+            dist[n] = (unsigned short)(dist[c] + 1);
+            queue[tail++] = n;
+        }
+    }
+    return dist;
+}
+
+static void put_step(Path *p, int index, int code)
+{
+    int byte = index >> 2, shift = (index & 3) * 2;
+    p->step[byte] = (unsigned char)((p->step[byte] & ~(3 << shift)) |
+                                    ((code & 3) << shift));
+}
+
+static int get_step(const Path *p, int index)
+{
+    return (p->step[index >> 2] >> ((index & 3) * 2)) & 3;
+}
+
+int game_path_to(Game *g, int slot, int x, int y)
+{
+    Unit *u = &g->unit[slot];
+    Path *p = &g->path[slot];
+    unsigned short *dist;
+    int from = game_cell_index(u->pos & 0xff, u->pos >> 8);
+    int to = game_cell_index(x, y);
+    int len, at, i;
+
+    u->link = 0xff;
+    if (x < MAP_MIN || x > MAP_MAX || y < MAP_MIN || y > MAP_MAX) return 0;
+    dist = fill_distances(g, from);
+    if (dist[to] == DIST_WALL || dist[to] == DIST_OPEN) return 0;
+    len = dist[to] - 1;                         /* 0xc0e9: dec ax */
+    if (len <= 0 || len >= PATH_STEPS) return 0;   /* 0xc0ef: cmp ax,0x1f0 */
+
+    memset(p->step, 0, sizeof p->step);
+    p->len = (unsigned short)len;
+    p->cursor = 0;
+
+    /* Walk back from the target, always to the smaller neighbour, writing the
+     * steps from the end so that reading forwards starts at the source. */
+    at = to;
+    for (i = len - 1; i >= 0; i--) {
+        static const int off[4] = {MAP_W, 1, -MAP_W, -1};   /* below, right, above, left */
+        int best = -1, bestCode = 0, k;
+        for (k = 0; k < 4; k++) {
+            int n = at + off[k];
+            int nx = n % MAP_W, ny = n / MAP_W;
+            if (n < 0 || n >= MAP_W * MAP_H) continue;
+            if (nx < MAP_MIN || nx > MAP_MAX || ny < MAP_MIN || ny > MAP_MAX)
+                continue;
+            if (dist[n] == DIST_WALL || dist[n] == DIST_OPEN) continue;
+            if (best < 0 || dist[n] < (unsigned short)best) {
+                best = dist[n];
+                bestCode = k;
+            }
+        }
+        if (best < 0) return 0;
+        put_step(p, i, bestCode);
+        at += off[bestCode];
+    }
+    u->link = (unsigned char)slot;
+    return len;
+}
+
+int game_path_dir(const Game *g, int slot)
+{
+    const Unit *u = &g->unit[slot];
+    const Path *p = &g->path[slot];
+
+    if (u->link == 0xff || p->cursor >= p->len) return -1;
+    /* sub_c291: the two-bit code doubled, which lands on up / left / down /
+     * right in the eight-direction table. */
+    return get_step(p, p->cursor) * 2;
+}
+
+void game_path_advance(Game *g, int slot)
+{
+    Unit *u = &g->unit[slot];
+    Path *p = &g->path[slot];
+
+    if (u->link == 0xff) return;
+    p->cursor++;
+    if (p->cursor >= p->len) u->link = 0xff;     /* 0xc2df */
+}

@@ -199,6 +199,52 @@ int main(int argc, char **argv)
         check(dy == game_unit_count(g, -1), "the unit count agrees with itself");
     }
 
+    /* Pathfinding: walk a unit somewhere and see that it arrives. */
+    {
+        Map m;
+        int who, len, steps, tx, ty, guard;
+        gfx_load_map(&m, d, "B_000.MAP");
+        game_init(g, &m);
+        who = g->occupant[game_cell_index(7, 8)];
+        check(who >= 0, "there is a unit on 7,8 to walk");
+
+        /* Somewhere reachable and a fair distance off. */
+        tx = 20; ty = 20;
+        len = game_path_to(g, who, tx, ty);
+        checkf(len > 0, "no path from 7,8 to 20,20 (%d)", len, 0, 0);
+        check(g->unit[who].link == who, "the unit points at its own path");
+
+        steps = 0;
+        guard = 0;
+        while (game_path_dir(g, who) >= 0 && guard++ < 4000) {
+            int dir = game_path_dir(g, who);
+            if (game_move(g, who, dir)) {
+                game_path_advance(g, who);
+                steps++;
+            }
+            /* turning does not consume a step, so the loop just goes round */
+        }
+        checkf(steps == len, "walked %d steps of a %d step path", steps, len, 0);
+        checkf((g->unit[who].pos & 0xff) == tx &&
+               (g->unit[who].pos >> 8) == ty,
+               "ended at %d,%d instead of 20,20",
+               g->unit[who].pos & 0xff, g->unit[who].pos >> 8, 0);
+        check(g->occupant[game_cell_index(tx, ty)] == who,
+              "and the occupancy array agrees");
+
+        /* Water has no route across it. */
+        for (tx = 0; tx < MAP_W; tx++) {
+            for (ty = 0; ty < MAP_H; ty++)
+                if (g->cell[game_cell_index(tx, ty)].tile >= CELL_IMPASSABLE)
+                    break;
+            if (ty < MAP_H) break;
+        }
+        check(tx < MAP_W, "B_000 has impassable cells");
+        check(game_path_to(g, who, tx, ty) == 0,
+              "no path onto an impassable cell");
+        check(g->unit[who].link == 0xff, "and the unit has no path");
+    }
+
     disk_close(d);
     free(g);
     if (failures) {

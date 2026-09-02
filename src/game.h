@@ -79,6 +79,26 @@ typedef struct {
     unsigned char retry;        /* +0x0f, counts down while blocked */
 } Unit;
 
+/* A unit's path.  The original keeps these in their own segment: 2000:0000 is a
+ * 48 x 48 grid of words the flood fill writes distances into, 2000:1200 a second
+ * grid, 2000:2400 the 64 path buffers of 128 bytes, and 2000:4400 the fill's own
+ * stack.  A buffer is 124 bytes of **two-bit steps** - 496 of them, which is the
+ * 0x1f0 the builder refuses to exceed - then a word length and a word cursor.
+ *
+ * The steps are written walking *back* from the target down the distance field,
+ * so the code says which neighbour was smaller: 0 below, 1 right, 2 above,
+ * 3 left.  Read forwards they are the direction to walk, and sub_c291 doubles
+ * them into the eight-direction table - 0 up, 2 left, 4 down, 6 right - which
+ * is exactly the reverse, as it must be. */
+#define PATH_STEPS 496
+#define PATH_BYTES 124
+
+typedef struct {
+    unsigned char step[PATH_BYTES];
+    unsigned short len;         /* +0x7c */
+    unsigned short cursor;      /* +0x7e */
+} Path;
+
 /* 0x16 bytes.  The initialiser at 0x0326 writes every one of these. */
 typedef struct {
     unsigned short flag;        /* +0x00 */
@@ -96,6 +116,7 @@ typedef struct {
 
 typedef struct {
     Cell cell[MAP_W * MAP_H];
+    Path path[UNIT_SLOTS];
     short occupant[MAP_W * MAP_H];      /* DS:E47E - a unit slot, or -1 */
     Unit unit[UNIT_SLOTS];
     Side side[SIDES];
@@ -129,6 +150,20 @@ void game_step(Game *g);
  * Returns 1 if the unit moved, 0 if it turned or was blocked.
  */
 int game_move(Game *g, int slot, int dir);
+
+/* Fills the unit's path buffer with a route from where it stands to (x, y),
+ * following sub_c0bd: flood the distances out from the unit four-connected over
+ * anything below 0x30, then walk back from the target always stepping to the
+ * smaller neighbour.  Returns the number of steps, or 0 if there is no route or
+ * it needs more than 496 steps.  On success the unit's link is set to its own
+ * slot, which is how the original addresses the buffer. */
+int game_path_to(Game *g, int slot, int x, int y);
+
+/* The direction the path wants next (0..7), or -1 when there is none left.
+ * game_move consumes it; game_path_advance moves the cursor on and drops the
+ * path when it runs out, the way 0xc2c0 does. */
+int game_path_dir(const Game *g, int slot);
+void game_path_advance(Game *g, int slot);
 
 /* Handy for the viewer and for tests. */
 int game_unit_count(const Game *g, int side);
