@@ -41,7 +41,16 @@ bash tools/shots.sh # docs の絵を作り直す（make shots は w64devkit の 
 3. **同盟の効果**。設定はできる（パネルの ALLY）が、`allied()` が参照するだけ
 4. **EDIT（`sub_2368`）**。WAKU2 のパネル一式（PSET/LINE/BOX/FILL/GET/PUT/
    XCHG/CHANGE/FORM/INFORM/UNDO/GAME）。モード表は `CS:0x2a8a`
-5. **倉庫番 Select 30**（`C:/prog/claude2/soko_ban_wasm`）は未着手。
+5. **オープニング・エンディングの劇。** 材料は揃っている:
+   * 絵: `END00`〜`END03.PAC`（PAC は未解析）と `END10`〜`END70` の
+     `.B1/.R1/.G1/.E1` が8組。タイトルは `DS7TTL`（`.E1` 無し）
+   * 枠: `GAKU` は 13376 バイトで全画面ではない（人物枠らしい）。
+     `gfx_load_screen` は全画面前提なので落ちる。寸法の割り出しが要る
+   * 台詞: PROG.DAT の **`DS:0x3059`〜`0x31d6`** に殿・重臣・曲者・家来・敵兵の
+     台詞が並ぶ。1画面ずつ切り替える劇の進行表がどこかにある
+   * 用途不明の `QUEST` ファイルも残っている
+   絵を1枚出すところから始めるのが早い
+6. **倉庫番 Select 30**（`C:/prog/claude2/soko_ban_wasm`）は未着手。
    `tools/fat12.py` が `[FDI]` を読めるはず
 
 ## 音の全体像（要点だけ。詳細は下の「音」節）
