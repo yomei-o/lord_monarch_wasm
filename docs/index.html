@@ -46,7 +46,9 @@
 <h1>ロードモナーク (PC-98, 1991) — 解析中のビューア</h1>
 <p class="sub">
   体験版フロッピーを Ghidra で解析して C に書き直しているところです。
-  まだゲームロジックはなく、ディスクから読んだ絵をそのまま表示しています。
+  ディスクから読んだ絵をそのまま表示しています。R を押すと、解析できた
+  ぶんのゲームロジック（土地の成長・領土の拡張・ユニットの生産・城の徴税）が
+  動きます。
   <a href="https://github.com/yomei-o/lord_monarch_wasm">ソース</a>
 </p>
 
@@ -60,7 +62,9 @@
   <button data-key="8">8×8</button>
   <button data-key="9">16×16</button>
   <button data-key="10">32×32</button>
-  <button data-key="12">城の位置</button>
+  <button data-key="12">城とユニット</button>
+  <button data-key="13">世界を動かす</button>
+  <button data-key="14">1 ステップ</button>
 </div>
 
 <div id="keys">
@@ -68,7 +72,8 @@
   <b>← →</b><span>前後のマップ（全 52 面）</span>
   <b>Shift + ← → ↑ ↓</b><span>表示位置のスクロール</span>
   <b>1 / 2 / 3</b><span>タイルの大きさ 8×8 / 16×16 / 32×32</span>
-  <b>C</b><span>4 勢力の城に印をつける（マップの 0x14〜0x17 のセル）</span>
+  <b>C</b><span>城とユニットに印をつける（解析用。原作にこの表示は無い）</span>
+  <b>R / S</b><span>世界を動かす / 1 ステップだけ進める</span>
   <b>Backspace</b><span>タイトルに戻る</span>
 </div>
 
@@ -81,7 +86,8 @@
   // side cannot drift apart silently through a name.
   var KEY = {
     START: 1, PREV_MAP: 2, NEXT_MAP: 3, LEFT: 4, RIGHT: 5, UP: 6, DOWN: 7,
-    TILE8: 8, TILE16: 9, TILE32: 10, BACK: 11, CASTLES: 12
+    TILE8: 8, TILE16: 9, TILE32: 10, BACK: 11, CASTLES: 12,
+    RUN: 13, STEP: 14
   };
 
   var canvas = document.getElementById('screen');
@@ -97,7 +103,7 @@
   // so this is a putImageData and nothing else.
   function frame() {
     if (!mod) return;
-    if (dirty) {
+    if (dirty || running) {
       mod._lm_render();
       var p = mod._lm_framebuffer();
       var w = mod._lm_width(), h = mod._lm_height();
@@ -110,9 +116,13 @@
     requestAnimationFrame(frame);
   }
 
+  var running = false;
+
   function send(key) {
     if (!mod || !key) return;
     mod._lm_key(key);
+    if (key === KEY.RUN) running = !running;
+    if (key !== KEY.RUN) running = running && key !== KEY.STEP;
     dirty = true;
   }
 
@@ -128,6 +138,8 @@
       case '2': return KEY.TILE16;
       case '3': return KEY.TILE32;
       case 'c': case 'C': return KEY.CASTLES;
+      case 'r': case 'R': return KEY.RUN;
+      case 's': case 'S': return KEY.STEP;
       default:  return 0;
     }
   }

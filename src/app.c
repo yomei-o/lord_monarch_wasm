@@ -44,7 +44,10 @@ static Disk *disk;
 static Bank bank;
 static Map map;
 static Game game;
+static Map live;                /* the map as the simulation has it now */
 static int showCastles;
+static int running;
+static long ticks;
 static int mode = APP_MODE_TITLE;
 static int mapNumber, tileSize = 16, scrollX, scrollY;
 static char status[256];
@@ -146,6 +149,10 @@ int app_show_map(int number, int size)
     tileSize = size;
     scrollX = scrollY = 0;
     game_init(&game, &map);
+    game.human = 0;
+    live = map;
+    running = 0;
+    ticks = 0;
     snprintf(status, sizeof status,
              "%s  terrain %d  %s  %dx%d  castles %d,%d %d,%d %d,%d %d,%d  "
              "units %d (neutral %d)",
@@ -191,6 +198,8 @@ void app_key(int key)
     case APP_KEY_TILE16:    app_show_map(mapNumber, 16); break;
     case APP_KEY_TILE32:    app_show_map(mapNumber, 32); break;
     case APP_KEY_CASTLES:   showCastles = !showCastles; break;
+    case APP_KEY_RUN:       running = !running; break;
+    case APP_KEY_STEP:      running = 0; app_tick(); break;
     default: break;
     }
 }
@@ -216,11 +225,32 @@ static void outline_cell(int cx, int cy, unsigned char colour)
     }
 }
 
+/* One turn of the world: the cell sweep and the unit sweep, then the castles
+ * take their cut.  The original drives both from its main loop at 0x1a4d. */
+void app_tick(void)
+{
+    int i;
+    if (mode != APP_MODE_MAP) return;
+    game_tick_cells(&game);
+    game_step(&game);
+    for (i = 0; i < PLAYERS; i++) game_collect(&game, i);
+    for (i = 0; i < MAP_W * MAP_H; i++) live.cell[i] = game.cell[i].tile;
+    ticks++;
+    snprintf(status, sizeof status,
+             "B_%03d.MAP  terrain %d  %dx%d  tick %ld  units %d "
+             "(neutral %d)  funds %u %u %u %u",
+             mapNumber, map.terrain, bank.size, bank.size, ticks,
+             game_unit_count(&game, -1), game_unit_count(&game, 4),
+             game.side[0].funds, game.side[1].funds,
+             game.side[2].funds, game.side[3].funds);
+}
+
 void app_render(void)
 {
     memcpy(scr.px, bg.px, sizeof scr.px);
     if (mode != APP_MODE_MAP) return;
-    gfx_draw_map(&scr, &map, &bank, VIEW_X, VIEW_Y, scrollX, scrollY,
+    if (running) app_tick();
+    gfx_draw_map(&scr, &live, &bank, VIEW_X, VIEW_Y, scrollX, scrollY,
                  VIEW_W / bank.size + 1, VIEW_H / bank.size + 1);
     if (showCastles) {
         /* The starting state, as the original builds it.  These marks are ours;

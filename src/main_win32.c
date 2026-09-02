@@ -6,7 +6,8 @@
  *   LEFT / RIGHT     previous / next map
  *   arrows + SHIFT   scroll the view
  *   1 2 3            8x8 / 16x16 / 32x32 tiles
- *   C                mark the four castles
+ *   C                mark the units and castles
+ *   R                run the world; S steps it once
  *   BACKSPACE        back to the title
  *   ESC              quit
  *
@@ -68,6 +69,8 @@ static int translate(WPARAM wp, int shift)
     case '2':      return APP_KEY_TILE16;
     case '3':      return APP_KEY_TILE32;
     case 'C':      return APP_KEY_CASTLES;
+    case 'R':      return APP_KEY_RUN;
+    case 'S':      return APP_KEY_STEP;
     default:       return 0;
     }
 }
@@ -92,10 +95,14 @@ static LRESULT CALLBACK proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
     }
     case WM_ERASEBKGND:
         return 1;
+    case WM_TIMER:
+        InvalidateRect(w, 0, FALSE);
+        return 0;
     case WM_PAINT: {
         PAINTSTRUCT ps;
         HDC dc = BeginPaint(w, &ps);
         app_render();
+        set_title(w);
         StretchDIBits(dc, 0, 0, SCR_W * ZOOM, SCR_H * ZOOM,
                       0, 0, SCR_W, SCR_H, app_screen()->px,
                       (BITMAPINFO *)&bmi, DIB_RGB_COLORS, SRCCOPY);
@@ -161,6 +168,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
                         CW_USEDEFAULT, CW_USEDEFAULT,
                         r.right - r.left, r.bottom - r.top, 0, 0, inst, 0);
     set_title(w);
+    SetTimer(w, 1, 33, 0);      /* about 30 a second, for the world tick */
     ShowWindow(w, show);
 
     while (GetMessageW(&msg, 0, 0, 0) > 0) {

@@ -28,7 +28,9 @@ enum {
     APP_KEY_TILE16,
     APP_KEY_TILE32,
     APP_KEY_BACK,
-    APP_KEY_CASTLES        /* toggle the castle markers */
+    APP_KEY_CASTLES,       /* toggle the unit and castle markers */
+    APP_KEY_RUN,           /* run the world tick */
+    APP_KEY_STEP           /* one tick */
 };
 
 /* Opens the image and puts the app on the title screen.  0 on failure, with a
@@ -38,6 +40,9 @@ void app_shutdown(void);
 
 void app_key(int key);
 void app_render(void);
+
+/* One turn of the world - the cell sweep, the unit sweep and the castles. */
+void app_tick(void);
 
 const Screen *app_screen(void);
 int app_mode(void);
