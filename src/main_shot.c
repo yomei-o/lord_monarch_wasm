@@ -132,6 +132,42 @@ int main(int argc, char **argv)
             return 1;
         }
         save(argc > 3 ? argv[3] : "frame.png", scr.px, SCR_W, SCR_H, SCR_W);
+    } else if (!strcmp(cmd, "panel")) {
+        /* GAKU, the portrait frame, and anything else stored smaller than the
+         * screen: the corner and size come from whichever sub_9836-shaped
+         * routine blits it.  Defaults are GAKU's. */
+        const char *name = argc > 4 ? argv[4] : "GAKU";
+
+        palette_from_terrain(d, arg_int(argc, argv, "--terrain", 10));
+        gfx_clear(&scr, 0);
+        if (!gfx_load_panel(&scr, d, name,
+                            arg_int(argc, argv, "--x", 112),
+                            arg_int(argc, argv, "--y", 40),
+                            arg_int(argc, argv, "--w", 352),
+                            arg_int(argc, argv, "--h", 304))) {
+            fprintf(stderr, "%s: %s\n", name, disk_error());
+            return 1;
+        }
+        save(argc > 3 ? argv[3] : "panel.png", scr.px, SCR_W, SCR_H, SCR_W);
+    } else if (!strcmp(cmd, "pac")) {
+        /* The scene at 0xcba6 runs with the table at DS:0x252b, which is the
+         * fourth of the four 48-byte tables from DS:0x249b. */
+        const char *name = argc > 4 ? argv[4] : "END01.PAC";
+        unsigned dn = 0;
+        unsigned char *dat = disk_read_lz(d, "PROG.DAT", &dn);
+
+        if (dat && dn > 0x252b - 0x1000 + 48)
+            gfx_set_palette(&scr, dat + (0x252b - 0x1000));
+        gfx_clear(&scr, 0);
+        if (!gfx_load_pac(&scr, d, name,
+                          arg_int(argc, argv, "--x", 0),
+                          arg_int(argc, argv, "--y", 0),
+                          arg_int(argc, argv, "--w", 640),
+                          arg_int(argc, argv, "--h", 100))) {
+            fprintf(stderr, "%s: %s\n", name, disk_error());
+            return 1;
+        }
+        save(argc > 3 ? argv[3] : "pac.png", scr.px, SCR_W, SCR_H, SCR_W);
     } else if (!strcmp(cmd, "map") || !strcmp(cmd, "game")) {
         const int game = !strcmp(cmd, "game");
         const int size = arg_int(argc, argv, "--tile", 8);

@@ -313,6 +313,82 @@ int gfx_load_screen_over(Screen *s, Disk *d, const char *name,
     return load_screen(s, d, name, under);
 }
 
+int gfx_load_panel(Screen *s, Disk *d, const char *name,
+                   int x, int y, int w, int h)
+{
+    static const char *ext[4] = { "B1", "R1", "G1", "E1" };
+    unsigned char *own[4] = { 0, 0, 0, 0 };
+    const unsigned char *pl[4];
+    unsigned char *tmp;
+    unsigned need = (unsigned)(w / 8) * (unsigned)h;
+    char buf[32];
+    int i, ok = 0, row, col;
+
+    if (w <= 0 || h <= 0 || w % 8) return 0;
+    for (i = 0; i < 4; i++) {
+        unsigned n = 0;
+
+        snprintf(buf, sizeof buf, "%s.%s", name, ext[i]);
+        own[i] = disk_read_bz(d, buf, &n);
+        if (own[i] && n < need) { free(own[i]); own[i] = 0; }
+        pl[i] = own[i];
+        if (own[i]) ok = 1;
+    }
+    tmp = ok ? (unsigned char *)malloc((size_t)w * h) : 0;
+    if (tmp) {
+        planes_to_indices(tmp, pl, w, h);
+        for (row = 0; row < h; row++) {
+            int sy = y + row;
+
+            if (sy < 0 || sy >= SCR_H) continue;
+            for (col = 0; col < w; col++) {
+                int sx = x + col;
+                unsigned char v = tmp[(size_t)row * w + col];
+
+                if (v && sx >= 0 && sx < SCR_W)
+                    s->px[(size_t)sy * SCR_W + sx] = v;
+            }
+        }
+        free(tmp);
+    } else {
+        ok = 0;
+    }
+    for (i = 0; i < 4; i++) free(own[i]);
+    return ok;
+}
+
+int gfx_load_pac(Screen *s, Disk *d, const char *name,
+                 int x, int y, int w, int h)
+{
+    unsigned n = 0;
+    unsigned char *data = disk_read_bz(d, name, &n);
+    unsigned per = (unsigned)(w / 8) * (unsigned)h;
+    const unsigned char *pl[4];
+    unsigned char *tmp;
+    int i, row, col;
+
+    if (!data) return 0;
+    if (w <= 0 || h <= 0 || w % 8 || n < per * 4) { free(data); return 0; }
+    for (i = 0; i < 4; i++) pl[i] = data + (size_t)i * per;
+    tmp = (unsigned char *)malloc((size_t)w * h);
+    if (!tmp) { free(data); return 0; }
+    planes_to_indices(tmp, pl, w, h);
+    for (row = 0; row < h; row++) {
+        int sy = y + row;
+
+        if (sy < 0 || sy >= SCR_H) continue;
+        for (col = 0; col < w; col++) {
+            int sx = x + col;
+
+            if (sx >= 0 && sx < SCR_W)
+                s->px[(size_t)sy * SCR_W + sx] = tmp[(size_t)row * w + col];
+        }
+    }
+    free(tmp);
+    free(data);
+    return 1;
+}
+
 int gfx_load_bank(Bank *b, Disk *d, const char *name, int size)
 {
     unsigned n = 0;

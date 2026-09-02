@@ -132,6 +132,30 @@ int gfx_load_screen(Screen *s, Disk *d, const char *name);
 int gfx_load_screen_over(Screen *s, Disk *d, const char *name,
                          unsigned char under);
 
+/* An image smaller than the screen, stored the same way but with a row stride
+ * of its own.  GAKU is one: sub_9836 blits it to VRAM offset 0xc8e, which is
+ * row 40 byte 14 - so (112, 40) - moving 0x16 words a row for 0x130 rows and
+ * skipping 0x24 to the next.  That is 352 x 304, and 44 bytes over 304 rows is
+ * 13,376 per plane, which is the file's size exactly.
+ *
+ * Index 0 is transparent, the way the original leaves whatever was underneath
+ * alone in the planes it does not write. */
+int gfx_load_panel(Screen *s, Disk *d, const char *name,
+                   int x, int y, int w, int h);
+
+/* A .PAC: one file holding all four planes end to end, rather than the four
+ * files a .B1/.R1/.G1/.E1 set uses.  sub_cb19 loads END01.PAC to 0x3000:0000
+ * and then moves 0xfa0 words to each of A800, B000, B800 and E000 in turn
+ * without resetting si - four runs of 8,000 bytes out of one 32,000-byte
+ * file, which is 80 bytes over 100 rows a plane.  So END01 and END02 are
+ * 640 x 100 at the top of the screen, and they go to opposite display pages:
+ * two frames of an animation.
+ *
+ * Unlike gfx_load_panel this writes index 0 as well - the original moves whole
+ * words into empty planes. */
+int gfx_load_pac(Screen *s, Disk *d, const char *name,
+                 int x, int y, int w, int h);
+
 /* Loads a .CH4 tile bank.  `size` picks how the bytes are cut up; the S/M/L
  * files hold 8x8, 16x16 and 32x32 of the same terrain set. */
 int gfx_load_bank(Bank *b, Disk *d, const char *name, int size);
