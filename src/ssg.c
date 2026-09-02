@@ -30,6 +30,7 @@ void ssg_reset(Ssg *s)
     s->noiseCounter = 0;
     s->noise = 1;                       /* the shift register, never zero */
     s->mixer = 0x3f;                    /* everything off */
+    s->dc = s->dcIn = s->dcPrev = 0;
 }
 
 void ssg_write(Ssg *s, int reg, int value)
@@ -114,8 +115,16 @@ void ssg_render(Ssg *s, short *out, int samples, int sampleRate)
             cycles++;
         }
         v = step(s, cycles);
-        /* Three channels of 0..15 summed, brought to a comfortable level. */
-        out[i] = (short)(v * 700 - 15750);
+        /* A one-pole high pass takes the offset out.  Without it the level sits
+         * wherever the number of sounding channels puts it - one channel idles
+         * at zero and swings up, which is a step of several thousand at every
+         * key-on and sounds like a click rather than a note. */
+        s->dcIn = v * 700;
+        s->dc = s->dcIn - s->dcPrev + (s->dc * 1023) / 1024;
+        s->dcPrev = s->dcIn;
+        if (s->dc > 32000) s->dc = 32000;
+        if (s->dc < -32000) s->dc = -32000;
+        out[i] = (short)s->dc;
     }
 }
 

@@ -72,6 +72,21 @@ EMSCRIPTEN_KEEPALIVE int lm_japanese(void) { return app_japanese(); }
 EMSCRIPTEN_KEEPALIVE int lm_sound(void) { return app_sound_take(); }
 EMSCRIPTEN_KEEPALIVE int lm_running(void) { return app_running(); }
 
+/* The game's own effects, rendered to samples for the page to play.  These are
+ * the SSG's - the driver never programs an FM voice on this disk, so nothing
+ * else is sounding.  The buffer is here rather than malloc'd so that only the
+ * lm_* names need exporting. */
+#define LM_PCM_MAX 48000
+static short pcmBuf[LM_PCM_MAX];
+static int pcmLen;
+
+EMSCRIPTEN_KEEPALIVE int lm_effect(int id, int rate)
+{
+    pcmLen = app_effect_pcm(id, pcmBuf, LM_PCM_MAX, rate);
+    return pcmLen;
+}
+EMSCRIPTEN_KEEPALIVE short *lm_effect_pcm(void) { return pcmBuf; }
+
 EMSCRIPTEN_KEEPALIVE int lm_dialog(void) { return app_dialog(); }
 EMSCRIPTEN_KEEPALIVE int lm_dialog_lines(void) { return app_dialog_lines(); }
 EMSCRIPTEN_KEEPALIVE int lm_dialog_pick(void) { return app_dialog_pick(); }

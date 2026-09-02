@@ -123,11 +123,7 @@
   <b>[ ]</b><span>前後のマップ（全 52 面）。解析用で、原作にこの操作は無い</span>
   <b>C</b><span>城とユニットに印をつける（解析用。原作にこの表示は無い）</span>
   <b>T</b><span>タイトルに戻る</span>
-  <b>音</b><span>受理・拒否・失敗・滅亡を短い音で鳴らします。原作が
-    <code>sub_0d12</code> に積む要求（0x06 受理 / 0x04 拒否 / 0x07 実行不能 /
-    0x03 滅亡 / 0x0f 終了）をそのまま拾っているので、<b>断られたのか未実装なのかが
-    音で分かります</b>。ディスクの <code>FM001〜FM025.DAT</code> の曲は
-    まだ鳴りません（YM2203 の実装が要る）</span>
+  <b>音</b><span><b>ゲーム自身の効果音</b>を鳴らします。原作が <code>sub_0d12</code> に積む要求（0x06 受理 / 0x04 拒否 / 0x07 実行不能 / 0x03 滅亡 / 0x0f 終了）を拾い、その id の列を <code>PROG.DAT</code> から 読んで SSG（矩形波3ch＋ノイズ）で合成しています。音程も長さもゲームの表 そのままです。<b>断られたのか未実装なのかが音で分かります</b>。ディスクの <code>FM001〜FM025.DAT</code> の曲はまだ鳴りません</span>
   <b>マウス</b><span>アイコンや升を直接クリックしても同じことができます。
     原作にマウスは無いので、これはこの移植の足しものです</span>
 </div>
@@ -135,10 +131,10 @@
 <!-- BUILD is bumped by "make wasm".  Without it a browser will happily hold
      on to a monarch.js from an earlier build and then fail on whichever
      function was added since - which is exactly what happened once. -->
-<script src="monarch.js?v=4d7f1b90"></script>
+<script src="monarch.js?v=9378aa1b"></script>
 <script>
   // Stamped by tools/stamp.py from the wasm's own hash.
-  window.LM_BUILD = '4d7f1b90';
+  window.LM_BUILD = '9378aa1b';
 
 (function () {
   'use strict';
@@ -291,17 +287,36 @@
     o.start(t0); o.stop(t1 + 0.01);
   }
 
+  // The game's own effect, rendered by the wasm side and played as samples.
+  // Falls back to a synthesised tone only if that comes back empty.
+  var pcmCache = {};
   function playSound(req) {
     var id = (req >> 8) & 0xff;
-    switch (id) {
-      case 0x06: tone(0, 1320, 40, 0.06); break;               // taken
-      case 0x04: tone(0, 180, 110, 0.07); break;               // refused
-      case 0x07: tone(0, 520, 70, 0.06); tone(0.07, 330, 90, 0.06); break;
-      case 0x03: tone(0, 220, 200, 0.08); tone(0.2, 165, 320, 0.08); break;
-      case 0x0f: tone(0, 440, 140, 0.08); tone(0.14, 660, 140, 0.08);
-                 tone(0.28, 880, 260, 0.08); break;
-      default:   tone(0, 880, 30, 0.05); break;
+    var ac = audioReady();
+    if (!ac || !mod) return;
+    var buf = pcmCache[id];
+    if (buf === undefined) {
+      var made = mod._lm_effect(id, ac.sampleRate | 0);
+      if (made > 0) {
+        var p = mod._lm_effect_pcm();
+        var src = new Int16Array(mod.HEAPU8.buffer, p, made);
+        buf = ac.createBuffer(1, made, ac.sampleRate);
+        var out = buf.getChannelData(0);
+        for (var i = 0; i < made; i++) out[i] = src[i] / 32768;
+      } else {
+        buf = null;
+      }
+      pcmCache[id] = buf;
     }
+    if (buf) {
+      var node = ac.createBufferSource(), g = ac.createGain();
+      node.buffer = buf;
+      g.gain.value = 0.5;
+      node.connect(g); g.connect(ac.destination);
+      node.start();
+      return;
+    }
+    tone(0, 880, 30, 0.05);
   }
 
   // The dialog lines are the game's own bytes, which with a font ROM loaded are

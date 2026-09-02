@@ -1,4 +1,5 @@
 #include "sound.h"
+#include "ssg.h"
 
 #include <string.h>
 
@@ -192,4 +193,49 @@ int snd_tick(SndVoice *v, int *keyedNow)
         }
         return 1;
     }
+}
+
+/* --------------------------------------------------------------- rendering */
+
+int snd_render_effect(const unsigned char *progDat, unsigned progDatSize,
+                      int id, short *out, int maxSamples, int sampleRate)
+{
+    const unsigned char *periods;
+    SndVoice v;
+    Ssg chip;
+    int made = 0;
+    int perTick = sampleRate / SND_TICK_HZ;
+    int level = 0;
+
+    if (progDatSize < (unsigned)(SSG_PERIOD_AT - 0x1000) + 32) return 0;
+    periods = progDat + (SSG_PERIOD_AT - 0x1000);
+    if (!snd_start(&v, progDat, progDatSize, id)) return 0;
+
+    ssg_reset(&chip);
+    ssg_write(&chip, 7, 0x3f);              /* everything off to begin with */
+
+    for (;;) {
+        int keyed = 0, room;
+        if (!snd_tick(&v, &keyed)) break;
+        if (keyed) {
+            int p = ssg_period(periods, v.note, 0);
+            ssg_write(&chip, 0, p & 0xff);
+            ssg_write(&chip, 1, (p >> 8) & 0x0f);
+            ssg_write(&chip, 7, 0x3e);      /* tone on channel A */
+            level = 255;                    /* struck */
+        }
+        if (!v.keyed) level = 0;
+        /* sub_10c2: the level times volume + 1, shifted down eight. */
+        ssg_write(&chip, 8, (level * (v.volume + 1)) >> 8 > 15
+                            ? 15 : (level * (v.volume + 1)) >> 8);
+        room = maxSamples - made;
+        if (room > perTick) room = perTick;
+        if (room <= 0) break;
+        ssg_render(&chip, out + made, room, sampleRate);
+        made += room;
+        /* A plain decay standing in for the table-driven envelope. */
+        level -= level / 6 + 2;
+        if (level < 0) level = 0;
+    }
+    return made;
 }

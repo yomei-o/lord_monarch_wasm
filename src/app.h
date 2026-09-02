@@ -90,6 +90,9 @@ int app_dialog(void);
  * it, so a host must ask instead of tracking its own flag. */
 int app_running(void);
 
+/* Renders one of the game's own sound effects.  Returns the sample count. */
+int app_effect_pcm(int id, short *out, int maxSamples, int rate);
+
 void app_sound(int idAndPriority);
 
 /* Takes the pending request and clears it, or 0 when there is none. */

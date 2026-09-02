@@ -73,4 +73,27 @@ int snd_start(SndVoice *v, const unsigned char *progDat, unsigned progDatSize,
  * when this tick started a new note. */
 int snd_tick(SndVoice *v, int *keyedNow);
 
+/* Renders one effect through an SSG and returns how many samples it made.
+ *
+ * The pitch and the rhythm are the game's: the period comes from its own table
+ * through ssg_period, and the note lengths are the sequence's ticks at the rate
+ * the driver's timer runs.  The amplitude envelope is an approximation - the
+ * original keeps a software envelope per voice (sub_111e loads four bytes from
+ * DS:0x34e2 and the tail of sub_0f2d steps it, with the level multiplied by
+ * volume + 1 and shifted down eight in sub_10c2), and porting that exactly is
+ * the next refinement.
+ *
+ * Nothing FM is involved, and that is not a shortcut: this program never writes
+ * a single FM operator register - not 0x30, 0x50, 0x60, 0x70, 0x80 or 0xb0 - so
+ * after a reset every rate is zero, no envelope ever rises, and the FM channels
+ * are silent however diligently the driver keys them.  Everything audible on
+ * this disk comes out of the SSG.
+ */
+int snd_render_effect(const unsigned char *progDat, unsigned progDatSize,
+                      int id, short *out, int maxSamples, int sampleRate);
+
+/* The driver's tick rate, from the timer it sets up: register 0x26 takes
+ * [0x3b3d] and 0x27 gets 0x3a, which is timer B enabled and loaded. */
+#define SND_TICK_HZ 60
+
 #endif

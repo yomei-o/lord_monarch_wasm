@@ -16,7 +16,7 @@ PYTHON  ?= C:/Python313/python.exe
 IMAGE   ?= $(firstword $(wildcard orig/*.FIM))
 
 CORE = src/disk.c src/gfx.c src/bz.c src/lmz.c
-APP  = src/app.c src/game.c $(CORE)
+APP  = src/app.c src/game.c src/sound.c src/ssg.c $(CORE)
 
 all: $(OUT)/monarch.exe $(OUT)/monarch_shot.exe $(OUT)/game_check.exe $(OUT)/sim.exe $(OUT)/probe.exe $(OUT)/sound_check.exe
 

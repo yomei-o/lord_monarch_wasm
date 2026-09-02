@@ -1,6 +1,7 @@
 #include "app.h"
 #include "game.h"
 #include "jp.h"
+#include "sound.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -931,6 +932,12 @@ int app_sound_take(void)
  * exactly what happened, and it looked like the game had stopped producing
  * soldiers rather than like the clock had stopped. */
 int app_running(void) { return running; }
+
+int app_effect_pcm(int id, short *out, int maxSamples, int rate)
+{
+    if (!progDat) return 0;
+    return snd_render_effect(progDat, progDatSize, id, out, maxSamples, rate);
+}
 
 int app_japanese(void) { return fontRom.loaded; }
 

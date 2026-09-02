@@ -31,6 +31,8 @@ typedef struct {
     int noiseCounter;
     int noise;
     int mixer;
+    /* The one-pole high pass that keeps the offset out. */
+    int dc, dcIn, dcPrev;
 } Ssg;
 
 void ssg_reset(Ssg *s);

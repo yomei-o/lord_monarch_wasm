@@ -179,6 +179,40 @@ int main(int argc, char **argv)
         }
     }
 
+    /* And a whole effect, rendered the way the port will play it.  Effect 6 is
+     * a G-B-D arpeggio, so its first note should measure as that G. */
+    {
+        static short pcm[48000];
+        int rate = 16000;
+        int made = snd_render_effect(dat, n, 6, pcm, 48000, rate);
+        const unsigned char *per = dat + (SSG_PERIOD_AT - 0x1000);
+        double want = ssg_period_hz(ssg_period(per, 0x47, 0));
+        int best = 0, i;
+        double bestPower = -1;
+        int window = rate / 20;             /* the first twentieth of a second */
+
+        printf("  effect 6 rendered %d samples at %d Hz\n", made, rate);
+        checkf(made > rate / 20, "effect 6 made only %d samples", made, 0);
+        if (window > made) window = made;
+        for (i = 200; i < 900; i++) {
+            double re = 0, im = 0, w = 2.0 * 3.14159265358979 * i / rate;
+            int k;
+            for (k = 0; k < window; k++) {
+                re += pcm[k] * cos(w * k);
+                im += pcm[k] * sin(w * k);
+            }
+            if (re * re + im * im > bestPower) {
+                bestPower = re * re + im * im;
+                best = i;
+            }
+        }
+        printf("  its first note measures %d Hz, and G4 asks for %.2f\n",
+               best, want);
+        checkf(best > want - 6 && best < want + 6,
+               "the first note of effect 6 is %d Hz, not the %d asked for",
+               best, (int)want);
+    }
+
     free(dat);
     disk_close(d);
     if (failures) {
