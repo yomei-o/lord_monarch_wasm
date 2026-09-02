@@ -14,18 +14,32 @@
  *   0x28                 key on/off: bits 4..7 pick operators, 0..1 the channel
  *
  * The slot order in the register map is the chip's, S1 S3 S2 S4, so slot 1 in
- * a register address is operator 2 in every algorithm diagram.  The order is
- * kept as the chip has it here and the algorithms below index accordingly.
+ * a register address is operator 2 in every algorithm diagram.  That reading
+ * is not a guess: the game's own carrier masks at DS:0x2445 are
+ * 08 08 08 08 0c 0e 0e 0f, and they line up with the algorithm diagrams only
+ * under this order.
  *
- * Two things are approximations rather than the chip:
+ * The arithmetic follows Neko Project II's sound/opngen, because three
+ * attempts at deriving it from memory all came out wrong - one of them as a
+ * plain sine.  What was taken, and from where:
  *
- *   - the envelope rate tables.  A real OPN advances its envelope out of a
- *     counter with per-rate shifts and a four-entry increment pattern; here a
- *     rate is turned into attenuation units per envelope tick directly, by the
- *     same doubling every four steps.  It sounds right and the timing is close,
- *     but it is not the chip's table.
- *   - the sine and exponent are computed rather than looked up in the chip's
- *     log tables, so the quantisation of a very quiet operator differs.
+ *   opngencfg.h   SIN_BITS 10, so 1024 phase steps to a turn; FREQ_BITS 21,
+ *                 so the phase counter holds 2^21 to a turn; SINTBL_BIT 15
+ *                 and ENVTBL_BIT 14 against TL_BITS = FREQ_BITS + 2, which
+ *                 put a full-scale operator at 2^23.  The modulation shift
+ *                 (FREQ_BITS - (TL_BITS - 2)) is zero, so a modulator at full
+ *                 scale swings 2^23 / 2^21 = four whole turns.
+ *   opngeng.c     the envelope, which is
+ *                 env = totallevel - envcurve[env_cnt >> 16] with the counter
+ *                 running up through attack, decay, sustain and release; and
+ *                 the feedback, which is (op1fb >> feedback), so the register
+ *                 is a shift and each step is a halving.
+ *   opngenc.c     envcurve - an eighth power over the attack and a straight
+ *                 line after it - and the rate tables, which are a base
+ *                 frequency over OPM_ARRATE or OPM_DRRATE.
+ *
+ * Not modelled: the LFO (a YM2203 has none) and the SSG-EG bits (this driver
+ * never writes them).
  */
 #include "opn.h"
 
@@ -34,27 +48,23 @@
 
 enum { OPN_ATT, OPN_DEC, OPN_SUS, OPN_REL, OPN_OFF };
 
-/* How deep a modulator goes: an operator here puts out -1..1, and this is how
- * many turns of the next one's phase a modulator at full scale swings.
- *
- * Four, and the number matters more than it looks.  A modulator's output on
- * the chip reaches about 2^13 and the phase index is 1024 to a turn, with the
- * modulation taken as output >> 1 - so a full-scale modulator swings four
- * whole turns.  That sounds like far too much until you look at what a voice
- * actually asks for: FM001's first has total levels of 25, 39 and 40 on its
- * three modulators, which are gains of 0.115, 0.035 and 0.031.  At one turn
- * those modulate by three to eleven hundredths of a turn, which is not FM at
- * all - it is a sine with a wobble, and that is exactly what it sounded like.
- * At four turns they land between 0.12 and 0.46, which is an FM timbre.
- *
- * The lesson for whoever changes this next: judge the depth against the total
- * levels in a real voice, not against a full-scale operator, because nothing
- * in these songs ever runs a modulator at full scale. */
-#define MOD_TURNS 4.0
+/* opngenc.c */
+#define OPM_ARRATE 399128.0
+#define OPM_DRRATE 5514396.0
+/* opngencfg.h: the envelope's range in steps, and what one step is worth. */
+#define EVC_ENT 1024.0
+#define EG_STEP (96.0 / EVC_ENT)
 
-/* 1024 units of attenuation is 96 dB, which is the chip's envelope range. */
-#define ATT_MAX 1023.0
-#define ATT_DB  (96.0 / 1024.0)
+/* The envelope counter walks 0..2048: nought to EVC_ENT is the attack, and
+ * EVC_ENT to twice it is everything after. */
+#define ENV_OFF (2.0 * EVC_ENT)
+
+/* How many turns of the next operator's phase a full-scale modulator swings.
+ * Four - see above, and mind that nothing in these songs ever runs a modulator
+ * at full scale, so this has to be judged against the total levels in a real
+ * voice rather than against a full-scale operator.  Getting that backwards is
+ * what made the first cut sound like a sine with a wobble. */
+#define MOD_TURNS 4.0
 
 /* Detune, in F-number units, by keycode and DT.  The chip's table. */
 static const int DETUNE[4][32] = {
@@ -67,23 +77,39 @@ static const int DETUNE[4][32] = {
 /* MUL 0 means a half. */
 static double multiple_of(int m) { return m ? (double)m : 0.5; }
 
-static double attenuation_to_gain(double att)
+/* opngenc.c's envcurve, as an attenuation: an eighth power falling from a full
+ * 1024 to nothing across the attack, then a straight line back up.  An eighth
+ * power is a very different shape from a straight ramp, and it is most of what
+ * an FM attack sounds like. */
+static double envcurve(double idx)
 {
-    if (att >= ATT_MAX) return 0.0;
-    return pow(10.0, -(att * ATT_DB) / 20.0);
+    if (idx <= 0.0) return EVC_ENT;
+    if (idx < EVC_ENT) {
+        double t = (EVC_ENT - 1.0 - idx) / EVC_ENT;
+
+        if (t < 0.0) t = 0.0;
+        return pow(t, 8.0) * EVC_ENT;
+    }
+    if (idx >= ENV_OFF) return EVC_ENT;
+    return idx - EVC_ENT;
 }
 
-/* How much attenuation one envelope tick moves, for a rate of 0..63.  Zero
- * means "never": rates below four do not move at all on the chip either. */
-static double rate_step(int r)
+/* opngenc.c's rate tables, in envelope steps per chip sample.  A rate below
+ * four does not move, which is the chip's behaviour too. */
+static double rate_inc(int r, double perRate)
 {
+    double freq;
+
     if (r < 4) return 0.0;
     if (r > 63) r = 63;
-    return (4 + (r & 3)) * pow(2.0, (r >> 2) - 11.0);
+    freq = EVC_ENT * 65536.0 * (72.0 / 64.0);
+    if (r < 60) freq *= 1.0 + (r & 3) * 0.25;
+    freq *= (double)(1 << ((r >> 2) - 1));
+    return freq / perRate / 65536.0;    /* the table is in 1/65536 steps */
 }
 
-/* The rate an operator's envelope actually runs at: twice the register value
- * plus the key-scaled part of the note. */
+/* The rate an operator's envelope runs at: twice the register value plus the
+ * key-scaled part of the note. */
 static int scaled_rate(int rate, int keyScale, int keycode)
 {
     int r;
@@ -93,8 +119,7 @@ static int scaled_rate(int rate, int keyScale, int keycode)
     return r > 63 ? 63 : r;
 }
 
-/* The chip's keycode: the block, then two bits worked out of the top of the
- * F-number. */
+/* The chip's keycode: the block and two bits off the top of the F-number. */
 static int keycode_of(const OpnCh *c)
 {
     int f11 = (c->fnum >> 10) & 1;
@@ -102,21 +127,28 @@ static int keycode_of(const OpnCh *c)
     int f9  = (c->fnum >> 8) & 1;
     int f8  = (c->fnum >> 7) & 1;
     int n3 = f11 & (f10 | f9 | f8);
-    int n4 = f11 ? (f10 & f9 & f8) : 0;
 
-    (void)n4;
     return (c->block << 2) | (f11 << 1) | n3;
 }
 
 void opn_reset(Opn *o, double clock)
 {
+    int i, s;
+
     memset(o, 0, sizeof *o);
     o->clock = clock > 0 ? clock : 3993600.0;
-    for (int i = 0; i < OPN_CHANNELS; i++)
-        for (int s = 0; s < OPN_OPS; s++) {
-            o->ch[i].op[s].att = ATT_MAX;
+    for (i = 0; i < OPN_CHANNELS; i++)
+        for (s = 0; s < OPN_OPS; s++) {
+            o->ch[i].op[s].envIdx = ENV_OFF;
             o->ch[i].op[s].stage = OPN_OFF;
         }
+}
+
+/* Where the decay stops.  Sustain level 15 means all the way down. */
+static double decay_level(const OpnOp *op)
+{
+    if (op->sustainLevel >= 15) return ENV_OFF;
+    return EVC_ENT + op->sustainLevel * 32.0;
 }
 
 static void key_on(OpnCh *c, int slot)
@@ -124,16 +156,19 @@ static void key_on(OpnCh *c, int slot)
     OpnOp *op = &c->op[slot];
 
     op->stage = OPN_ATT;
+    op->envIdx = 0.0;                   /* EC_ATTACK */
     op->phase = 0.0;
-    /* The chip does not reset the level on a key-on; a fresh note simply
-     * attacks from wherever it was, which is why a fast retrigger keeps its
-     * body. */
-    if (op->att >= ATT_MAX) op->att = ATT_MAX;
 }
 
 static void key_off(OpnCh *c, int slot)
 {
-    if (c->op[slot].stage != OPN_OFF) c->op[slot].stage = OPN_REL;
+    OpnOp *op = &c->op[slot];
+
+    if (op->stage == OPN_OFF) return;
+    /* The release picks the envelope up where it stands, so letting go during
+     * an attack does not click. */
+    if (op->stage == OPN_ATT) op->envIdx = EVC_ENT + envcurve(op->envIdx);
+    op->stage = OPN_REL;
 }
 
 void opn_write(Opn *o, int reg, int value)
@@ -162,9 +197,15 @@ void opn_write(Opn *o, int reg, int value)
             OpnOp *op = &o->ch[ch].op[slot];
 
             switch (reg & 0xf0) {
-            case 0x30: op->detune = (value >> 4) & 7; op->multiple = value & 0x0f; break;
+            case 0x30:
+                op->detune = (value >> 4) & 7;
+                op->multiple = value & 0x0f;
+                break;
             case 0x40: op->totalLevel = value & 0x7f; break;
-            case 0x50: op->keyScale = (value >> 6) & 3; op->attackRate = value & 0x1f; break;
+            case 0x50:
+                op->keyScale = (value >> 6) & 3;
+                op->attackRate = value & 0x1f;
+                break;
             case 0x60: op->decayRate = value & 0x1f; break;
             case 0x70: op->sustainRate = value & 0x1f; break;
             case 0x80:
@@ -199,42 +240,39 @@ void opn_write(Opn *o, int reg, int value)
     }
 }
 
-/* One envelope tick for one operator. */
+/* One chip sample of envelope, the way opngeng.c's CALCENV walks it. */
 static void env_step(OpnOp *op, int keycode)
 {
-    double step;
-    int r;
+    double end;
 
     switch (op->stage) {
     case OPN_ATT:
-        r = scaled_rate(op->attackRate, op->keyScale, keycode);
-        if (r >= 62) { op->att = 0.0; op->stage = OPN_DEC; break; }
-        step = rate_step(r);
-        if (step <= 0.0) break;
-        /* The attack is not linear in dB: the chip moves a fraction of what is
-         * left, which is what gives it its shape. */
-        op->att += (-(op->att) - 1.0) * step / 16.0;
-        if (op->att <= 0.0) { op->att = 0.0; op->stage = OPN_DEC; }
+        op->envIdx += rate_inc(scaled_rate(op->attackRate, op->keyScale,
+                                           keycode), OPM_ARRATE);
+        if (op->envIdx >= EVC_ENT) {
+            op->envIdx = EVC_ENT;
+            op->stage = OPN_DEC;
+        }
         break;
     case OPN_DEC:
-        step = rate_step(scaled_rate(op->decayRate, op->keyScale, keycode));
-        op->att += step;
-        {
-            double sl = op->sustainLevel == 15 ? ATT_MAX
-                                               : op->sustainLevel * 32.0;
-
-            if (op->att >= sl) { op->att = sl; op->stage = OPN_SUS; }
+        op->envIdx += rate_inc(scaled_rate(op->decayRate, op->keyScale,
+                                           keycode), OPM_DRRATE);
+        end = decay_level(op);
+        if (op->envIdx >= end) {
+            op->envIdx = end;
+            op->stage = (end >= ENV_OFF) ? OPN_OFF : OPN_SUS;
         }
         break;
     case OPN_SUS:
-        op->att += rate_step(scaled_rate(op->sustainRate, op->keyScale, keycode));
-        if (op->att >= ATT_MAX) { op->att = ATT_MAX; op->stage = OPN_OFF; }
+        op->envIdx += rate_inc(scaled_rate(op->sustainRate, op->keyScale,
+                                           keycode), OPM_DRRATE);
+        if (op->envIdx >= ENV_OFF) { op->envIdx = ENV_OFF; op->stage = OPN_OFF; }
         break;
     case OPN_REL:
-        /* RR is four bits, and the chip uses 2*RR+1 as the five-bit rate. */
-        op->att += rate_step(scaled_rate(op->releaseRate * 2 + 1, op->keyScale,
-                                         keycode));
-        if (op->att >= ATT_MAX) { op->att = ATT_MAX; op->stage = OPN_OFF; }
+        /* RR is four bits and the chip uses 2*RR+1 as the five-bit rate. */
+        op->envIdx += rate_inc(scaled_rate(op->releaseRate * 2 + 1,
+                                           op->keyScale, keycode), OPM_DRRATE);
+        if (op->envIdx >= ENV_OFF) { op->envIdx = ENV_OFF; op->stage = OPN_OFF; }
         break;
     default:
         break;
@@ -244,11 +282,14 @@ static void env_step(OpnOp *op, int keycode)
 /* One operator's sample.  `mod` is the phase modulation coming in, in turns. */
 static double op_sample(OpnOp *op, double mod)
 {
-    double att = op->att + op->totalLevel * 8.0;
+    /* opngeng.c has env = totallevel - envcurve[...]; as an attenuation that
+     * is the curve plus what the total level takes off, and a TL step is eight
+     * envelope steps because totallevel is (~TL & 0x7f) << 3. */
+    double att = envcurve(op->envIdx) + op->totalLevel * 8.0;
+    double gain = att >= EVC_ENT ? 0.0 : pow(10.0, -(att * EG_STEP) / 20.0);
 
     op->prev = op->out;
-    op->out = sin((op->phase + mod) * 2.0 * 3.14159265358979323846) *
-              attenuation_to_gain(att);
+    op->out = sin((op->phase + mod) * 2.0 * 3.14159265358979323846) * gain;
     return op->out;
 }
 
@@ -261,50 +302,50 @@ static double channel_sample(OpnCh *c, double inc[OPN_OPS])
     int i;
 
     /* Operator 1 modulates itself with the average of its last two outputs.
-     * The register is 0..7 and the chip turns it into a shift, so each step is
-     * a halving: 7 is the most and 0 is none at all. */
+     * The chip shifts rather than multiplies, so each register step is a
+     * halving and 7 is the most it can ask for. */
     fb = c->feedback ? (c->op[0].prev + c->op[0].out) / 2.0 * MOD_TURNS /
                        (double)(1 << (7 - c->feedback))
                      : 0.0;
 
     switch (c->algorithm) {
-    case 0:  /* 1 -> 2 -> 3 -> 4 */
+    case 0:  /* S1 -> S2 -> S3 -> S4 */
         m1 = op_sample(&c->op[0], fb);
         m2 = op_sample(&c->op[2], m1 * MOD_TURNS);
         m3 = op_sample(&c->op[1], m2 * MOD_TURNS);
         out = op_sample(&c->op[3], m3 * MOD_TURNS);
         break;
-    case 1:  /* (1 + 2) -> 3 -> 4 */
+    case 1:  /* (S1 + S2) -> S3 -> S4 */
         m1 = op_sample(&c->op[0], fb);
         m2 = op_sample(&c->op[2], 0.0);
         m3 = op_sample(&c->op[1], (m1 + m2) * MOD_TURNS);
         out = op_sample(&c->op[3], m3 * MOD_TURNS);
         break;
-    case 2:  /* 1 + (2 -> 3) -> 4 */
+    case 2:  /* S1 + (S2 -> S3) -> S4 */
         m1 = op_sample(&c->op[0], fb);
         m2 = op_sample(&c->op[2], 0.0);
         m3 = op_sample(&c->op[1], m2 * MOD_TURNS);
         out = op_sample(&c->op[3], (m1 + m3) * MOD_TURNS);
         break;
-    case 3:  /* (1 -> 2) + 3 -> 4 */
+    case 3:  /* (S1 -> S2) + S3 -> S4 */
         m1 = op_sample(&c->op[0], fb);
         m2 = op_sample(&c->op[2], m1 * MOD_TURNS);
         m3 = op_sample(&c->op[1], 0.0);
         out = op_sample(&c->op[3], (m2 + m3) * MOD_TURNS);
         break;
-    case 4:  /* (1 -> 2) + (3 -> 4) */
+    case 4:  /* (S1 -> S2) + (S3 -> S4), two carriers */
         m1 = op_sample(&c->op[0], fb);
         m2 = op_sample(&c->op[2], m1 * MOD_TURNS);
         m3 = op_sample(&c->op[1], 0.0);
         out = m2 + op_sample(&c->op[3], m3 * MOD_TURNS);
         break;
-    case 5:  /* 1 -> (2, 3, 4) */
+    case 5:  /* S1 -> (S2, S3, S4), three carriers */
         m1 = op_sample(&c->op[0], fb);
         out = op_sample(&c->op[2], m1 * MOD_TURNS) +
               op_sample(&c->op[1], m1 * MOD_TURNS) +
               op_sample(&c->op[3], m1 * MOD_TURNS);
         break;
-    case 6:  /* (1 -> 2) + 3 + 4 */
+    case 6:  /* (S1 -> S2) + S3 + S4, three carriers */
         m1 = op_sample(&c->op[0], fb);
         out = op_sample(&c->op[2], m1 * MOD_TURNS) +
               op_sample(&c->op[1], 0.0) +
@@ -324,7 +365,8 @@ static double channel_sample(OpnCh *c, double inc[OPN_OPS])
 void opn_render(Opn *o, short *out, int samples, int sampleRate)
 {
     /* An OPN divides its clock by 72 for one sample of all three channels, and
-     * its envelope moves once every three of those. */
+     * the envelope runs at that same rate - NP2 steps it once per output
+     * sample and scales the rate tables instead, which comes to the same. */
     const double fmRate = o->clock / 72.0;
     const double perSample = fmRate / (double)sampleRate;
     int i, c, s;
@@ -332,8 +374,7 @@ void opn_render(Opn *o, short *out, int samples, int sampleRate)
     for (i = 0; i < samples; i++) {
         double acc = 0.0;
 
-        /* Envelopes first, at their own rate. */
-        o->egCounter += perSample / 3.0;
+        o->egCounter += perSample;
         while (o->egCounter >= 1.0) {
             o->egCounter -= 1.0;
             for (c = 0; c < OPN_CHANNELS; c++) {
@@ -365,11 +406,9 @@ void opn_render(Opn *o, short *out, int samples, int sampleRate)
             acc += channel_sample(ch, inc);
         }
         {
-            /* The FM and the SSG have to arrive at comparable levels.  A carrier at a
-             * typical TL out of these songs comes out around a fifth of full
-             * scale, and there are three of them, so this is what puts the FM
-             * beside the SSG rather than twenty decibels under it - which is
-             * where it was, and why it could not be heard at all. */
+            /* The FM and the SSG have to arrive at comparable levels: a
+             * carrier at a typical TL out of these songs comes out around a
+             * fifth of full scale, and there are three of them. */
             long v = out[i] + (long)(acc * 11000.0);
 
             if (v > 32000) v = 32000;

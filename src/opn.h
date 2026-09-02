@@ -33,10 +33,13 @@ typedef struct {
     int sustainRate;            /* 0x70 */
     int sustainLevel, releaseRate; /* 0x80 */
 
-    /* State. */
+    /* State.  envIdx is NP2's env_cnt in envelope steps rather than its
+     * 16.16 fixed point: nought to 1024 is the attack, and 1024 to 2048 is
+     * everything after.  What it means as an attenuation goes through
+     * envcurve, which is an eighth power over the attack. */
     double phase;               /* in turns, 0..1 */
-    double att;                 /* attenuation, 0 = loud, 1023 = silent */
-    int stage;                  /* OPN_ATT .. OPN_REL */
+    double envIdx;
+    int stage;                  /* OPN_ATT .. OPN_OFF */
     double out, prev;           /* the last two outputs, for feedback */
 } OpnOp;
 
