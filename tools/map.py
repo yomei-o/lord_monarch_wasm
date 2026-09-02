@@ -91,7 +91,8 @@ def main():
         bk = bank_for(mp, tail, tw)
     tiles = bank(bk, tw, th)
     rows, missing = draw(cell, tiles, tw, th)
-    ch4.png(dst, W * tw, H * th, rows, ch4.PAL_GAME)
+    ch4.png(dst, W * tw, H * th, rows,
+            ch4.palette_for(tail, os.path.dirname(mp) or '.'))
     print('%s x %s -> %s  %dx%d cells of %dx%d, %d tiles in the bank, '
           'terrain set %d%s' %
           (os.path.basename(mp), os.path.basename(bk), dst, W, H, tw, th,

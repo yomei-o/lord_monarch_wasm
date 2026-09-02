@@ -23,52 +23,59 @@ import zlib
 # Palettes.  The hardware side comes from PROG.BIN and is exact: the setter at
 # 0x5db7 walks a 48-byte table at DS:0x3e20, three bytes per index, and pushes
 # them to ports 0xae, 0xac, 0xaa - so the order inside an entry is **B, R, G**,
-# each masked with 0x0f and scaled by the fade level at DS:0x34d6.  Fades run
-# through DS:0x249b + 0x30 * n; 0x24cb, 0x24fb and 0x252b are used by name.
+# each masked with 0x0f and scaled by the fade level at DS:0x34d6.
 #
-# The table *contents* are not in PROG.DAT or PROG.BIN as 48 contiguous bytes -
-# searched exhaustively, including a sweep over every possible fade level and
-# over nibble-packed 24-byte forms - so they are built at run time and still
-# have to be traced.  Until then these are **measured off the real screens**
-# (ss0.jpg, ss3.jpg): per palette index, the median of the screenshot pixels at
-# the centre of a run of >= 6 same-index pixels, which is what survives the
-# JPEG.  4-bit values, scaled by 17.
-def _pal(entries):
-    out = [(0, 0, 0)] * 16
-    for i, (r, g, b) in entries.items():
-        out[i] = (r * 17, g * 17, b * 17)
-    return out
-
-
-# DS7TTL has no E1 plane, so the title only ever uses indices 0..6.
-PAL_TITLE = _pal({
-    0: (0, 0, 0), 1: (0, 2, 2), 2: (4, 14, 10), 3: (0, 8, 8),
-    4: (4, 7, 7), 5: (7, 10, 10), 6: (10, 12, 12),
-})
-
-# 0..9 from WAKU (the in-game frame), which is the only screen that uses just
-# frame art: 8 is the orange of the frame, 6 its yellow highlight, 1 the panel
-# blue.  WAKU is byte-identical between the demo and the retail game, so these
-# carry over.
+# The tables themselves are **on the disk, appended to the 32x32 terrain
+# banks**: every `B_0n0L.CH4` decompresses to 32816 bytes = 64 tiles of
+# 32x32x4 planes (32768) plus **48 bytes**, and those 48 bytes are the palette,
+# stored as plain 0..15 values rather than packed.  That is why searching
+# PROG.BIN and PROG.DAT for them never turned anything up: the game reads them
+# off the disk with the tileset and copies them into the RAM table at DS:0x249b.
 #
-# 10..14 are **provisional**, not measured.  They never appear in WAKU - only in
-# the terrain tiles - and the only screenshot of a map to hand (ss3.jpg) is from
-# the *retail* game, whose maps and character art differ from the demo's, so its
-# map window cannot be aligned against anything on this disk.  What the tiles do
-# say is which indices belong together: the grass cell (value 0x00, 33% of every
-# cell on the disk) is drawn from indices 4, 12, 13 and 14 in that order of
-# area, and the mountain cell (0x60) pairs index 10 with the frame orange.  So
-# these are a green ramp plus two browns, picked to make development renders
-# legible, and they will be replaced the moment the real tables turn up.
-PAL_GAME = _pal({
-    0: (0, 0, 0), 1: (0, 0, 10), 2: (10, 1, 0), 3: (8, 12, 14),
-    4: (0, 11, 5), 5: (0, 10, 12), 6: (15, 12, 1), 7: (1, 11, 8),
-    8: (13, 7, 0), 9: (1, 7, 11),
-    10: (12, 8, 2), 11: (7, 4, 1), 12: (0, 9, 4), 13: (0, 13, 7),
-    14: (0, 7, 3), 15: (15, 15, 15),
-})
+# Indices 0..9 are identical in all five sets - they are the interface colours -
+# and 10..15 change with the terrain, which is what makes one map look like
+# grassland and another like stationery.  Cross-checked three ways and all three
+# agree: index 8 = E80 against (13,7,0) measured off the retail frame, index 7 =
+# FFF against #efefef in org45.gif, index 1/2/3/5/6/9 likewise.
+import glob
 
-DEFAULT_PAL = PAL_GAME
+
+def _scale(entries):
+    """0..15 per channel -> 0..255, which is what a PNG and a DIB want."""
+    return [(r * 17, g * 17, b * 17) for r, g, b in entries]
+
+
+def tail_palette(path):
+    """The 48-byte palette appended to a `B_0n0L.CH4`."""
+    t = bzcat(path)[-48:]
+    #                   B         R         G
+    return _scale([(t[i * 3 + 1], t[i * 3 + 2], t[i * 3]) for i in range(16)])
+
+
+def palette_for(terrain, where='disk'):
+    """The palette belonging to terrain set 10 / 20 / 30 / 40 / 50."""
+    return tail_palette(os.path.join(where, 'B_%03dL.CH4' % terrain))
+
+
+# The title screen has no terrain bank, so its table is not on the disk in this
+# form and has not been found in PROG.BIN either.  These seven are **measured**
+# off ss0.jpg: per index, the median of the screenshot pixels at the centre of a
+# run of >= 6 same-index pixels, which is what survives the JPEG.  DS7TTL has no
+# E1 plane, so the title only ever uses 0..6.
+PAL_TITLE = _scale([
+    (0, 0, 0), (0, 2, 2), (4, 14, 10), (0, 8, 8),
+    (4, 7, 7), (7, 10, 10), (10, 12, 12),
+] + [(0, 0, 0)] * 9)
+
+
+def _default():
+    try:
+        return palette_for(10)
+    except Exception:
+        return [(i * 17, i * 17, i * 17) for i in range(16)]
+
+
+DEFAULT_PAL = _default()
 
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -163,7 +170,10 @@ def main():
         elif a == '--zoom':
             zoom = int(sys.argv[i + 1])
 
-    pal = PAL_TITLE if '--pal' in sys.argv and         sys.argv[sys.argv.index('--pal') + 1] == 'title' else PAL_GAME
+    pal = DEFAULT_PAL
+    if '--pal' in sys.argv:
+        which = sys.argv[sys.argv.index('--pal') + 1]
+        pal = PAL_TITLE if which == 'title' else palette_for(int(which))
 
     if screen:
         pl = []
