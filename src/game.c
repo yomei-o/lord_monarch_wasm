@@ -41,6 +41,9 @@ int game_move(Game *g, int slot, int dir)
     return 1;
 }
 
+static int place(Game *g, int index, int side, unsigned char state,
+                 unsigned short carrying);
+
 /* sub_add0: the first slot whose byte 0 has bit 7 set, scanning from the front.
  * Returns -1 when the field is full, which the original signals with CF. */
 static int alloc_unit(Game *g)
@@ -293,4 +296,78 @@ void game_path_advance(Game *g, int slot)
     if (u->link == 0xff) return;
     p->cursor++;
     if (p->cursor >= p->len) u->link = 0xff;     /* 0xc2df */
+}
+
+/* --------------------------------------------------------------- the world */
+
+void game_neighbours(const Game *g, int index, unsigned char tile,
+                     int *same, int *empty, int *lastEmpty)
+{
+    /* sub_adeb walks the eight neighbours by byte offset: +98, +94, -94, -98
+     * for the diagonals and +/-96, +/-2 for the sides.  In cells that is the
+     * ordinary eight-way ring. */
+    static const int dx[8] = { 1, -1,  1, -1, 0,  0, 1, -1 };
+    static const int dy[8] = { 1,  1, -1, -1, 1, -1, 0,  0 };
+    int x = index % MAP_W, y = index / MAP_W, k;
+
+    *same = *empty = 0;
+    *lastEmpty = -1;
+    for (k = 0; k < 8; k++) {
+        int nx = x + dx[k], ny = y + dy[k], n;
+        if (nx < 0 || nx >= MAP_W || ny < 0 || ny >= MAP_H) continue;
+        n = ny * MAP_W + nx;
+        if (g->cell[n].tile == 0) {
+            (*empty)++;
+            *lastEmpty = n;
+        } else if (g->cell[n].tile == tile) {
+            (*same)++;
+        }
+    }
+}
+
+/* Tile 5: the amount climbs by ten and, when it would pass 255, turns into a
+ * neutral unit standing on a cleared square.  0x3533. */
+static void tick_nest(Game *g, int index)
+{
+    int v = g->cell[index].amount + 10;
+
+    if (v <= 0xff) {
+        g->cell[index].amount = (unsigned char)v;
+        return;
+    }
+    if (g->occupant[index] >= 0) return;
+    if (place(g, index, 4, UNIT_STATE_NEUTRAL, CELL_FULL_AMOUNT) < 0) return;
+    g->cell[index].amount = 0;
+}
+
+/* Tiles 0x08..0x0b: developed land.  0x33d1. */
+static void tick_land(Game *g, int index, int side)
+{
+    int same, empty, last, gain, v;
+
+    game_neighbours(g, index, (unsigned char)(CELL_TERRITORY0 + side),
+                    &same, &empty, &last);
+    gain = same + 1;                        /* `inc dh`, then it is used twice */
+    if (side != g->human && g->aiBonus) gain *= 2;
+    v = g->cell[index].amount + gain;
+    g->cell[index].amount = (unsigned char)(v > 0xff ? 0xff : v);
+}
+
+void game_tick_cells(Game *g)
+{
+    int todo = (0x90 >> (g->speed & 7)) - 1;
+    int at = g->cellCursor;
+
+    if (todo < 1) todo = 1;
+    while (todo--) {
+        unsigned char tile = g->cell[at].tile;
+        if (tile == 5)
+            tick_nest(g, at);
+        else if (tile >= CELL_TERRITORY0 && tile < CELL_TERRITORY0 + PLAYERS)
+            tick_land(g, at, tile - CELL_TERRITORY0);
+        /* castles (0x14..0x17) go through 0x3581, which is not ported yet */
+        at += 23;                            /* 46 bytes */
+        if (at >= MAP_W * MAP_H) at -= MAP_W * MAP_H;
+    }
+    g->cellCursor = at;
 }

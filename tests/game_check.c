@@ -245,6 +245,73 @@ int main(int argc, char **argv)
         check(g->unit[who].link == 0xff, "and the unit has no path");
     }
 
+    /* The world tick. */
+    {
+        Map m;
+        int i, seen, before, same, empty, last, c;
+        static unsigned char visited[MAP_W * MAP_H];
+
+        gfx_load_map(&m, d, "B_000.MAP");
+        game_init(g, &m);
+
+        /* The cell cursor steps 23 cells at a time and 23 is coprime with 2304,
+         * so 2304 steps touch every square exactly once. */
+        memset(visited, 0, sizeof visited);
+        for (i = 0; i < MAP_W * MAP_H; i++) {
+            visited[g->cellCursor] = 1;
+            g->cellCursor += 23;
+            if (g->cellCursor >= MAP_W * MAP_H) g->cellCursor -= MAP_W * MAP_H;
+        }
+        seen = 0;
+        for (i = 0; i < MAP_W * MAP_H; i++) seen += visited[i];
+        checkf(seen == MAP_W * MAP_H,
+               "the cell cursor reached %d of %d squares", seen,
+               MAP_W * MAP_H, 0);
+        check(g->cellCursor == 0, "and came back to where it started");
+
+        /* A nest square climbs by ten and eventually breeds. */
+        game_init(g, &m);
+        for (i = 0; i < MAP_W * MAP_H; i++)
+            if (g->cell[i].tile == 5 && g->occupant[i] < 0) break;
+        if (i < MAP_W * MAP_H) {
+            int before5 = game_unit_count(g, 4), rounds = 0;
+            g->cellCursor = i;
+            g->speed = 7;                    /* one cell a tick */
+            before = g->cell[i].amount;
+            game_tick_cells(g);
+            checkf(g->cell[i].amount == before + 10,
+                   "a nest square went from %d to %d, expected +10", before,
+                   g->cell[i].amount, 0);
+            while (g->cell[i].amount != 0 && rounds++ < 64) {
+                g->cellCursor = i;
+                game_tick_cells(g);
+            }
+            check(g->cell[i].amount == 0, "it eventually resets");
+            checkf(game_unit_count(g, 4) == before5 + 1,
+                   "and breeds one neutral unit (%d -> %d)", before5,
+                   game_unit_count(g, 4), 0);
+        }
+
+        /* Developed land grows by one for each neighbour of its own kind. */
+        game_init(g, &m);
+        for (i = 0; i < MAP_W * MAP_H; i++)
+            if (g->cell[i].tile >= CELL_TERRITORY0 &&
+                g->cell[i].tile < CELL_TERRITORY0 + PLAYERS) break;
+        check(i < MAP_W * MAP_H, "B_000 has developed land at the start");
+        if (i < MAP_W * MAP_H) {
+            c = g->cell[i].tile - CELL_TERRITORY0;
+            game_neighbours(g, i, g->cell[i].tile, &same, &empty, &last);
+            g->cellCursor = i;
+            g->speed = 7;
+            g->human = c;                    /* no AI bonus for this one */
+            before = g->cell[i].amount;
+            game_tick_cells(g);
+            checkf(g->cell[i].amount == before + same + 1,
+                   "land grew by %d, expected %d",
+                   g->cell[i].amount - before, same + 1, 0);
+        }
+    }
+
     disk_close(d);
     free(g);
     if (failures) {

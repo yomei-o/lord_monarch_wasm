@@ -121,8 +121,11 @@ typedef struct {
     Unit unit[UNIT_SLOTS];
     Side side[SIDES];
     int terrain;                        /* the map's own tile set */
-    int cursor;                         /* DS:3BEC, the rolling update cursor */
+    int cursor;                         /* DS:3BEC, the rolling unit cursor */
+    int cellCursor;                     /* DS:3BEA, the rolling cell cursor */
     int speed;                          /* DS:3C02, 0 = fastest */
+    int human;                          /* DS:3C00, the side the player has */
+    int aiBonus;                        /* DS:347E, doubles AI land growth */
 } Game;
 
 /* Builds the starting state from a loaded map, following sub_0311:
@@ -139,6 +142,26 @@ void game_init(Game *g, const Map *m);
 
 /* One pass of the unit updater: `0x40 >> speed` slots, stepping 31 at a time. */
 void game_step(Game *g);
+
+/* One pass of the world tick, following sub_3332.  It walks `(144 >> speed) - 1`
+ * cells, stepping the cursor 23 cells at a time (46 bytes) and wrapping at 2304,
+ * which is coprime with 2304 and so visits every square.  What it does depends
+ * on the tile:
+ *
+ *   5             the amount grows by 10; when that would pass 255 and nobody is
+ *                 standing there, a neutral unit appears and the amount resets
+ *                 to 0 - this is where the wild ones come from
+ *   0x08 + side   developed land: the amount grows by one for each of the eight
+ *                 neighbours that is the same side's land, plus one, and the AI
+ *                 sides get that twice over while [0x347e] is set
+ *   0x14 + side   the castle; not ported yet
+ */
+void game_tick_cells(Game *g);
+
+/* The eight neighbours of a cell: how many are `tile`, how many are plain
+ * ground, and where the last plain one was.  sub_adeb. */
+void game_neighbours(const Game *g, int index, unsigned char tile,
+                     int *same, int *empty, int *lastEmpty);
 
 /* One step, following the sequence at 0x3793:
  *
