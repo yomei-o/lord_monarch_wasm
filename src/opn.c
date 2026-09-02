@@ -345,7 +345,12 @@ void opn_render(Opn *o, short *out, int samples, int sampleRate)
             acc += channel_sample(ch, inc);
         }
         {
-            long v = out[i] + (long)(acc * 2600.0);
+            /* The FM and the SSG have to arrive at comparable levels.  A carrier at a
+             * typical TL out of these songs comes out around a fifth of full
+             * scale, and there are three of them, so this is what puts the FM
+             * beside the SSG rather than twenty decibels under it - which is
+             * where it was, and why it could not be heard at all. */
+            long v = out[i] + (long)(acc * 11000.0);
 
             if (v > 32000) v = 32000;
             if (v < -32000) v = -32000;

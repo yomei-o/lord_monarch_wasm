@@ -97,6 +97,15 @@ typedef struct {
      * one in PROG.DAT. */
     unsigned char *envRam;
     int envBase;                /* [0x3b3f], the slot f9 counts from */
+
+    /* Which half of the chip this track drives.  It is not cosmetic: six of
+     * the sixteen commands mean different things on the two sides, because
+     * sub_1170 and sub_1175 point at different tables - 0x1186 for FM and
+     * 0x11a6 for SSG. */
+    int fm;
+    int voiceWanted;            /* an FM 0xf0 was seen; the renderer uploads */
+    const unsigned char *fmVol; /* DS:0x2431, which the FM side's 0xf1 maps
+                                 * a volume through */
     /* Command 0xfa writes a chip register straight out of the sequence, which
      * is how a song reaches the noise generator and the mixer - the third SSG
      * part of most of these songs is percussion and does nothing else.  The

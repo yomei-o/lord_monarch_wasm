@@ -87,19 +87,41 @@ static int command(SndVoice *v, int cmd)
     a = v->seq[v->pos++];                   /* sub_1175 fetches this one */
 
     switch (cmd) {
-    case 0xf0:                              /* 0x1310: the timbre */
-        v->timbre = a;
+    case 0xf0:
+        if (v->fm) {
+            /* 0x11c6: [si+5] is the voice number and the handler falls into
+             * 0x1430, which uploads it.  A song's first command is usually
+             * "f0 00", so waiting for the number to change would never upload
+             * anything - which is exactly what went wrong the first time. */
+            v->timbre = a;
+            v->voiceWanted = 1;
+        } else {
+            v->timbre = a << 4;             /* 0x1310: [si+5] = al << 4 */
+        }
         return 1;
-    case 0xf1:                              /* 0x132e: the volume */
-        v->volume = a;
+    case 0xf1:
+        /* 0x132e on the SSG side is the volume as it stands; 0x11cc on the FM
+         * side maps it through DS:0x2431 first and the result is a level where
+         * bigger is quieter. */
+        v->volume = (v->fm && v->fmVol) ? v->fmVol[a & 0x1f] : a;
         return 1;
-    case 0xfb:                              /* 0x1332: quieter, floored at 0 */
+    case 0xfb:
         v->pos--;
-        if (--v->volume < 0) v->volume = 0;
+        if (v->fm) {                        /* 0x11d8: quieter is TL + 3 */
+            v->volume += 3;
+            if (v->volume >= 0x80) v->volume = 0x7f;
+        } else if (--v->volume < 0) {       /* 0x1332 */
+            v->volume = 0;
+        }
         return 1;
-    case 0xfc:                              /* 0x133e: louder */
+    case 0xfc:
         v->pos--;
-        v->volume++;
+        if (v->fm) {                        /* 0x11ea: louder is TL - 3 */
+            v->volume -= 3;
+            if (v->volume < 0) v->volume = 0;
+        } else {                            /* 0x133e */
+            v->volume++;
+        }
         return 1;
     case 0xf6: {                            /* 0x120e: loop */
         /* The counter lives in the sequence: decrement it, and when it runs
@@ -139,8 +161,11 @@ static int command(SndVoice *v, int cmd)
     case 0xf3:                              /* 0x11fe: [si+8] */
         v->param8 = a;
         return 1;
-    case 0xf4:                              /* 0x134d: [si+4] */
-        v->algo = a;
+    case 0xf4:
+        /* 0x134d on the SSG side is [si+4], the tone/noise half of register 7.
+         * 0x1202 on the FM side is [si+6], the volume, and then a TL write. */
+        if (v->fm) v->volume = a;
+        else v->algo = a;
         return 1;
     case 0xf5:                              /* 0x1208: [0x3b3d], then
                                              * sub_14c9 writes it to the
@@ -165,6 +190,9 @@ static int command(SndVoice *v, int cmd)
         }
         return 1;
     case 0xf9: {                            /* 0x1398: the song's own envelope */
+        /* On the FM side this is 0x13de, which is a bare ret: the operand the
+         * dispatcher already took is the whole of it. */
+        if (v->fm) return 1;
         /* The slot is [0x3b3f] + this channel + 0x0a, and [si+5] becomes
          * slot << 4 - so f9 both writes an envelope and selects it.  The six
          * bytes go into the table at DS:0x34e2 + slot*16, at +0, +3, +4, +6,
@@ -462,6 +490,7 @@ int snd_song_track(const unsigned char *song, unsigned songSize, int track,
  *   0x13fe, 0x140d     key on and off through register 0x28
  */
 #define FM_CARRIER_AT 0x2445        /* eight masks, one per algorithm */
+#define FM_VOL_AT 0x2431            /* what the FM side's 0xf1 maps through */
 #define FM_MASTER 0xff              /* DS:0x3b42, which nothing here changes */
 
 static void fm_write_tl(Opn *opn, const unsigned char *progDat,
@@ -522,6 +551,9 @@ int snd_render_song(const unsigned char *progDat, unsigned progDatSize,
                    snd_start_bytes(&v[ch], song + off, (int)len);
         v[ch].chan = ch % 3;
         v[ch].envRam = env;
+        v[ch].fm = ch < 3;
+        if (ch < 3 && progDatSize > (unsigned)(FM_VOL_AT - 0x1000) + 32)
+            v[ch].fmVol = progDat + (FM_VOL_AT - 0x1000);
     }
     for (ch = 0; ch < 3; ch++) algo[ch] = 0;
     if (!live[0] && !live[1] && !live[2] && !live[3] && !live[4] && !live[5])
@@ -537,19 +569,19 @@ int snd_render_song(const unsigned char *progDat, unsigned progDatSize,
 
         /* The three FM parts. */
         for (ch = 0; ch < 3; ch++) {
-            int keyed = 0, timbreWas;
+            int keyed = 0;
 
             if (!live[ch]) continue;
-            timbreWas = v[ch].timbre;
             if (!snd_tick(&v[ch], &keyed)) {
                 live[ch] = 0;
                 opn_write(&opn, 0x28, ch);           /* key off */
                 continue;
             }
             any = 1;
-            /* Command 0xf0 on the FM side is a voice, not an envelope index. */
-            if (v[ch].timbre != timbreWas)
+            if (v[ch].voiceWanted) {
                 fm_load_voice(&opn, song, songSize, ch, v[ch].timbre, &algo[ch]);
+                v[ch].voiceWanted = 0;
+            }
             if (keyed) {
                 unsigned short f = snd_fnumber(fnums, v[ch].note, 0);
 
