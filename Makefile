@@ -10,6 +10,9 @@ CC      ?= gcc
 CFLAGS  ?= -O2 -Wall -Wextra -std=c99
 OUT     ?= tmp
 EMCC    ?= C:/prog/emsdk/emsdk/upstream/emscripten/emcc.exe
+# Spelled out rather than "python": Windows ships a Store alias of that name
+# which answers and then does nothing.
+PYTHON  ?= C:/Python313/python.exe
 IMAGE   ?= $(firstword $(wildcard orig/*.FIM))
 
 CORE = src/disk.c src/gfx.c src/bz.c src/lmz.c
@@ -50,10 +53,16 @@ shots: $(OUT)/monarch_shot.exe
 #
 # The image on the disk is named in Shift-JIS half-width katakana, which no
 # shell here passes through intact, so it is copied to an ASCII name first.
-wasm: monarch.js
+wasm: monarch.js stamp
 
 $(OUT)/monarch.fim: $(IMAGE) | $(OUT)
 	cp "$(IMAGE)" $@
+
+# The page carries the build's own hash so a browser cannot serve a monarch.js
+# from one build with a monarch.wasm from another - which it will, given the
+# chance, and then fail on whichever export was added in between.
+stamp: monarch.wasm
+	$(PYTHON) tools/stamp.py monarch.wasm index.html
 
 monarch.js: src/main_wasm.c $(APP) $(OUT)/monarch.fim font/shinonome.fnt
 	$(EMCC) -O2 -std=c99 -o $@ src/main_wasm.c $(APP) --embed-file $(OUT)/monarch.fim@/monarch.fim --embed-file font/shinonome.fnt@/shinonome.fnt -s MODULARIZE=1 -s EXPORT_NAME=LordMonarch -s EXPORTED_RUNTIME_METHODS=ccall,cwrap,UTF8ToString,HEAPU8,HEAPU32 -s ALLOW_MEMORY_GROWTH=1 -s ENVIRONMENT=web,worker,node
@@ -61,4 +70,4 @@ monarch.js: src/main_wasm.c $(APP) $(OUT)/monarch.fim font/shinonome.fnt
 clean:
 	rm -f $(OUT)/monarch.exe $(OUT)/monarch_shot.exe $(OUT)/game_check.exe $(OUT)/sim.exe monarch.js monarch.wasm
 
-.PHONY: all shots wasm check clean
+.PHONY: all shots wasm check clean stamp

@@ -36,9 +36,6 @@
     grid-template-columns: auto 1fr; color: #9aa2ad; max-width: 640px;
   }
   #keys b { color: #d8dbe0; font-weight: 600; white-space: nowrap; }
-  #fontrow { margin-top: 12px; font-size: 12px; color: #9aa2ad; }
-  #fontrow input { font: inherit; font-size: 12px; }
-  #fontstate { margin-left: 8px; }
   #buttons { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 6px; }
   button {
     font: inherit; font-size: 12px; padding: 6px 12px;
@@ -100,17 +97,6 @@
 <!-- Keys, and nothing more.  Everything the game does is on the game's own
      screen now - the left panel and its dialogs - so these are here only so a
      touch screen has something to press. -->
-<!-- A PC-98 font ROM makes the dialogs come out in the original's own
-     Japanese.  It is NEC's font, not the game's and not ours, so it is not
-     shipped here: this reads one off your own machine, in your own browser,
-     and nothing leaves it. -->
-<div id="fontrow">
-  <label>font.rom（実機の字形に差し替える。無くても日本語で表示されます）:
-    <input type="file" id="fontrom" accept=".rom,application/octet-stream">
-  </label>
-  <span id="fontstate">同梱の東雲フォントで表示中</span>
-</div>
-
 <div id="buttons">
   <button data-key="4">←</button>
   <button data-key="6">↑</button>
@@ -146,8 +132,14 @@
     原作にマウスは無いので、これはこの移植の足しものです</span>
 </div>
 
-<script src="monarch.js"></script>
+<!-- BUILD is bumped by "make wasm".  Without it a browser will happily hold
+     on to a monarch.js from an earlier build and then fail on whichever
+     function was added since - which is exactly what happened once. -->
+<script src="monarch.js?v=4b63a612"></script>
 <script>
+  // Stamped by tools/stamp.py from the wasm's own hash.
+  window.LM_BUILD = '4b63a612';
+
 (function () {
   'use strict';
 
@@ -179,10 +171,10 @@
       if (!image || image.width !== w) image = ctx.createImageData(w, h);
       image.data.set(mod.HEAPU8.subarray(p, p + w * h * 4));
       ctx.putImageData(image, 0, 0);
-      // While a dialog is up its heading goes here too, so what the screen is
-      // asking is also readable as text.
       var snd = mod._lm_sound();
       if (snd) playSound(snd);
+      // While a dialog is up its heading goes here too, so what the screen is
+      // asking is also readable as text.
       if (mod._lm_dialog()) {
         statusEl.textContent = 'dialog: ' + dialogLine(0) + '  —  ' +
           dialogLine(Math.max(0, mod._lm_dialog_pick()) + 2);
@@ -192,18 +184,6 @@
       dirty = false;
     }
     requestAnimationFrame(frame);
-  }
-
-  // If a font.rom happens to sit next to this page, use it without being asked.
-  // On GitHub Pages there is none, and that is the point.
-  function tryLocalFontRom() {
-    if (!window.fetch) return;
-    fetch('font.rom').then(function (r) {
-      if (!r.ok) throw 0;
-      return r.arrayBuffer();
-    }).then(function (b) {
-      useFontRom(new Uint8Array(b));
-    }).catch(function () { /* none there; English it is */ });
   }
 
   var running = false;
@@ -272,23 +252,6 @@
     dirty = true;
   });
 
-  // Hand a font ROM to the wasm side: write into its own buffer and tell it how
-  // much.  Nothing is uploaded anywhere - this is all in the page.
-  function useFontRom(bytes) {
-    if (!mod) return false;
-    var cap = mod._lm_font_rom_capacity();
-    if (bytes.length > cap) {
-      setFontState('大きすぎます (' + bytes.length + ' > ' + cap + ')');
-      return false;
-    }
-    var p = mod._lm_font_rom_buffer();
-    mod.HEAPU8.set(bytes, p);
-    var ok = mod._lm_font_rom(bytes.length);
-    setFontState(ok ? '読み込みました — 日本語表示' : '形式が違うようです');
-    dirty = true;
-    return !!ok;
-  }
-
   // Sound.  The game asks for one of a handful of noises through a priority
   // latch (sub_0d12) and something else picks the request up; lm_sound() is that
   // pick-up.  What the ids mean:
@@ -305,7 +268,8 @@
   function audioReady() {
     if (muted) return null;
     if (audio) return audio;
-    var C = window.AudioContext || window.webkitAudioContext;
+    var C = typeof window !== 'undefined' &&
+            (window.AudioContext || window.webkitAudioContext);
     if (!C) return null;
     try { audio = new C(); } catch (e) { audio = null; }
     return audio;
@@ -351,10 +315,6 @@
     try { return sjis.decode(bytes); } catch (e) { return mod.UTF8ToString(p); }
   }
 
-  function setFontState(t) {
-    var el = document.getElementById('fontstate');
-    if (el) el.textContent = t;
-  }
 
   var muteBtn = document.getElementById('mute');
   if (muteBtn) {
@@ -365,16 +325,6 @@
     });
   }
 
-  var fontInput = document.getElementById('fontrom');
-  if (fontInput) {
-    fontInput.addEventListener('change', function (e) {
-      var f = e.target.files && e.target.files[0];
-      if (!f) return;
-      var r = new FileReader();
-      r.onload = function () { useFontRom(new Uint8Array(r.result)); };
-      r.readAsArrayBuffer(f);
-    });
-  }
 
   window.addEventListener('keydown', function (e) {
     var k = fromEvent(e);
@@ -395,13 +345,27 @@
     fail('monarch.js が読み込めませんでした');
     return;
   }
-  LordMonarch().then(function (m) {
+  // The wasm file is fetched by the glue rather than by the page, so the same
+  // version has to be put on that URL too or the pair can come from different
+  // builds.
+  // Over http the wasm gets the build tag too, so a browser cannot pair a
+  // monarch.js from one build with a monarch.wasm from another.  Off http -
+  // node running the checks, or a file:// page - the glue opens it as a path
+  // and a query string would simply not be there.
+  var overHttp = typeof location !== 'undefined' &&
+                 /^https?:$/.test(location.protocol);
+  LordMonarch({
+    locateFile: function (path) {
+      if (overHttp && path.slice(-5) === '.wasm')
+        return path + '?v=' + window.LM_BUILD;
+      return path;
+    }
+  }).then(function (m) {
     mod = m;
     if (!m._lm_init()) {
       fail('起動できませんでした: ' + m.UTF8ToString(m._lm_status()));
       return;
     }
-    tryLocalFontRom();
     frame();
   }).catch(function (e) {
     fail('起動できませんでした: ' + e);

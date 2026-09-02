@@ -47,6 +47,9 @@ const raf = [];
 const sandbox = {
   console,
   require,
+  // The page decodes the game's Shift-JIS with this; without it the dialog
+  // headings come back as mojibake and a check on their text is meaningless.
+  TextDecoder,
   LordMonarch: require(path.join(root, 'monarch.js')),
   requestAnimationFrame: (f) => { raf.push(f); },
   document: {
@@ -61,11 +64,21 @@ const sandbox = {
   window: {
     addEventListener: (t, f) => { (handlers['window:' + t] ||= []).push(f); },
     focus: () => {},
+    TextDecoder,
   },
 };
 sandbox.window.document = sandbox.document;
 
 vm.createContext(sandbox);
+// The inline script keeps the module in a local; hold on to it here so the
+// export check below can see what it actually got.
+const realModule = sandbox.LordMonarch;
+sandbox.LordMonarch = function (opts) {
+  return realModule(opts).then((m) => {
+    sandbox.LordMonarch.__mod = m;
+    return m;
+  });
+};
 vm.runInContext(inline[0], sandbox, {filename: 'index.html inline'});
 
 function pump(n) {
@@ -95,6 +108,20 @@ setTimeout(() => {
     console.log(`${ok ? 'ok  ' : 'FAIL'}  ${what}`);
     if (!ok) failed++;
   };
+
+  // Every lm_* the page calls has to exist on the module.  This is the check
+  // that was missing when the page went out calling _lm_sound against a
+  // monarch.js that did not have it yet - the browser said
+  // "mod._lm_sound is not a function" and nothing here noticed.
+  {
+    const wanted = [...new Set(html.match(/_lm_[a-z_]+/g) || [])].sort();
+    const missing = wanted.filter(
+        (n) => typeof sandbox.LordMonarch.__mod?.[n] !== 'function');
+    check(wanted.length > 5, `the page calls ${wanted.length} lm_ functions`);
+    check(missing.length === 0,
+          missing.length ? `the module is missing ${missing.join(', ')}`
+                         : 'and the module exports every one of them');
+  }
 
   pump(4);
   check(puts.length > 0, 'the title frame reached putImageData');
@@ -143,7 +170,11 @@ setTimeout(() => {
         `right moved a column: "${els.status.textContent}"`);
   press(' ');
   pump(2);
-  check(/^dialog: THE FOUR COUNTRIES/.test(els.status.textContent),
+  // The heading is in the original's Japanese when a font image is present and
+  // in English when it is not, so this accepts either rather than pinning the
+  // language.
+  check(/^dialog: (THE FOUR COUNTRIES|\u56db\u3064\u306e\u56fd)/
+            .test(els.status.textContent),
         `confirm opened the dialog on the game's own screen: ` +
         `"${els.status.textContent}"`);
   press('Backspace');            // close the dialog
