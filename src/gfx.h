@@ -83,6 +83,25 @@ void gfx_text(Screen *s, const Font *f, int x, int y, const char *t,
               unsigned char colour);
 int gfx_text_width(const char *t);
 
+/* The graphic charger, as the title screen uses it.  Two numbers travel
+ * together in one word through sub_724a: `mask` says which planes the write
+ * reaches - bit 0 is B, 1 is R, 2 is G, 3 is E - and `colour` supplies one bit
+ * per plane, so a pixel comes out as
+ *
+ *     new = (old & ~mask) | (colour & mask)
+ *
+ * on the assembled index.  The title asks for mask 7 throughout, which is
+ * every plane but E: E belongs to the starfield, and leaving it alone is why a
+ * star still shows over the panel.  Both take inclusive corners, the way the
+ * original's register pairs do.
+ *
+ * The panel at 0xc9b5 is a fill with colour 6 and the two diagonals at 0xc9c7
+ * and 0xc9d9 are lines with colour 1. */
+void gfx_grcg_fill(Screen *s, int x0, int y0, int x1, int y1,
+                   int mask, int colour);
+void gfx_grcg_line(Screen *s, int x0, int y0, int x1, int y1,
+                   int mask, int colour);
+
 /* A filled rectangle with a one-pixel edge, which is all a dialog needs. */
 void gfx_box(Screen *s, int x, int y, int w, int h, unsigned char fill,
              unsigned char edge);

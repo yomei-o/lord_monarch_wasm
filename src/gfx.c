@@ -174,6 +174,47 @@ void gfx_box(Screen *s, int x, int y, int w, int h, unsigned char fill,
         }
 }
 
+/* See gfx.h.  One pixel of a read-modify-write. */
+static void grcg_px(Screen *s, int x, int y, int mask, int colour)
+{
+    unsigned char *p;
+
+    if (x < 0 || y < 0 || x >= SCR_W || y >= SCR_H) return;
+    p = &s->px[(size_t)y * SCR_W + x];
+    *p = (unsigned char)((*p & ~mask & 15) | (colour & mask & 15));
+}
+
+void gfx_grcg_fill(Screen *s, int x0, int y0, int x1, int y1,
+                   int mask, int colour)
+{
+    int x, y, t;
+
+    if (x0 > x1) { t = x0; x0 = x1; x1 = t; }
+    if (y0 > y1) { t = y0; y0 = y1; y1 = t; }
+    for (y = y0; y <= y1; y++)
+        for (x = x0; x <= x1; x++) grcg_px(s, x, y, mask, colour);
+}
+
+void gfx_grcg_line(Screen *s, int x0, int y0, int x1, int y1,
+                   int mask, int colour)
+{
+    /* The title's two diagonals are exactly forty-five degrees, so the error
+     * term never has to decide anything; the general form is here so that the
+     * next caller does not have to think about it. */
+    int dx = x1 > x0 ? x1 - x0 : x0 - x1;
+    int dy = y1 > y0 ? y1 - y0 : y0 - y1;
+    int sx = x0 < x1 ? 1 : -1;
+    int sy = y0 < y1 ? 1 : -1;
+    int err = dx - dy;
+
+    for (;;) {
+        grcg_px(s, x0, y0, mask, colour);
+        if (x0 == x1 && y0 == y1) break;
+        if (2 * err > -dy) { err -= dy; x0 += sx; }
+        else               { err += dx; y0 += sy; }
+    }
+}
+
 void gfx_clear(Screen *s, unsigned char index)
 {
     memset(s->px, index, sizeof s->px);

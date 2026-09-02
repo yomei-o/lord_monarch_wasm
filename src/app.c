@@ -88,6 +88,7 @@ static int haveDim;
  * from the original rather than carrying copies. */
 #define DAT_BASE 0x1000
 #define PAL_TITLE_AT 0x24fb        /* the table the title fades to */
+#define PANEL_TABLE_AT 0x3b4f      /* the three lines across the title's foot */
 
 static unsigned char *progDat;
 static unsigned progDatSize;
@@ -426,6 +427,151 @@ static void stars_tick(void)
     for (n = 0; n < starCount; n++) star_draw(starPos[n]);
 }
 
+/* The panel across the foot of the title, which sub_c946 draws in four steps:
+ *
+ *   0xc9b5  sub_7c1c  ax=0x0607  x 0..639, y 326..399     the band
+ *   0xc9c7  sub_7ad3  ax=0x0107  (73,326) to (0,399)      the left diagonal
+ *   0xc9d9  sub_7ad3  ax=0x0107  (566,326) to (639,399)   the right one
+ *   0xc9eb            si=0x3b4f                           three lines of text
+ *
+ * The low byte of each ax is the plane mask and the high byte the colour, so
+ * the band is colour 6 and the diagonals colour 1, both through B, R and G
+ * with E left to the stars.  Every one of those numbers is confirmed against
+ * ss0.jpg to the pixel: the diagonals leave row 326 at x 73 and x 566 and
+ * reach row 398 at x 1 and x 638, the band runs the full width, and the text
+ * starts at x 240 on rows 336, 356 and 376.
+ *
+ * One thing does not agree, and it is the colour.  Index 6 is fff in the
+ * table at DS:0x24fb and the photo's logo outline - which the picture stores
+ * as index 6 - measures #fefefc, so index 6 really is white.  The band, forty
+ * thousand pixels of one flat value, measures #abaabc.  It is not a dither
+ * (the fill writes 0xff through a solid tile), not the fade (the per-channel
+ * fractions disagree), not a global brightness (the loop at 0x7374 scales
+ * every entry by the same [0x34d6], and no value fits both fff and 088), and
+ * not a second table (nothing on the disk holds aab at index 6).  So the band
+ * is drawn here as the code says, index 6, and the photograph is left
+ * disagreeing until something explains it.
+ */
+static const struct { const char *code; const char *what; } PANEL_UNKNOWN[] = {
+    { "@1w", "DS:0x3c1e, the speed the boot menu picks" },
+    { "@?",  "DS:0x3b3a, which sound driver started" },
+    { "@4w", "DS:0xc4e8, the kilobytes the cache driver took" }
+};
+
+/* One line of the panel.  `at` is the byte after the two that gave the screen
+ * offset; the return is where the next entry starts.
+ *
+ * sub_759b finds the string's terminator first (0x75c4: repne scasb, and bx
+ * keeps what it found), so the format codes take their operands from just past
+ * the NUL, one word each in the order they appear.  A byte below 0x20 is not
+ * text: 0x7633 subtracts 0x10 and drops the result in [0x32a9], the colour, so
+ * the 0x11 that opens the first line is what makes all three black. */
+static unsigned panel_line(unsigned di, unsigned at, int *colour)
+{
+    char out[128];
+    int n = 0, x = (int)(di % 0x50) * 8, y = (int)(di / 0x50);
+    unsigned end = at, op;
+    const unsigned char *p;
+
+    while ((p = dat_at(end, 1)) != 0 && *p) end++;
+    if (!p) return 0;
+    op = end + 1;                       /* bx, in the original */
+
+    while ((p = dat_at(at, 1)) != 0 && *p && n < (int)sizeof out - 12) {
+        unsigned char c = *p++;
+
+        at++;
+        if (c < 0x20) {
+            /* The colour applies from here on, so what is already gathered
+             * goes out first.  Getting that backwards painted the last line
+             * in the colour its own trailing 0x17 leaves for the next one. */
+            if (c >= 0x10) {
+                out[n] = 0;
+                if (n) {
+                    gfx_text_sjis(&bg, &font, &fontRom, x, y, out,
+                                  (unsigned char)*colour);
+                    x += n * 8;
+                    n = 0;
+                }
+                *colour = c - 0x10;
+            }
+            continue;
+        }
+        if (c != '@') { out[n++] = (char)c; continue; }
+
+        /* Digits set the width, then one letter says what to print.  Only the
+         * three this table uses are here; the other twenty-five characters at
+         * DS:0x2847 are for the message strings and are not read yet. */
+        {
+            int width = 0;
+            const unsigned char *q;
+
+            while ((q = dat_at(at, 1)) != 0 && *q >= '0' && *q <= '9') {
+                width = width * 10 + (*q - '0');
+                at++;
+            }
+            if (!q) break;
+            at++;
+            if (*q == 'w' || *q == 'W' || *q == 'b' || *q == 'B') {
+                const unsigned char *v = dat_at(op, 2);
+                unsigned addr = v ? (unsigned)(v[0] | (v[1] << 8)) : 0;
+                const unsigned char *cell = dat_at(addr, 2);
+                int value = cell ? (cell[0] | (cell[1] << 8)) : 0;
+
+                op += 2;
+                /* Everything these three point at is written after the boot
+                 * menu runs, and two of the three are above what PROG.DAT
+                 * carries, so the port has nothing to read.  It prints what it
+                 * can answer for and nothing else - see PANEL_UNKNOWN. */
+                if (!cell) value = (addr == 0x3c1e) ? 3 : 0;
+                n += snprintf(out + n, sizeof out - n, "%*d",
+                              width ? width : 1, value);
+            } else if (*q == '?') {
+                const unsigned char *sel = dat_at(op, 6);
+                unsigned pick = 0, addr;
+                const unsigned char *str;
+
+                if (!sel) break;
+                addr = (unsigned)(sel[0] | (sel[1] << 8));
+                str = dat_at(addr, 1);
+                if (str) pick = *str ? 1 : 0;
+                addr = (unsigned)(sel[2 + pick * 2] | (sel[3 + pick * 2] << 8));
+                op += 6;
+                for (str = dat_at(addr, 1); str && *str; str++)
+                    if (n < (int)sizeof out - 1) out[n++] = (char)*str;
+            }
+        }
+    }
+    out[n] = 0;
+    if (n) gfx_text_sjis(&bg, &font, &fontRom, x, y, out,
+                         (unsigned char)*colour);
+    return op;
+}
+
+static void title_panel(void)
+{
+    unsigned at = PANEL_TABLE_AT;
+    /* Nothing is drawn before the first line's 0x11 sets this, and the last
+     * line's 0x17 leaves 7 behind for whatever draws next. */
+    int colour = 7;
+
+    gfx_grcg_fill(&bg, 0, 326, 639, 399, 7, 6);
+    gfx_grcg_line(&bg, 73, 326, 0, 399, 7, 1);
+    gfx_grcg_line(&bg, 566, 326, 639, 399, 7, 1);
+
+    for (;;) {
+        const unsigned char *p = dat_at(at, 2);
+        unsigned di;
+
+        if (!p) return;
+        di = (unsigned)(p[0] | (p[1] << 8));
+        at += 2;
+        if (di == 0xffff) return;
+        at = panel_line(di, at, &colour);
+        if (!at) return;
+    }
+}
+
 int app_show_title(void)
 {
     const unsigned char *t = dat_at(PAL_TITLE_AT, 48);
@@ -459,6 +605,7 @@ int app_show_title(void)
         snprintf(status, sizeof status, "DS7TTL: %s", disk_error());
         return 0;
     }
+    title_panel();
     stars_init();
     snprintf(status, sizeof status, "title");
     return 1;
