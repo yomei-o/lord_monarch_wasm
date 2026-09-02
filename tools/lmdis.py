@@ -216,6 +216,10 @@ JUMP_TABLES = (
     # sub_2786 dispatches on [0x34ca], the mode the panel is in: eight
     # handlers, one per command icon.
     (0x2a8a, 8),
+    # sub_1175, the sound sequence's commands 0xf0..0xff.  It subtracts 0xf0,
+    # doubles, and jumps through this table, having already fetched one operand
+    # byte - so every one of the sixteen takes at least one.
+    (0x11a6, 16),
 )
 
 
