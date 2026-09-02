@@ -1,25 +1,28 @@
-"""Recursive-descent 16-bit disassembler for PROG.BIN.
+"""Flow-following 16-bit disassembler for PROG.BIN.
 
-    python tools/lmdis.py dis 0x8de0 0x40      # a range, using known boundaries
-    python tools/lmdis.py fn  0x8de1           # one function, following flow
-    python tools/lmdis.py xref 0x8e0c          # who reaches this address
-    python tools/lmdis.py imm 0x8e0c           # ... and the immediates set first
-    python tools/lmdis.py map                  # coverage summary
-    python tools/lmdis.py ports                # every in/out, grouped by port
+    python tools/lmdis.py map                    # coverage, function list
+    python tools/lmdis.py fn 0x5db7              # one function
+    python tools/lmdis.py dis 0x8de0 0x40        # a range, at real boundaries
+    python tools/lmdis.py xref 0x8e0c            # who reaches this
+    python tools/lmdis.py imm 0x8e0c 6           # ... and the immediates first
+    python tools/lmdis.py ports                  # every in/out, by port
+    python tools/lmdis.py mem 0x2400 0x2600      # who touches this RAM range
+    python tools/lmdis.py strings                # what PROG.DAT holds
 
-A *linear* sweep desynchronises constantly here: the code is hand-written and
-reuses bytes (0x8e22 is a `rep` prefix that a jump lands on so the loop re-runs
-the store), and jump tables sit between functions.  Guessing a start offset and
-reading forward produced `aam`/`ljmp` nonsense that looked like encryption but
-was just a boundary being off by one.  Following flow from the entry point
-instead gives boundaries that are correct by construction.
+Why not a linear sweep: there are data tables between the functions, and the
+code is hand-written and reuses bytes.  Following flow from the entry point
+gives boundaries that are right by construction.
 
-Addressing, which is the thing that trips up every tool pointed at this file:
-PROG.BIN is loaded at 1000:0000 and immediately does `xor sp,sp / mov ds,sp`,
-so **CS = 0x1000 but DS = 0**.  An address in this listing is a file offset and
-a CS-relative code address at once, while every `[0x1234]` operand is *linear*
-low memory - PROG.DAT's load area at 0x1000 and the work area above it - and has
-nothing to do with this file's contents.
+Two things this has to do that an off-the-shelf disassembler will not:
+
+* **8086 undocumented forms.**  `FE /2../7` is INC/DEC on an 8086 - only bit 0
+  of the reg field is decoded - and both capstone and objdump reject it, which
+  desynchronises everything after the rejection.  Decoded here by hand.
+* **Segments.**  PROG.BIN is loaded at 1000:0000 and immediately does
+  `xor sp,sp / mov ds,sp`, so **CS = 0x1000 but DS = 0**.  An address in the
+  listing is a file offset and a code address at once, while every `[0x1234]`
+  operand is *linear* low memory - PROG.DAT sits at 0x1000 and the work area
+  above it - and has nothing to do with this file's contents.
 """
 import os
 import struct
@@ -27,13 +30,18 @@ import sys
 
 import capstone
 
+import lmz
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CODE = os.path.join(ROOT, 'disk', 'PROG.BIN')
+DATA = os.path.join(ROOT, 'disk', 'PROG.DAT')
 ENTRY = 0x0000
+DAT_BASE = 0x1000               # PROG.DAT is read to 0000:1000 by the boot sector
 
 PORTS = {
-    0x00: 'PIC ICW/EOI', 0x02: 'PIC mask', 0x0c: 'FM addr', 0x0e: 'FM data',
-    0x32: 'sound sw', 0x40: '8255', 0x42: '8255', 0x43: '8255',
+    0x00: 'PIC ICW/EOI', 0x02: 'PIC mask', 0x0a: 'PIC2 mask',
+    0x0c: 'FM addr', 0x0e: 'FM data', 0x31: 'system port',
+    0x32: 'sound sw', 0x40: '8255 A', 0x42: '8255 B', 0x43: '8255 ctrl',
     0x60: 'GDC char', 0x62: 'GDC char', 0x64: 'VSYNC set', 0x68: 'CRT mode',
     0x6a: 'CRT mode 2', 0x6c: 'border', 0x6e: 'border',
     0x71: 'PIT ctrl', 0x73: 'PIT ch0', 0x75: 'PIT ch1', 0x77: 'PIT ch2',
@@ -41,71 +49,109 @@ PORTS = {
     0xa0: 'GDC gfx', 0xa2: 'GDC gfx', 0xa4: 'display page',
     0xa6: 'draw page', 0xa8: 'PAL index', 0xaa: 'PAL green',
     0xac: 'PAL red', 0xae: 'PAL blue',
+    0x188: 'FM addr(26K)', 0x18a: 'FM data(26K)', 0x18c: 'FM addr2',
+    0x18e: 'FM data2',
 }
 
-STOP = ('ret', 'retf', 'iret', 'iretd', 'hlt', 'jmp', 'ljmp')
 COND = ('je', 'jz', 'jne', 'jnz', 'jl', 'jnl', 'jg', 'jng', 'jle', 'jge',
         'jb', 'jnb', 'jbe', 'jae', 'ja', 'js', 'jns', 'jo', 'jno', 'jp',
         'jnp', 'jcxz', 'loop', 'loope', 'loopne')
+STOP = ('ret', 'retf', 'iret', 'hlt', 'ljmp')
+
+REG8 = ('al', 'cl', 'dl', 'bl', 'ah', 'ch', 'dh', 'bh')
 
 
-def load():
-    with open(CODE, 'rb') as f:
-        return f.read()
+class Ins:
+    """Just enough of capstone's instruction to print and follow."""
+
+    def __init__(self, address, size, raw, mnemonic, op_str):
+        self.address = address
+        self.size = size
+        self.bytes = raw
+        self.mnemonic = mnemonic
+        self.op_str = op_str
 
 
-def cs16():
-    m = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_16)
-    m.detail = False
-    return m
+def load(path):
+    """The file as the machine sees it: unpacked.
+
+    Both PROG.BIN and PROG.DAT go through the boot sector's LZSS - see lmz.py -
+    so the bytes on the disk are not the bytes that run.  Unpacking here rather
+    than requiring a separate step is the difference between 80% of the file
+    decoding and all of it.
+    """
+    with open(path, 'rb') as f:
+        return lmz.unpack(f.read())[0]
+
+
+class Dis:
+    def __init__(self, data):
+        self.data = data
+        self.md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_16)
+        self.md.detail = False
+
+    def at(self, a):
+        """One instruction, filling in what capstone will not decode."""
+        if a < 0 or a >= len(self.data):
+            return None
+        got = list(self.md.disasm(self.data[a:a + 16], a, count=1))
+        if got:
+            i = got[0]
+            return Ins(i.address, i.size, i.bytes, i.mnemonic, i.op_str)
+        b = self.data[a]
+        # FE /r with reg > 1: an 8086 decodes only bit 0 of the reg field, so
+        # /2 /4 /6 are INC and /3 /5 /7 are DEC.  Register form (mod = 11) only,
+        # which is all this binary uses.
+        if b == 0xfe and a + 1 < len(self.data):
+            m = self.data[a + 1]
+            if (m >> 6) == 3:
+                name = 'dec' if ((m >> 3) & 1) else 'inc'
+                return Ins(a, 2, self.data[a:a + 2], name, REG8[m & 7])
+        return None
 
 
 def target(ins):
     try:
-        return int(ins.op_str, 16)
+        return int(ins.op_str, 16) & 0xffff
     except ValueError:
         return None
 
 
 class Prog:
-    """Instruction boundaries and cross references, found by following flow."""
-
     def __init__(self, data, seeds=(ENTRY,)):
+        self.dis = Dis(data)
         self.data = data
-        self.md = cs16()
-        self.ins = {}                 # addr -> capstone instruction
-        self.xref = {}                # addr -> [(kind, from_addr)]
+        self.ins = {}
+        self.xref = {}
         self.calls = set()
+        self.bad = set()
         self.walk(list(seeds))
 
     def ref(self, to, kind, frm):
         if 0 <= to < len(self.data):
             self.xref.setdefault(to, []).append((kind, frm))
 
-    def decode(self, a):
-        got = list(self.md.disasm(self.data[a:a + 16], a, count=1))
-        return got[0] if got else None
-
     def walk(self, work):
         seen = set()
         while work:
             a = work.pop()
-            while 0 <= a < len(self.data):
-                if a in seen:
-                    break
+            while 0 <= a < len(self.data) and a not in seen:
                 seen.add(a)
-                ins = self.decode(a)
+                ins = self.dis.at(a)
                 if ins is None:
+                    self.bad.add(a)
                     break
                 self.ins[a] = ins
                 mn, t = ins.mnemonic, target(ins)
-                if mn == 'call' and t is not None:
-                    self.ref(t, 'call', a)
-                    self.calls.add(t)
-                    work.append(t)
-                elif mn in COND and t is not None:
-                    self.ref(t, 'jcc', a)
-                    work.append(t)
+                if mn == 'call':
+                    if t is not None and t < len(self.data):
+                        self.ref(t, 'call', a)
+                        self.calls.add(t)
+                        work.append(t)
+                elif mn in COND:
+                    if t is not None:
+                        self.ref(t, 'jcc', a)
+                        work.append(t)
                 elif mn == 'jmp':
                     if t is not None:
                         self.ref(t, 'jmp', a)
@@ -118,8 +164,9 @@ class Prog:
     def note(self, ins):
         if ins.mnemonic in ('in', 'out'):
             for p, what in PORTS.items():
-                if ins.op_str.startswith('0x%x' % p) or \
-                   ins.op_str.endswith('0x%x' % p):
+                s = '0x%x' % p
+                if ins.op_str.split(', ')[0] == s or \
+                   ins.op_str.split(', ')[-1] == s:
                     return what
         t = target(ins)
         if t is not None and t in self.calls:
@@ -131,76 +178,141 @@ class Prog:
         if ins is None:
             return '%04x  %-20s (data %02x)' % (a, '%02x' % self.data[a],
                                                 self.data[a])
-        mark = 'sub_%04x:' % a if a in self.calls else ''
-        return '%04x  %-20s %-34s %-10s %s' % (
-            a, ins.bytes.hex(), '%s %s' % (ins.mnemonic, ins.op_str),
-            mark, self.note(ins))
+        label = 'sub_%04x:' % a if a in self.calls else ''
+        return '%04x  %-18s %-32s %-11s %s' % (
+            a, ins.bytes.hex(), '%s %s' % (ins.mnemonic, ins.op_str), label,
+            self.note(ins))
+
+    def body(self, start):
+        out, work, seen = [], [start], set()
+        while work:
+            a = work.pop()
+            while a in self.ins and a not in seen:
+                seen.add(a)
+                out.append(a)
+                ins = self.ins[a]
+                mn, t = ins.mnemonic, target(ins)
+                if mn in COND:
+                    if t is not None:
+                        work.append(t)
+                elif mn == 'jmp':
+                    if t is not None and t not in self.calls:
+                        work.append(t)
+                    break
+                elif mn in STOP:
+                    break
+                a += ins.size
+        return sorted(set(out))
 
 
-def body(p, start):
-    """Addresses belonging to one function, in address order."""
-    out, work, seen = [], [start], set()
-    while work:
-        a = work.pop()
-        while a in p.ins and a not in seen:
-            seen.add(a)
-            out.append(a)
-            ins = p.ins[a]
-            mn, t = ins.mnemonic, target(ins)
-            if mn in COND and t is not None:
-                work.append(t)
-            elif mn == 'jmp':
-                if t is not None and t not in p.calls:
-                    work.append(t)
-                break
-            elif mn in STOP:
-                break
-            a += ins.size
-    return sorted(set(out))
+def seeds_from_calls(data):
+    """Every plausible near-call target, so the sweep starts everywhere the
+    code actually calls into rather than only where flow happens to reach."""
+    out = {ENTRY}
+    for i in range(len(data) - 3):
+        if data[i] == 0xe8:
+            t = (i + 3 + struct.unpack_from('<h', data, i + 1)[0]) & 0xffff
+            if t < len(data):
+                out.add(t)
+    return out
+
+
+def mem_operands(p, lo, hi):
+    """Instructions whose absolute [imm16] operand lands in a range."""
+    hits = []
+    for a, ins in sorted(p.ins.items()):
+        s = ins.op_str
+        k = s.find('[0x')
+        if k < 0:
+            continue
+        end = s.find(']', k)
+        try:
+            v = int(s[k + 3:end], 16)
+        except ValueError:
+            continue
+        if lo <= v <= hi:
+            hits.append((a, v, ins))
+    return hits
+
+
+def strings():
+    d = load(DATA)
+    out, i = [], 0
+    while i < len(d):
+        j = d.find(b'\0', i)
+        if j < 0:
+            break
+        s = d[i:j]
+        if len(s) >= 4:
+            try:
+                t = s.decode('shift_jis')
+            except UnicodeDecodeError:
+                t = None
+            if t and all(c >= ' ' or c in '\t' for c in t):
+                out.append((i, i + DAT_BASE, t))
+        i = j + 1
+    return out
 
 
 def main():
-    data = load()
     what = sys.argv[1] if len(sys.argv) > 1 else 'map'
-    extra = [int(a, 16) for a in sys.argv[2:] if a.startswith('0x')]
-    p = Prog(data, [ENTRY] + (extra if what in ('fn', 'dis') else []))
+    if what == 'strings':
+        for off, lin, t in strings():
+            print('DAT+%04x  DS:%04x  %s' % (off, lin, t))
+        return
 
-    if what == 'dis':
+    data = load(CODE)
+    p = Prog(data, seeds_from_calls(data))
+
+    if what == 'map':
+        covered = sum(i.size for i in p.ins.values())
+        print('%d instructions cover %d of %d bytes (%.1f%%)' %
+              (len(p.ins), covered, len(data), 100.0 * covered / len(data)))
+        print('%d call targets, %d addresses that would not decode' %
+              (len(p.calls), len(p.bad)))
+        print()
+        print('functions, by number of callers:')
+        rank = sorted(p.calls, key=lambda t: -len(p.xref.get(t, [])))
+        for t in rank[:30]:
+            print('   sub_%04x  %3d callers  %3d instructions' %
+                  (t, len(p.xref.get(t, [])), len(p.body(t))))
+    elif what == 'fn':
+        for a in p.body(int(sys.argv[2], 16)):
+            print(p.line(a))
+    elif what == 'dis':
         a = int(sys.argv[2], 16)
-        n = int(sys.argv[3], 16) if len(sys.argv) > 3 else 0x60
-        while a < int(sys.argv[2], 16) + n:
+        end = a + (int(sys.argv[3], 16) if len(sys.argv) > 3 else 0x60)
+        while a < end:
             print(p.line(a))
             a += p.ins[a].size if a in p.ins else 1
-    elif what == 'fn':
-        start = int(sys.argv[2], 16)
-        for a in body(p, start):
-            print(p.line(a))
     elif what == 'xref':
         t = int(sys.argv[2], 16)
         for kind, frm in p.xref.get(t, []):
-            print('%s from %04x' % (kind, frm))
+            print('%-5s from %04x' % (kind, frm))
         print('%d reference(s)' % len(p.xref.get(t, [])))
     elif what == 'imm':
         t = int(sys.argv[2], 16)
-        want = int(sys.argv[3], 16) if len(sys.argv) > 3 else 8
+        n = int(sys.argv[3]) if len(sys.argv) > 3 else 6
         for kind, frm in p.xref.get(t, []):
             print('=== %s from %04x' % (kind, frm))
-            addrs = sorted(a for a in p.ins if a < frm)[-want:]
-            for a in addrs:
+            for a in [x for x in sorted(p.ins) if x < frm][-n:]:
                 print('    ' + p.line(a))
     elif what == 'ports':
         by = {}
         for a, ins in sorted(p.ins.items()):
             if ins.mnemonic in ('in', 'out'):
                 by.setdefault(p.note(ins) or ins.op_str, []).append(a)
-        for k in sorted(by):
-            print('%-14s %d: %s' % (k, len(by[k]),
-                                    ' '.join('%04x' % a for a in by[k][:16])))
+        for k in sorted(by, key=lambda k: -len(by[k])):
+            print('%-16s %3d: %s' % (k, len(by[k]),
+                                     ' '.join('%04x' % a for a in by[k][:14])))
+    elif what == 'mem':
+        lo = int(sys.argv[2], 16)
+        hi = int(sys.argv[3], 16) if len(sys.argv) > 3 else lo
+        for a, v, ins in mem_operands(p, lo, hi):
+            print('%04x  %-30s -> DS:%04x' %
+                  (a, '%s %s' % (ins.mnemonic, ins.op_str), v))
     else:
-        print('%d instructions cover %d of %d bytes (%.0f%%), %d functions' %
-              (len(p.ins), sum(i.size for i in p.ins.values()), len(data),
-               100.0 * sum(i.size for i in p.ins.values()) / len(data),
-               len(p.calls)))
+        raise SystemExit(__doc__)
 
 
 if __name__ == '__main__':
