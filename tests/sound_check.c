@@ -213,6 +213,41 @@ int main(int argc, char **argv)
                best, (int)want);
     }
 
+    /* The two effect tables are not the same set of sounds, and this port has
+     * to be on the sound board's.  0x01e4 hangs the driver at 0x0d52 on the
+     * board's interrupt and that one reads DS:0x35e2; 0x0218 hangs 0x162b on
+     * INT 8 and that one reads DS:0x38a1.  If the two ever came out equal,
+     * something would have gone wrong with the addresses. */
+    {
+        SndVoice a, b;
+        int id, differ = 0, both = 0;
+
+        for (id = 0; id < SND_EFFECTS; id++) {
+            int ga = snd_start(&a, dat, n, id);
+            int gb = snd_start_beep(&b, dat, n, id);
+
+            if (!ga || !gb) continue;
+            both++;
+            if (a.len != b.len || memcmp(a.seq, b.seq, (size_t)a.len))
+                differ++;
+        }
+        if (both != SND_EFFECTS) {
+            printf("FAIL  only %d of %d effects are in both tables\n",
+                   both, SND_EFFECTS);
+            failures++;
+        }
+        /* Two of the nineteen happen to be the same bytes in both tables,
+         * which is fine - they are short.  What would not be fine is the two
+         * tables coming out as the same set. */
+        if (differ < both - 4) {
+            printf("FAIL  only %d of %d effects differ between the tables\n",
+                   differ, both);
+            failures++;
+        }
+        printf("  the board's effects differ from the beeper's in %d of %d\n",
+               differ, both);
+    }
+
     free(dat);
     disk_close(d);
     if (failures) {

@@ -33,47 +33,94 @@ double snd_note_hz(const unsigned char *fnumTable, int note, int detune)
     return hz;
 }
 
+/* A word out of a table in PROG.DAT, or 0 when it is off the end. */
+static unsigned dat_word(const unsigned char *progDat, unsigned progDatSize,
+                         unsigned addr)
+{
+    unsigned off = addr - 0x1000;
+
+    if (addr < 0x1000 || off + 2 > progDatSize) return 0;
+    return progDat[off] | (progDat[off + 1] << 8);
+}
+
+/* Where a sequence stops.  NOT at the first 0xff: 0xff turns up inside
+ * operands - one pitch envelope is f7 01 01 38 ff - and stopping there
+ * truncated it to nothing.  The sequences lie one after another, so the end is
+ * whichever address in the same table comes next, and the last one is capped
+ * at `hardEnd`. */
+static unsigned seq_end(const unsigned char *progDat, unsigned progDatSize,
+                        unsigned tableAt, int words, unsigned seqAddr,
+                        unsigned hardEnd)
+{
+    unsigned end = hardEnd;
+    int j;
+
+    for (j = 0; j < words; j++) {
+        unsigned a = dat_word(progDat, progDatSize, tableAt + (unsigned)j * 2);
+
+        if (a > seqAddr && a < end) end = a;
+    }
+    return end;
+}
+
+/* Copies one sequence in.  It is copied rather than pointed at because command
+ * 0xf6 decrements its own counter inside the data: played in place it would
+ * work once. */
+static int start_at(SndVoice *v, const unsigned char *progDat,
+                    unsigned progDatSize, unsigned seqAddr, unsigned end)
+{
+    unsigned off, i;
+
+    memset(v, 0, sizeof *v);
+    v->note = -1;
+    v->volume = 0x0f;
+    if (seqAddr < 0x1000 || end <= seqAddr) return 0;
+    off = seqAddr - 0x1000;
+    if (off >= progDatSize) return 0;
+    if (end - 0x1000 > progDatSize) end = progDatSize + 0x1000;
+    for (i = 0; off + i < end - 0x1000 && i < SND_SEQ_MAX; i++)
+        v->seq[i] = progDat[off + i];
+    v->len = (int)i;
+    return v->len > 0;
+}
+
 int snd_start(SndVoice *v, const unsigned char *progDat, unsigned progDatSize,
               int id)
 {
-    unsigned tableOff, seqAddr, off, i;
+    unsigned a, b, want;
 
     memset(v, 0, sizeof *v);
     v->note = -1;
     v->volume = 0x0f;
     if (id < 0 || id >= SND_EFFECTS) return 0;
 
-    /* PROG.DAT sits at DS:0x1000, so a DS address is an offset less that. */
-    tableOff = (unsigned)(SND_TABLE_AT - 0x1000) + (unsigned)id * 2;
-    if (tableOff + 2 > progDatSize) return 0;
-    seqAddr = progDat[tableOff] | (progDat[tableOff + 1] << 8);
-    if (seqAddr < 0x1000) return 0;
-    off = seqAddr - 0x1000;
-    if (off >= progDatSize) return 0;
+    /* See sound.h: the sound board's table is pairs, and the second of a pair
+     * lands on the same voice as the first, so it is the one that sounds. */
+    a = dat_word(progDat, progDatSize, SND_FX_AT + (unsigned)id * 4);
+    b = dat_word(progDat, progDatSize, SND_FX_AT + (unsigned)id * 4 + 2);
+    want = b ? b : a;
+    if (!want) return 0;
+    return start_at(v, progDat, progDatSize, want,
+                    seq_end(progDat, progDatSize, SND_FX_AT, SND_EFFECTS * 2,
+                            want, SND_FX_END));
+}
 
-    /* How far it runs.  NOT "up to the first 0xff": 0xff turns up inside
-     * operands - effect 11's pitch envelope is f7 01 01 38 ff - and stopping
-     * there truncated it to nothing.  The nineteen sequences lie one after
-     * another in PROG.DAT, so the end is the next address in the table, and
-     * the last one is capped.
-     *
-     * It is copied rather than pointed at because command 0xf6 decrements its
-     * own counter inside the data: played in place it would work once. */
-    {
-        unsigned end = off + SND_SEQ_MAX, j;
-        for (j = 0; j < SND_EFFECTS; j++) {
-            unsigned o = (unsigned)(SND_TABLE_AT - 0x1000) + j * 2;
-            unsigned a2;
-            if (o + 2 > progDatSize) break;
-            a2 = progDat[o] | (progDat[o + 1] << 8);
-            if (a2 > seqAddr && a2 - 0x1000 < end) end = a2 - 0x1000;
-        }
-        if (end > progDatSize) end = progDatSize;
-        for (i = 0; off + i < end && i < SND_SEQ_MAX; i++)
-            v->seq[i] = progDat[off + i];
-        v->len = (int)i;
-    }
-    return v->len > 0;
+/* The beeper driver's own nineteen, from DS:0x38a1.  Nothing plays these on a
+ * machine with a sound board; they are here so the two can be compared. */
+int snd_start_beep(SndVoice *v, const unsigned char *progDat,
+                   unsigned progDatSize, int id)
+{
+    unsigned a;
+
+    memset(v, 0, sizeof *v);
+    v->note = -1;
+    v->volume = 0x0f;
+    if (id < 0 || id >= SND_EFFECTS) return 0;
+    a = dat_word(progDat, progDatSize, SND_BEEP_AT + (unsigned)id * 2);
+    if (!a) return 0;
+    return start_at(v, progDat, progDatSize, a,
+                    seq_end(progDat, progDatSize, SND_BEEP_AT, SND_EFFECTS,
+                            a, 0x3a3a));
 }
 
 /* The commands, from the jump table at CS:0x11a6.  Each has already had one

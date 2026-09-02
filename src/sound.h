@@ -49,7 +49,31 @@
  * byte, which is where the YM2203 wants its block.  At block 4 it comes out as
  * concert pitch to two decimal places, so the reading is not in doubt. */
 #define SND_FNUM_AT 0x244d
-#define SND_TABLE_AT 0x38a1         /* the nineteen effect pointers */
+/* There are two sound drivers on this disk and two sets of effects, and which
+ * one a machine gets is decided at 0x01e4:
+ *
+ *   0x01e4  puts 1 in [0x3b3a] - "FM" - when register 0x0e of the OPN answers
+ *           at port 0x18a, and hangs the driver at 0x0d52 on the sound
+ *           board's own interrupt.  That one reads DS:0x35e2.
+ *   0x0218  puts 0 there - "BEEP" - and hangs 0x162b on INT 8, the PIT.
+ *           That one reads DS:0x38a1.
+ *
+ * So DS:0x38a1 is the beeper's, and a PC-98 with a sound board never plays a
+ * note of it.  This port renders an OPN, so it uses DS:0x35e2.
+ *
+ * DS:0x35e2 is nineteen *pairs*.  sub_0e20 loads the first into the effect
+ * voice at DS:0x3afa and then loads the second into the same place - both
+ * `mov di, 0x3afa`, which the bytes at 0x0e2f and 0x0e38 confirm - so where
+ * both are set, the first is overwritten before it can sound and only the
+ * second is heard.  The second effect voice at DS:0x3b1a is serviced by the
+ * interrupt and never started by anything.  That looks like a slip in the
+ * original, and it is reproduced here rather than corrected: several of the
+ * pairs are a part and the same part detuned (0xf3 0xee opens the second of
+ * effects 3 and 6), so "fixing" it would invent a thickness the machine this
+ * came off never made. */
+#define SND_FX_AT 0x35e2            /* the sound board's, nineteen pairs */
+#define SND_BEEP_AT 0x38a1          /* the beeper's, nineteen singles */
+#define SND_FX_END 0x38a1           /* where the pair table's sequences stop */
 #define SND_EFFECTS 19
 #define SND_CLOCK 3993600           /* the PC-98's OPN */
 
@@ -150,6 +174,11 @@ typedef struct {
 /* Loads effect `id` out of PROG.DAT.  0 if there is no such effect. */
 int snd_start(SndVoice *v, const unsigned char *progDat, unsigned progDatSize,
               int id);
+
+/* The beeper driver's own, for comparison; nothing on a machine with a sound
+ * board plays these. */
+int snd_start_beep(SndVoice *v, const unsigned char *progDat,
+                   unsigned progDatSize, int id);
 
 /* Point a voice at a sequence that is already in hand.  A song's tracks are not
  * in PROG.DAT - FUN_1000_0bda moves the file to its own buffer at DS:0x3f1c and
