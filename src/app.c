@@ -1174,6 +1174,15 @@ void app_key(int key)
     case APP_KEY_RUN:       running = !running; break;
     case APP_KEY_STEP:      running = 0; app_tick(); break;
     case APP_KEY_TITLE:     app_show_title(); break;
+    case APP_KEY_MONEY:
+        if (mode == APP_MODE_MAP && game.human >= 0 && game.human < PLAYERS) {
+            game.side[game.human].funds = APP_MONEY_MAX;
+            game.purseMoved = 1;
+            snprintf(status, sizeof status,
+                     "cheat: side %d has %lu now", game.human,
+                     game.side[game.human].funds);
+        }
+        break;
     default: break;
     }
 }

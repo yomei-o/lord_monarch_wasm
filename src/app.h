@@ -31,8 +31,18 @@ enum {
     APP_KEY_CASTLES,       /* toggle the unit and castle markers */
     APP_KEY_RUN,           /* run the world tick */
     APP_KEY_STEP,          /* one tick */
-    APP_KEY_TITLE          /* back to the title screen */
+    APP_KEY_TITLE,         /* back to the title screen */
+
+    /* Not the game's: fills the player's purse, for working on the parts that
+     * only happen once there is money to spend.  999,999,999 rather than the
+     * 32-bit maximum, because the purse is added to every turn and wrapping
+     * round to nothing in the middle of a session would be worse than useless
+     * - and because that is the widest number the panel's ten columns show
+     * without the game having to change how it adds. */
+    APP_KEY_MONEY
 };
+
+#define APP_MONEY_MAX 999999999UL
 
 /* Opens the image and puts the app on the title screen.  0 on failure, with a
  * reason in app_status(). */

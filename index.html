@@ -19,7 +19,10 @@
   #wrap { position: relative; }
   canvas { cursor: crosshair; }
   canvas {
-    display: block; width: 1280px; max-width: calc(100vw - 24px);
+    /* One canvas pixel to one screen pixel: the frame is 640x400 and that is
+     * what it is shown at.  It used to go out at 1280 and the whole thing was
+     * twice the size it should be. */
+    display: block; width: 640px; max-width: calc(100vw - 24px);
     height: auto; aspect-ratio: 640 / 400;
     /* An outline rather than a border: a border is part of the element box, so
      * getBoundingClientRect would include it and every click would come back a
@@ -126,7 +129,9 @@
   <b>[ ]</b><span>前後のマップ（全 52 面）。解析用で、原作にこの操作は無い</span>
   <b>C</b><span>城とユニットに印をつける（解析用。原作にこの表示は無い）</span>
   <b>T</b><span>タイトルに戻る</span>
-  <b>音</b><span><b>ゲーム自身の効果音</b>を鳴らします。原作が <code>sub_0d12</code> に積む要求（0x06 受理 / 0x04 拒否 / 0x07 実行不能 / 0x03 滅亡 / 0x0f 終了）を拾い、その id の列を <code>PROG.DAT</code> から 読んで SSG（矩形波3ch＋ノイズ）で合成しています。音程も長さもゲームの表 そのままです。<b>断られたのか未実装なのかが音で分かります</b>。ディスクの <code>FM001〜FM025.DAT</code> の曲はまだ鳴りません</span>
+  <b>M</b><span><b>デバッグ用のチート</b>。自分の国の資金を 999,999,999 にします。
+    原作にこの操作はありません</span>
+  <b>音</b><span><b>ゲーム自身の音</b>が鳴ります。曲はディスクの <code>FM0nn.DAT</code> を FM 3ch ＋ SSG 3ch で、効果音は原作が <code>sub_0d12</code> に積む要求（0x06 受理 / 0x04 拒否 / 0x07 実行不能 / 0x03 滅亡 / 0x0f 終了）を拾って <code>DS:0x35e2</code> の列を鳴らします。効果音は原作どおり<b>曲から SSG の 1 チャンネルを借りて</b>、終わったら返します。<b>断られたのか未実装なのかが音で分かります</b></span>
   <b>マウス</b><span>アイコンや升を直接クリックしても同じことができます。
     原作にマウスは無いので、これはこの移植の足しものです</span>
 </div>
@@ -134,10 +139,10 @@
 <!-- BUILD is bumped by "make wasm".  Without it a browser will happily hold
      on to a monarch.js from an earlier build and then fail on whichever
      function was added since - which is exactly what happened once. -->
-<script src="monarch.js?v=50403240"></script>
+<script src="monarch.js?v=65191cf2"></script>
 <script>
   // Stamped by tools/stamp.py from the wasm's own hash.
-  window.LM_BUILD = '50403240';
+  window.LM_BUILD = '65191cf2';
 
 (function () {
   'use strict';
@@ -147,7 +152,7 @@
   var KEY = {
     START: 1, PREV_MAP: 2, NEXT_MAP: 3, LEFT: 4, RIGHT: 5, UP: 6, DOWN: 7,
     TILE8: 8, TILE16: 9, TILE32: 10, BACK: 11, CASTLES: 12,
-    RUN: 13, STEP: 14, TITLE: 15
+    RUN: 13, STEP: 14, TITLE: 15, MONEY: 16
   };
 
   var canvas = document.getElementById('screen');
@@ -218,6 +223,7 @@
       case 'c': case 'C': return KEY.CASTLES;
       case 'r': case 'R': return KEY.RUN;
       case 's': case 'S': return KEY.STEP;
+      case 'm': case 'M': return KEY.MONEY;   // a cheat; see app.h
       default:  return 0;
     }
   }

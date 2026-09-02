@@ -72,6 +72,7 @@ static int translate(WPARAM wp, int shift)
     case 'C':      return APP_KEY_CASTLES;
     case 'R':      return APP_KEY_RUN;
     case 'S':      return APP_KEY_STEP;
+    case 'M':      return APP_KEY_MONEY;    /* a cheat; see app.h */
     default:       return 0;
     }
 }

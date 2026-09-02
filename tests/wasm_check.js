@@ -70,6 +70,19 @@ LordMonarch().then((m) => {
     if (n !== 16) songFailed++;
   }
   if (songFailed) process.exit(1);
+  // The debug cheat.  It is not the game's, so nothing else would notice if
+  // it stopped working.
+  {
+    const KEY_MONEY = 16;
+
+    m._lm_key(KEY_MONEY);
+    const st = m.UTF8ToString(m._lm_status());
+    const ok = /cheat: side 0 has 999999999 now/.test(st);
+
+    console.log(`${ok ? 'ok  ' : 'FAIL'}  M fills the purse: ${st}`);
+    if (!ok) process.exit(1);
+  }
+
   const map0 = dump(m, 'wasm_map000.raw');
 
   // B_014 is terrain 50, the pencil kingdom - a different palette, so this also
