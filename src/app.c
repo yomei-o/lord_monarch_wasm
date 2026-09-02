@@ -241,6 +241,15 @@ static int mapNumber, tileSize = 16, scrollX, scrollY;
 static unsigned char names[GFX_NAMES][16];
 static int namesOk;
 
+/* What colour each country's bar is.  DS:0x3484 holds five ten-byte records
+ * of (plane mask, colour) and PROG.DAT ships them as 0f 04, 0f 02, 0f 07,
+ * 0f 00, 0f 0f - green, red, white, black and the monsters' white.  0x6197
+ * then overwrites the colour from the first byte of each country's name in
+ * the tileset's tail, less 0x10, because those names open with the same
+ * colour control. */
+#define GRAPH_COLOURS_AT 0x3484
+static unsigned char sideColour[5] = { 4, 2, 7, 0, 15 };
+
 /* 0x7d0e: when the cursor is over nothing, the box keeps whatever it showed
  * last, in [0x32bf]. */
 static int boxUnit = -1;
@@ -666,6 +675,16 @@ int app_show_map(int number, int size)
     if (!palette_from_terrain(map.terrain)) return 0;
     namesOk = gfx_load_names(disk, map.terrain, names);
     boxUnit = -1;
+    {
+        const unsigned char *t = dat_at(GRAPH_COLOURS_AT, 50);
+        int k;
+
+        for (k = 0; k < 5; k++) {
+            if (t) sideColour[k] = t[k * 10 + 1] & 15;
+            if (namesOk && names[1 + k][0] >= 0x10)
+                sideColour[k] = (unsigned char)(names[1 + k][0] - 0x10);
+        }
+    }
     gfx_bank_name(&map, size, bankName, sizeof bankName);
     gfx_free_bank(&bank);
     if (!gfx_load_bank(&bank, disk, bankName, size)) {
@@ -1564,6 +1583,66 @@ void app_render(void)
         snprintf(buf, sizeof buf, "%5d",
                  game.daysLeft > 99999 ? 99999 : game.daysLeft);
         gfx_text_sjis(&scr, &font, &fontRom, 560, 96, buf, 7);
+    }
+
+    /* The land graph, from sub_9355 and sub_93c5.
+     *
+     * sub_93c5 finds the largest of the five sides' land totals - the 32-bit
+     * value at +8 of each record at DS:0xc792, which game_land_totals keeps -
+     * counts the bits in its high word and adds one; that shift, plus the
+     * eight the code takes by reading a high byte, is what every total is
+     * divided by, so the tallest bar just fits.  Anything left over rounds the
+     * height up (0x9440), and 127 is the cap (0x9443).
+     *
+     * Then sub_9355 draws.  Each bar is one byte wide - eight pixels - at
+     * VRAM 0x666f, which is row 327 x 504, and the next is three bytes on, so
+     * 24 apart.  It goes up a row at a time (0x9389 adds -0x50) writing 0x5a,
+     * which is a half dither, through the graphic charger in the country's
+     * own colour with every plane enabled. */
+    {
+        unsigned long best = 0;
+        int k, shift = 0;
+        unsigned hi;
+
+        for (k = 0; k < SIDES && k < 5; k++)
+            if (game.side[k].landTotal > best) best = game.side[k].landTotal;
+        hi = (unsigned)((best >> 16) & 0xffff);
+        while (hi) { shift++; hi >>= 1; }
+        shift++;                                /* 0x93f4 */
+
+        for (k = 0; k < SIDES && k < 5; k++) {
+            /* Two bars a country, eight pixels each and side by side: the
+             * land at VRAM 0x666f, x 504, and at 0x6670, x 512, what its lord
+             * is carrying - 0x94ae follows the side record's +6 to the lord
+             * and reads that unit's own +6.  The pair repeats every three
+             * bytes, so 24 pixels. */
+            int lord = game.side[k].lord;
+            unsigned long bar[2];
+            int b;
+
+            bar[0] = game.side[k].landTotal;
+            bar[1] = (lord >= 0 && lord < UNIT_SLOTS &&
+                      !(game.unit[lord].flags & 0x80))
+                     ? game.unit[lord].carrying : 0;
+            for (b = 0; b < 2; b++) {
+                unsigned long v = bar[b] >> shift;
+                int h = (int)((v >> 8) & 0xff);
+                int x0 = 504 + k * 24 + b * 8, row;
+
+                if (((bar[b] & 0xffff) & ((1UL << shift) - 1)) || (v & 0xff))
+                    h++;
+                if (h > 127) h = 127;
+                for (row = 0; row < h; row++) {
+                    int y = 327 - row, bit;
+
+                    if (y < 200) break;
+                    for (bit = 0; bit < 8; bit++)
+                        if (0x5a >> (7 - bit) & 1)
+                            gfx_grcg_fill(&scr, x0 + bit, y, x0 + bit, y,
+                                          0x0f, sideColour[k]);
+                }
+            }
+        }
     }
 
     /* The unit standing there, in the box above.  0x7cff takes the cursor
