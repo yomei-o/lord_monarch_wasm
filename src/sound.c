@@ -195,12 +195,68 @@ int snd_tick(SndVoice *v, int *keyedNow)
     }
 }
 
+/* ------------------------------------------------------- the level envelope */
+
+/* sub_111e: back to stage 0 of this timbre and load all four of its bytes. */
+void snd_env_key(SndVoice *v, const unsigned char *env)
+{
+    int at = v->timbre & 0xf0;
+
+    v->stage = at;
+    v->step = env[at];
+    v->count = env[at + 1] & 0x7f;
+    v->downwards = (env[at + 1] & 0x80) != 0;
+    v->target = env[at + 2];
+    v->level = env[at + 3];
+    v->spent = 0;
+    if (v->count == 0) v->count = 1;
+}
+
+/* 0x0fab onwards.  The count runs down; when it reaches zero the level takes
+ * one step towards the target, and on arriving it either chains to the next
+ * stage or the voice is spent. */
+int snd_env_step(SndVoice *v, const unsigned char *env)
+{
+    int at;
+
+    if (v->spent) return 0;
+    if (--v->count > 0) return v->level;        /* 0x0fb0: hold */
+
+    at = v->stage;
+    v->count = env[at + 1] & 0x7f;              /* reloaded from this stage */
+    v->downwards = (env[at + 1] & 0x80) != 0;
+    if (v->count == 0) v->count = 1;
+
+    if (v->downwards) {
+        v->level -= v->step;
+        if (v->level >= 0 && v->level > v->target) return v->level;
+    } else {
+        v->level += v->step;
+        if (v->level <= 0xff && v->level < v->target) return v->level;
+    }
+
+    /* 0x0fdf: arrived. */
+    v->level = v->target;
+    if (v->level == 0 || (v->stage & 8)) {      /* 0x0fe5, 0x0fee */
+        v->spent = 1;
+        return v->level;
+    }
+    v->stage = at + 4;                          /* 0x0ff3 */
+    at = v->stage;
+    v->step = env[at];
+    v->count = env[at + 1] & 0x7f;
+    v->downwards = (env[at + 1] & 0x80) != 0;
+    v->target = env[at + 2];
+    if (v->count == 0) v->count = 1;
+    return v->level;
+}
+
 /* --------------------------------------------------------------- rendering */
 
 int snd_render_effect(const unsigned char *progDat, unsigned progDatSize,
                       int id, short *out, int maxSamples, int sampleRate)
 {
-    const unsigned char *periods;
+    const unsigned char *periods, *env;
     SndVoice v;
     Ssg chip;
     int made = 0;
@@ -208,7 +264,9 @@ int snd_render_effect(const unsigned char *progDat, unsigned progDatSize,
     int level = 0;
 
     if (progDatSize < (unsigned)(SSG_PERIOD_AT - 0x1000) + 32) return 0;
+    if (progDatSize < (unsigned)(SND_ENV_AT - 0x1000) + 256) return 0;
     periods = progDat + (SSG_PERIOD_AT - 0x1000);
+    env = progDat + (SND_ENV_AT - 0x1000);
     if (!snd_start(&v, progDat, progDatSize, id)) return 0;
 
     ssg_reset(&chip);
@@ -222,9 +280,9 @@ int snd_render_effect(const unsigned char *progDat, unsigned progDatSize,
             ssg_write(&chip, 0, p & 0xff);
             ssg_write(&chip, 1, (p >> 8) & 0x0f);
             ssg_write(&chip, 7, 0x3e);      /* tone on channel A */
-            level = 255;                    /* struck */
+            snd_env_key(&v, env);           /* sub_111e */
         }
-        if (!v.keyed) level = 0;
+        level = v.keyed ? snd_env_step(&v, env) : 0;
         /* sub_10c2: the level times volume + 1, shifted down eight. */
         ssg_write(&chip, 8, (level * (v.volume + 1)) >> 8 > 15
                             ? 15 : (level * (v.volume + 1)) >> 8);
@@ -233,9 +291,6 @@ int snd_render_effect(const unsigned char *progDat, unsigned progDatSize,
         if (room <= 0) break;
         ssg_render(&chip, out + made, room, sampleRate);
         made += room;
-        /* A plain decay standing in for the table-driven envelope. */
-        level -= level / 6 + 2;
-        if (level < 0) level = 0;
     }
     return made;
 }

@@ -62,6 +62,25 @@ typedef struct {
     int done;
     /* The pitch envelope from command 0xf7: [si+0x11], [si+0x13], [si+0x15]. */
     int envA, envB, envC;
+    /* The amplitude envelope, which is the game's own and not a guess.
+     *
+     *   sub_111e   on every key-off and new note it goes back to stage 0 of the
+     *              timbre's block and loads all four of its bytes
+     *   0x0fab..   each tick counts down, and when the count runs out the level
+     *              moves one step towards the target; on arriving it clamps,
+     *              and either chains to the next stage or finishes
+     *   sub_10c2   level * (volume + 1) >> 8 is what reaches register 8 + ch
+     *
+     * A stage is four bytes at DS:0x34e2 + (timbre << 4) + stage * 4:
+     *
+     *   0  the step the level moves by
+     *   1  the tick count, with bit 7 meaning downwards
+     *   2  the level to stop at
+     *   3  the level to start from, used only by stage 0
+     *
+     * [si+5] holds (timbre << 4) | stage and advances by four; bit 3 of it
+     * marks the last stage, so a timbre gets at most three of them. */
+    int step, count, target, level, stage, downwards, spent;
     int silenceAll;             /* command 0xfe was seen */
 } SndVoice;
 
@@ -75,13 +94,11 @@ int snd_tick(SndVoice *v, int *keyedNow);
 
 /* Renders one effect through an SSG and returns how many samples it made.
  *
- * The pitch and the rhythm are the game's: the period comes from its own table
- * through ssg_period, and the note lengths are the sequence's ticks at the rate
- * the driver's timer runs.  The amplitude envelope is an approximation - the
- * original keeps a software envelope per voice (sub_111e loads four bytes from
- * DS:0x34e2 and the tail of sub_0f2d steps it, with the level multiplied by
- * volume + 1 and shifted down eight in sub_10c2), and porting that exactly is
- * the next refinement.
+ * All of it is the game's now: the period comes from its own table through
+ * ssg_period, the note lengths are the sequence's ticks, and the amplitude
+ * envelope is the one at DS:0x34e2 stepped the way sub_111e and the tail of
+ * sub_0f2d step it, with the level multiplied by volume + 1 and shifted down
+ * eight as sub_10c2 does.
  *
  * Nothing FM is involved, and that is not a shortcut: this program never writes
  * a single FM operator register - not 0x30, 0x50, 0x60, 0x70, 0x80 or 0xb0 - so
@@ -95,5 +112,14 @@ int snd_render_effect(const unsigned char *progDat, unsigned progDatSize,
 /* The driver's tick rate, from the timer it sets up: register 0x26 takes
  * [0x3b3d] and 0x27 gets 0x3a, which is timer B enabled and loaded. */
 #define SND_TICK_HZ 60
+
+/* Where the amplitude envelopes live. */
+#define SND_ENV_AT 0x34e2
+
+/* Loads stage 0 of the current timbre, which is what sub_111e does. */
+void snd_env_key(SndVoice *v, const unsigned char *env);
+
+/* One tick of it, after snd_tick.  Returns the level that reaches the chip. */
+int snd_env_step(SndVoice *v, const unsigned char *env);
 
 #endif
