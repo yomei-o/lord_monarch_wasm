@@ -312,6 +312,100 @@ int main(int argc, char **argv)
         }
     }
 
+    /* The castle's collection. */
+    {
+        Map m;
+        int side = 0, got, before, i, owned = 0, castle;
+
+        gfx_load_map(&m, d, "B_000.MAP");
+        game_init(g, &m);
+        castle = game_cell_index(g->side[side].pos & 0xff,
+                                 g->side[side].pos >> 8);
+
+        for (i = 0; i < MAP_W * MAP_H; i++)
+            if (g->cell[i].tile == CELL_TERRITORY0 + side) owned++;
+        checkf(owned > 0, "side 0 starts with %d squares of its own land",
+               owned, 0, 0);
+
+        before = g->side[side].funds;
+        got = game_collect(g, side);
+        checkf(got > 0, "the castle collected %d", got, 0, 0);
+        checkf(g->side[side].funds == before + got,
+               "funds went %d -> %d", before, g->side[side].funds, 0);
+
+        /* Every square it took from is its own land and is now poorer. */
+        check(g->cell[castle].tile == CELL_CASTLE0 + side,
+              "the castle square is unchanged");
+
+        /* Without its lord on the castle nothing is collected. */
+        game_init(g, &m);
+        g->occupant[castle] = -1;
+        check(game_collect(g, side) == 0,
+              "no lord on the castle, no collection");
+
+        /* Nor if the lord is not in a 0x20 mode. */
+        game_init(g, &m);
+        g->unit[g->side[side].lord].state = UNIT_STATE_FOLLOW;
+        check(game_collect(g, side) == 0,
+              "the lord has to be in a 0x20 mode");
+    }
+
+    /* Let the world run for a while and see the land behave. */
+    {
+        Map m;
+        int i, t, ownedBefore = 0, ownedAfter = 0, unitsBefore, unitsAfter;
+        int grownBefore = 0, grownAfter = 0;
+
+        gfx_load_map(&m, d, "B_000.MAP");
+        game_init(g, &m);
+        g->speed = 0;
+        g->human = 0;
+
+        for (i = 0; i < MAP_W * MAP_H; i++) {
+            unsigned char c = g->cell[i].tile;
+            if (c >= CELL_TERRITORY0 && c < CELL_TERRITORY0 + PLAYERS)
+                ownedBefore++;
+            if (c >= CELL_TERRITORY0 + 4 && c < CELL_TERRITORY0 + 8)
+                grownBefore++;
+        }
+        unitsBefore = game_unit_count(g, -1);
+
+        for (t = 0; t < 2000; t++) game_tick_cells(g);
+
+        for (i = 0; i < MAP_W * MAP_H; i++) {
+            unsigned char c = g->cell[i].tile;
+            if (c >= CELL_TERRITORY0 && c < CELL_TERRITORY0 + PLAYERS)
+                ownedAfter++;
+            if (c >= CELL_TERRITORY0 + 4 && c < CELL_TERRITORY0 + 8)
+                grownAfter++;
+        }
+        unitsAfter = game_unit_count(g, -1);
+
+        checkf(grownAfter > grownBefore,
+               "land spread from %d squares of 0x0c+side to %d",
+               grownBefore, grownAfter, 0);
+        checkf(ownedAfter == ownedBefore,
+               "the 0x08+side squares stayed at %d (now %d)",
+               ownedBefore, ownedAfter, 0);
+        checkf(unitsAfter >= unitsBefore,
+               "units went %d -> %d", unitsBefore, unitsAfter, 0);
+        printf("2000 ticks: land %d -> %d, units %d -> %d\n",
+               grownBefore, grownAfter, unitsBefore, unitsAfter);
+
+        /* Nothing ever leaves the board. */
+        for (i = 0; i < UNIT_SLOTS; i++) {
+            const Unit *u = &g->unit[i];
+            int x, y;
+            if (u->flags & 0x80) continue;
+            x = u->pos & 0xff;
+            y = u->pos >> 8;
+            checkf(x >= 0 && x < MAP_W && y >= 0 && y < MAP_H,
+                   "unit %d is at %d,%d", i, x, y);
+            checkf(g->occupant[game_cell_index(x, y)] == i,
+                   "unit %d is not in the occupancy array at %d,%d", i, x, y);
+        }
+    }
+
     disk_close(d);
     free(g);
     if (failures) {

@@ -340,10 +340,39 @@ static void tick_nest(Game *g, int index)
     g->cell[index].amount = 0;
 }
 
-/* Tiles 0x08..0x0b: developed land.  0x33d1. */
+/* A square of developed land that has filled up turns into a unit: the unit
+ * carries what the square held less one, and the square is left with 1.
+ * 0x346a. */
+static void land_produces(Game *g, int index, int side)
+{
+    int slot, carried;
+
+    if (g->occupant[index] >= 0) return;            /* 0x346e */
+    carried = g->cell[index].amount - 1;            /* xchg 1, then dec */
+    if (carried < 0) carried = 0;
+    slot = place(g, index, side, UNIT_STATE_FOLLOW,
+                 (unsigned short)carried);
+    if (slot < 0) return;
+    g->cell[index].amount = 1;
+}
+
+/* Tiles 0x08..0x0b: developed land.  0x33d1.
+ *
+ * It grows by one for every neighbour of the same land plus one - twice that
+ * for an AI side while [0x347e] is set - and saturates.  Then, only if what it
+ * holds is more than (neighbours + 1) * 16:
+ *
+ *   - with eight neighbours of its own kind it produces a unit outright
+ *   - otherwise it spreads into an empty neighbour, which becomes 0x0c + side
+ *     holding 100, and produces a unit if it is at 200 or more
+ *
+ * The one branch not pinned down is sub_b7cf, which the original consults when
+ * there is no empty neighbour; here that case just falls through to the same
+ * "produce if full" test.
+ */
 static void tick_land(Game *g, int index, int side)
 {
-    int same, empty, last, gain, v;
+    int same, empty, last, gain, v, n;
 
     game_neighbours(g, index, (unsigned char)(CELL_TERRITORY0 + side),
                     &same, &empty, &last);
@@ -351,6 +380,19 @@ static void tick_land(Game *g, int index, int side)
     if (side != g->human && g->aiBonus) gain *= 2;
     v = g->cell[index].amount + gain;
     g->cell[index].amount = (unsigned char)(v > 0xff ? 0xff : v);
+
+    n = same + 1;
+    if (g->cell[index].amount <= n * 16) return;        /* 0x3439 */
+    if (n >= 9) {                                       /* 0x3440 */
+        land_produces(g, index, side);
+        return;
+    }
+    if (empty > 0 && last >= 0) {                       /* 0x3454 */
+        g->cell[last].tile = (unsigned char)(CELL_TERRITORY0 + 4 + side);
+        g->cell[last].amount = CELL_START_AMOUNT;
+    }
+    if (g->cell[index].amount >= CELL_FULL_AMOUNT)       /* 0x3460 */
+        land_produces(g, index, side);
 }
 
 void game_tick_cells(Game *g)
@@ -370,4 +412,49 @@ void game_tick_cells(Game *g)
         if (at >= MAP_W * MAP_H) at -= MAP_W * MAP_H;
     }
     g->cellCursor = at;
+}
+
+/* The castle collects, at 0x3581.  It only happens when the side's own lord is
+ * standing on the castle in a 0x20 mode, and when the square two to the right -
+ * the one past the castle gate - is not somebody else's land.  Then every
+ * square of the side's own 0x08 + side land that the flood fill can reach hands
+ * over `(rate * amount) >> 8`, and loses it.
+ *
+ * Returns what was collected.
+ */
+int game_collect(Game *g, int side)
+{
+    Side *s = &g->side[side];
+    int castle, gate, got = 0, i;
+    unsigned short *dist;
+    unsigned char mine = (unsigned char)(CELL_TERRITORY0 + side);
+    int lord;
+
+    if (!s->alive) return 0;
+    castle = game_cell_index(s->pos & 0xff, s->pos >> 8);
+    lord = g->occupant[castle];
+    if (lord < 0) return 0;                          /* 0x3588 */
+    if (g->unit[lord].side != side) return 0;        /* 0x358c */
+    if (!(g->unit[lord].state & 0x20)) return 0;     /* 0x3591 */
+
+    /* [di + 4]: two cells to the right. */
+    if (castle % MAP_W + 2 < MAP_W) {
+        int t = g->cell[castle + 2].tile - 8;
+        if (t >= 0 && t < 8 && (t & 3) != side) return 0;   /* 0x35a6 */
+    }
+
+    dist = fill_distances(g, castle);
+    for (i = 0; i < MAP_W * MAP_H; i++) {
+        int take;
+        if (g->cell[i].tile != mine) continue;
+        if (dist[i] == DIST_WALL || dist[i] == DIST_OPEN) continue;
+        if (dist[i] >= 0x4000) continue;             /* 0x35e1 */
+        take = (s->rate * g->cell[i].amount) >> 8;   /* mul, keep the high byte */
+        if (take == 0) continue;
+        g->cell[i].amount = (unsigned char)(g->cell[i].amount - take);
+        s->funds = (unsigned short)(s->funds + take);
+        got += take;
+    }
+    (void)gate;
+    return got;
 }

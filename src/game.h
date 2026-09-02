@@ -158,6 +158,12 @@ void game_step(Game *g);
  */
 void game_tick_cells(Game *g);
 
+/* The castle's collection, at 0x3581: with the side's lord standing on the
+ * castle in a 0x20 mode and the square past its gate not held by anybody else,
+ * every reachable square of the side's own land hands over
+ * `(rate * amount) >> 8` and loses it.  Returns the total. */
+int game_collect(Game *g, int side);
+
 /* The eight neighbours of a cell: how many are `tile`, how many are plain
  * ground, and where the last plain one was.  sub_adeb. */
 void game_neighbours(const Game *g, int index, unsigned char tile,
