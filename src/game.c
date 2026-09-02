@@ -101,6 +101,7 @@ void game_init(Game *g, const Map *m)
     memset(g, 0, sizeof *g);
     g->terrain = m->terrain;
     g->speed = 1;                       /* PROG.DAT DS:3c02 */
+    g->daysLeft = GAME_DAYS;            /* 0x63ca */
     g->human = 0;                       /* PROG.DAT DS:3c00 */
     g->stamp = 1;
     game_forget_distances();
@@ -162,6 +163,16 @@ void game_init(Game *g, const Map *m)
         place(g, i, 4, UNIT_STATE_NEUTRAL, CELL_FULL_AMOUNT);
     }
     g->side[4].ally = 0x80;
+}
+
+void game_day(Game *g)
+{
+    int mask = (~(0xfe << (g->speed & 7))) & 0xff;
+
+    if (g->turn & mask) return;
+    g->day = (g->day + 1) & 0xffff;
+    if (!g->day) g->day = 0xffff;       /* 0xa749: it saturates */
+    if (g->daysLeft > 0) g->daysLeft--;
 }
 
 void game_step(Game *g)

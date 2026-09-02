@@ -1160,8 +1160,12 @@ void app_tick(void)
     if (mode != APP_MODE_MAP) return;
     /* The castles collect from inside the cell sweep, when the cursor lands on
      * one - not once a tick.  0x3332 dispatches on the tile. */
+    /* 0x1a43 bumps the turn counter before the sweeps and 0x1a56 reads it
+     * after them, so the order here is the interrupt's. */
+    game.turn = (game.turn + 1) & 0xff;
     game_tick_cells(&game);
     game_step(&game);
+    game_day(&game);
     for (i = 0; i < MAP_W * MAP_H; i++) live.cell[i] = game.cell[i].tile;
     ticks++;
     {
@@ -1486,6 +1490,25 @@ void app_render(void)
      * thing it has, being played on the keyboard - so unlike a box following a
      * mouse it belongs on the screen. */
     if (panelIcon < 0) outline_cell(curX, curY, selected >= 0 ? 7 : 6);
+
+    /* The calendar on the right, over WAKU's own "days" and "Left".
+     *
+     * 0x7ccf clears five cells at VRAM 0x1e3d and draws DS:0x131a - "@5w"
+     * against [0x3bcc] - and 0x7cde does the same at 0x1e46 with DS:0x1320,
+     * whose "@?" picks a word and then prints [0x3bca].  0x1e3d is row 96 byte
+     * 61 and 0x1e46 is row 96 byte 70, so x 488 and x 560, five columns each.
+     * ss3.jpg has "293" in the last three of the first five and "2907" in the
+     * last four of the second, in white, which is index 7 in the tileset's own
+     * table - so five columns, right-aligned, and not zero-padded. */
+    {
+        char buf[16];
+
+        snprintf(buf, sizeof buf, "%5d", game.day > 99999 ? 99999 : game.day);
+        gfx_text_sjis(&scr, &font, &fontRom, 488, 96, buf, 7);
+        snprintf(buf, sizeof buf, "%5d",
+                 game.daysLeft > 99999 ? 99999 : game.daysLeft);
+        gfx_text_sjis(&scr, &font, &fontRom, 560, 96, buf, 7);
+    }
 
     /* The panel last, so nothing can be drawn over it. */
     {

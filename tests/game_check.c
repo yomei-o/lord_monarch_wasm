@@ -877,6 +877,41 @@ int main(int argc, char **argv)
         printf("B_051 after 12000 ticks: %d of 4 countries left\n", alive);
     }
 
+    /* The calendar.  A day is 2^(speed + 1) turns - sub_a731 takes 0xfe,
+     * shifts it left by [0x3c02], inverts it and tests the turn counter
+     * against that - and the countdown starts at 3200, which is what
+     * ss3.jpg's 293 + 2907 comes to. */
+    {
+        static const struct { int speed, turns, days; } want[] = {
+            { 0,  600, 300 },   /* every 2 turns  */
+            { 1,  600, 150 },   /* every 4        */
+            { 2,  600,  75 },   /* every 8        */
+            { 3, 1600, 100 },   /* every 16       */
+        };
+        unsigned k;
+        Map cal;
+
+        gfx_load_map(&cal, d, "B_000.MAP");
+        for (k = 0; k < sizeof want / sizeof *want; k++) {
+            int i;
+
+            game_init(g, &cal);
+            g->speed = want[k].speed;
+            check(g->daysLeft == GAME_DAYS, "a new game has 3200 days left");
+            for (i = 0; i < want[k].turns; i++) {
+                g->turn = (g->turn + 1) & 0xff;
+                game_day(g);
+            }
+            checkf(g->day == want[k].days,
+                   "speed %d: %d turns should be %d days", want[k].speed,
+                   want[k].turns, want[k].days);
+            checkf(g->day + g->daysLeft == GAME_DAYS,
+                   "speed %d: %d gone and %d left do not come to 3200",
+                   want[k].speed, g->day, g->daysLeft);
+        }
+        printf("the calendar: a day is 2^(speed+1) turns, out of 3200\n");
+    }
+
     disk_close(d);
     free(g);
     if (failures) {

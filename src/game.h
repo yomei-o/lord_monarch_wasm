@@ -170,6 +170,15 @@ typedef struct {
     int cursor;                         /* DS:3BEC, the rolling unit cursor */
     int cellCursor;                     /* DS:3BEA, the rolling cell cursor */
     int speed;                          /* DS:3C02, 0 = fastest */
+
+    /* The calendar.  0x1a43 bumps [0x3be8] once a turn and 0x1a56 runs
+     * sub_a731, which only moves the day on when the low bits of that counter
+     * are all clear: `al = 0xfe << [0x3c02]; not al; test [0x3be8], al`, so a
+     * day is 2^(speed + 1) turns.  The day count saturates rather than wraps
+     * (0xa749 puts 0xffff back), and the countdown stops at nought. */
+    int turn;                           /* DS:3BE8, a byte */
+    int day;                            /* DS:3BCC, days gone */
+    int daysLeft;                       /* DS:3BCA */
     int human;                          /* DS:3C00, the side the player has */
     long stamp;                         /* bumped whenever the ground changes */
     /* DS:C4F2, the number of units allowed to make a decision this turn.  It is
@@ -198,6 +207,16 @@ void game_unit_step(Game *g, int slot);
 
 /* One pass of the unit updater: `0x40 >> speed` slots, stepping 31 at a time. */
 void game_step(Game *g);
+
+/* The scenario's length.  0x63ca loads 3200 flat and only adds to it from a
+ * twelve-byte-per-entry table at DS:0xcc06 when [0x3bc2] names a scenario
+ * inside it, which picking a map off this disk does not.  293 + 2907 in
+ * ss3.jpg is that 3200. */
+#define GAME_DAYS 3200
+
+/* sub_a731: one turn's worth of calendar.  Called after the sweeps, the way
+ * 0x1a56 is. */
+void game_day(Game *g);
 
 /* One pass of the world tick, following sub_3332.  It walks `(144 >> speed) - 1`
  * cells, stepping the cursor 23 cells at a time (46 bytes) and wrapping at 2304,
