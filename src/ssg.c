@@ -130,9 +130,11 @@ void ssg_render(Ssg *s, short *out, int samples, int sampleRate)
          * wherever the number of sounding channels puts it - one channel idles
          * at zero and swings up, which is a step of several thousand at every
          * key-on and sounds like a click rather than a note. */
-        /* Three channels at full is 3 * 3072; six leaves headroom for that
-         * and still comes out at a comfortable level. */
-        s->dcIn = v * 6;
+        /* Three channels at full is 3 * 3072.  Three was too quiet on its
+         * own and six put the SSG three decibels over the FM, which is the
+         * wrong way round for this chip: the user heard an SSG arrangement
+         * with an FM part somewhere underneath. */
+        s->dcIn = v * 3;
         s->dc = s->dcIn - s->dcPrev + (s->dc * 1023) / 1024;
         s->dcPrev = s->dcIn;
         if (s->dc > 32000) s->dc = 32000;

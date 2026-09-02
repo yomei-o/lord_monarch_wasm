@@ -406,10 +406,13 @@ void opn_render(Opn *o, short *out, int samples, int sampleRate)
             acc += channel_sample(ch, inc);
         }
         {
-            /* The FM and the SSG have to arrive at comparable levels: a
-             * carrier at a typical TL out of these songs comes out around a
-             * fifth of full scale, and there are three of them. */
-            long v = out[i] + (long)(acc * 11000.0);
+            /* The balance.  On the chip the FM is the loud half and the SSG
+             * supports it; here the SSG was three decibels the louder and the
+             * FM lifted the total by only 1.7 dB, so what came out was an SSG
+             * arrangement with something underneath it.  At this scale one
+             * carrier at TL 0 is worth rather more than one SSG channel at
+             * volume 15, which is the way round the chip has it. */
+            long v = out[i] + (long)(acc * 24000.0);
 
             if (v > 32000) v = 32000;
             if (v < -32000) v = -32000;
