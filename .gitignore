@@ -1,0 +1,12 @@
+# The Ghidra project is machine-local; decomp/ is committed so the analysis can
+# be continued without Ghidra installed.  Rebuild either with the command in
+# RESUME.md.
+/ghidra_proj/
+
+# Scratch: PNG dumps, the flat memory image, disassembly probes.
+/tmp/
+
+# Build output.
+/tests/*.exe
+/monarch.exe
+*.o

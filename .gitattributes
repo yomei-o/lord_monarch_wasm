@@ -1,0 +1,45 @@
+# Keep the sources LF in the repository whatever the checkout does.
+*.c    text eol=lf
+*.h    text eol=lf
+*.js   text eol=lf
+*.sh   text eol=lf
+*.py   text eol=lf
+*.java text eol=lf
+*.md    text eol=lf
+*.html  text eol=lf
+*.ps1  text eol=crlf
+
+*.dar  binary
+*.dat  binary
+*.wav  binary
+*.mid  binary
+*.MID  binary
+*.exe  binary
+*.dll  binary
+*.DLL  binary
+*.zip  binary
+*.wasm binary
+*.lzh binary
+*.LZH binary
+*.EXE binary
+*.C08 binary
+*.C16 binary
+*.C32 binary
+*.BOS binary
+*.FNT binary
+*.png binary
+*.FIM binary
+*.LZH binary
+*.lzh binary
+*.BIN binary
+*.DAT binary
+*.MAP binary
+*.CH4 binary
+*.PAC binary
+*.B1 binary
+*.R1 binary
+*.G1 binary
+*.E1 binary
+*.SYS binary
+*.jpg binary
+*.JPG binary
