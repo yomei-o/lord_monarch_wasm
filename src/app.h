@@ -39,11 +39,7 @@ enum {
      * round to nothing in the middle of a session would be worse than useless
      * - and because that is the widest number the panel's ten columns show
      * without the game having to change how it adds. */
-    APP_KEY_MONEY,
-
-    /* Which set of maps [ and ] walk through - the game's own fifty-two or
-     * the three that came on the LOGiN disk. */
-    APP_KEY_MAPSET
+    APP_KEY_MONEY
 };
 
 #define APP_MONEY_MAX 999999999UL
@@ -129,17 +125,6 @@ int app_song_playing(void);
  * sounds and hands it back after.  Returns 0 when no song is playing, and
  * then app_effect_pcm is the way to hear it on its own. */
 int app_song_effect(int id);
-
-/* The maps.  The game's own disk carries B_000..B_051; the LOGiN magazine's
- * gave out three more as B_100..B_102, on a disk with nothing else on it but
- * their names.  Both are opened when both are there, and the LOGiN three are
- * what a session starts on.
- *
- * app_map_set(0) picks the LOGiN three, (1) the game's own; it returns the
- * set actually in force, which is 1 when the LOGiN disk was not found. */
-int app_map_set(int which);
-int app_map_set_now(void);
-int app_map_count(void);
 
 void app_sound(int idAndPriority);
 

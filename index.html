@@ -126,9 +126,7 @@
   <b>R / S</b><span>世界を動かす / 1 ステップだけ進める（パネルの GO と同じ）</span>
   <b>ダイアログ</b><span>↑↓で選び、決定で実行、取消で閉じる。税率・情報・速度・拡大縮小・同盟、
     それに命令の選択はすべて画面の中に出ます</span>
-  <b>[ ]</b><span>前後のマップ。解析用で、原作にこの操作は無い</span>
-  <b>L</b><span>マップの組を切り替える。<b>ログイン誌のオリジナルマップ 3 面</b>（初期状態）と、
-    ゲーム自身の 52 面</span>
+  <b>[ ]</b><span>前後のマップ（全 52 面）。解析用で、原作にこの操作は無い</span>
   <b>C</b><span>城とユニットに印をつける（解析用。原作にこの表示は無い）</span>
   <b>T</b><span>タイトルに戻る</span>
   <b>M</b><span><b>デバッグ用のチート</b>。自分の国の資金を 999,999,999 にします。
@@ -141,10 +139,10 @@
 <!-- BUILD is bumped by "make wasm".  Without it a browser will happily hold
      on to a monarch.js from an earlier build and then fail on whichever
      function was added since - which is exactly what happened once. -->
-<script src="monarch.js?v=481f5e53"></script>
+<script src="monarch.js?v=1e5dfa3c"></script>
 <script>
   // Stamped by tools/stamp.py from the wasm's own hash.
-  window.LM_BUILD = '481f5e53';
+  window.LM_BUILD = '1e5dfa3c';
 
 (function () {
   'use strict';
@@ -154,7 +152,7 @@
   var KEY = {
     START: 1, PREV_MAP: 2, NEXT_MAP: 3, LEFT: 4, RIGHT: 5, UP: 6, DOWN: 7,
     TILE8: 8, TILE16: 9, TILE32: 10, BACK: 11, CASTLES: 12,
-    RUN: 13, STEP: 14, TITLE: 15, MONEY: 16, MAPSET: 17
+    RUN: 13, STEP: 14, TITLE: 15, MONEY: 16
   };
 
   var canvas = document.getElementById('screen');
@@ -226,7 +224,6 @@
       case 'r': case 'R': return KEY.RUN;
       case 's': case 'S': return KEY.STEP;
       case 'm': case 'M': return KEY.MONEY;   // a cheat; see app.h
-      case 'l': case 'L': return KEY.MAPSET;
       default:  return 0;
     }
   }

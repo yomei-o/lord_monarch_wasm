@@ -19,12 +19,6 @@
 
 #define MAP_COUNT 52
 
-/* The LOGiN disk's three, numbered from 100.  They are stored uncompressed,
- * which gfx_load_map allows for, and their terrain words are 10, 20 and 40 -
- * so the tiles and the palette still come off the game's own disk. */
-#define LOGIN_FIRST 100
-#define LOGIN_COUNT 3
-
 /* The panel down the left of WAKU: two columns of 32x32 icons, seven rows.
  *
  * The original stores no rectangles at all.  sub_4db2 keeps a single index in
@@ -244,20 +238,13 @@ static int mapNumber, tileSize = 16, scrollX, scrollY;
 
 /* 0 = the LOGiN three, 1 = the game's own fifty-two.  mapNumber is the index
  * within whichever is in force, not the file's number. */
-static int mapSet;
-static Disk *loginDisk;
-
-/* The names out of whichever NAME.TXT goes with the set in force, and how
+/* The names out of NAME.TXT, and how
  * many more frames to show the one just loaded.  The original puts it in the
  * window at DS:0x123f - fifteen cells at (112, 24) - while a
  * map is being chosen; here it goes up for a couple of seconds whenever one
  * is loaded, which is the only time this port chooses. */
 static char mapNames[GFX_MAPS][17];
 static int nameShow;
-
-static int map_count(void) { return mapSet ? MAP_COUNT : LOGIN_COUNT; }
-static int map_file_number(int i) { return mapSet ? i : LOGIN_FIRST + i; }
-static Disk *map_disk(void) { return mapSet ? disk : loginDisk; }
 
 /* The tileset's own names - see gfx_load_names.  [1..5] are the countries and
  * [6..21] the sixteen unit states, so a state number indexes from 6. */
@@ -328,21 +315,6 @@ int app_init(const char *imagePath)
             if (!font_rom_from_file("font/shinonome.fnt"))
                 font_rom_from_file("shinonome.fnt");
     }
-    /* The LOGiN disk, if it is to be found.  It holds three maps and their
-     * names and nothing else, so everything but B_1nn.MAP still comes off the
-     * game's own disk.  Without it the port falls back to the fifty-two. */
-    {
-        static const char *where[] = {
-            "/login.hdm",                                   /* the wasm embed */
-            "tmp/login.hdm",
-            "orig/Lord Monarch (LOGiN Original Maps).hdm"
-        };
-        unsigned i;
-
-        for (i = 0; i < sizeof where / sizeof *where && !loginDisk; i++)
-            loginDisk = disk_open(where[i]);
-    }
-    mapSet = loginDisk ? 0 : 1;
     return app_show_title();
 }
 
@@ -353,8 +325,6 @@ void app_shutdown(void)
     progDat = 0;
     disk_close(disk);
     disk = 0;
-    disk_close(loginDisk);
-    loginDisk = 0;
 }
 
 /* The palette travels with the tileset: the 48 bytes appended to B_0n0L.CH4,
@@ -731,15 +701,15 @@ int app_show_map(int number, int size)
 {
     char name[32], bankName[32];
 
-    if (number < 0) number = map_count() - 1;
-    if (number >= map_count()) number = 0;
-    snprintf(name, sizeof name, "B_%03d.MAP", map_file_number(number));
-    if (!gfx_load_map(&map, map_disk(), name)) {
+    if (number < 0) number = MAP_COUNT - 1;
+    if (number >= MAP_COUNT) number = 0;
+    snprintf(name, sizeof name, "B_%03d.MAP", number);
+    if (!gfx_load_map(&map, disk, name)) {
         snprintf(status, sizeof status, "%s: %s", name, disk_error());
         return 0;
     }
     if (!palette_from_terrain(map.terrain)) return 0;
-    gfx_load_map_names(map_disk(), mapNames);
+    gfx_load_map_names(disk, mapNames);
     nameShow = 120;
     namesOk = gfx_load_names(disk, map.terrain, names);
     composeOk = gfx_load_compose(disk, map.terrain, compose);
@@ -1023,7 +993,7 @@ static void icon_press(int idx)
     case ICON_ALLY:  app_sound(APP_SND_OK); dlg_open_ally();  break;
     case ICON_MAP:
         app_sound(APP_SND_OK);
-        app_show_map(mapNumber + 1 >= map_count() ? 0 : mapNumber + 1,
+        app_show_map(mapNumber + 1 >= MAP_COUNT ? 0 : mapNumber + 1,
                      tileSize);
         break;
     default:
@@ -1239,9 +1209,6 @@ void app_key(int key)
     case APP_KEY_RUN:       running = !running; break;
     case APP_KEY_STEP:      running = 0; app_tick(); break;
     case APP_KEY_TITLE:     app_show_title(); break;
-    case APP_KEY_MAPSET:
-        app_map_set(!mapSet);
-        break;
     case APP_KEY_MONEY:
         if (mode == APP_MODE_MAP && game.human >= 0 && game.human < PLAYERS) {
             game.side[game.human].funds = APP_MONEY_MAX;
@@ -1504,21 +1471,6 @@ int app_song_effect(int id)
 {
     if (!songOn) return 0;
     return snd_song_effect(&song, id);
-}
-
-int app_map_set_now(void) { return mapSet; }
-int app_map_count(void) { return map_count(); }
-
-int app_map_set(int which)
-{
-    int want = (which && 1) || !loginDisk;
-
-    if (want != mapSet) {
-        mapSet = want;
-        mapNumber = 0;
-    }
-    app_show_map(mapNumber, tileSize);
-    return mapSet;
 }
 
 int app_japanese(void) { return fontRom.loaded; }
