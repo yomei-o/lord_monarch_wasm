@@ -405,6 +405,7 @@ static void tick_land(Game *g, int index, int side)
 
     /* 0x33dc -> 0x34ce: a fallen side's ground becomes the heir's, or plain
      * again when there is no heir. */
+    if (g->side[side].flag & 1) return;         /* 0x33e5, its king is dead */
     if (g->side[side].flag & 8) {
         unsigned char heir = g->side[side].heir;
         if (heir < PLAYERS) {
@@ -429,7 +430,14 @@ static void tick_land(Game *g, int index, int side)
         }
     }
 
-    game_neighbours(g, index, (unsigned char)(CELL_TERRITORY0 + side),
+    /* The neighbours that count are the side's CLAIMED ground, 0x0c + side,
+     * not its productive ground: 0x33fb and 0x341a both do "add al, 0x0c" to
+     * the side number before calling sub_adeb.  It is the difference between a
+     * game and a still life - a productive square ringed by claimed ground has
+     * nine, which is the case that produces a soldier outright, and counting
+     * 0x08 + side instead left almost every square below the threshold for
+     * ever. */
+    game_neighbours(g, index, (unsigned char)(CELL_TERRITORY0 + 4 + side),
                     &same, &empty, &last);
     gain = same + 1;                        /* `inc dh`, then it is used twice */
     if (side != g->human && g->aiBonus) gain *= 2;
@@ -688,6 +696,58 @@ static int pick_job(Game *g, int slot);
 int game_order_job(Game *g, int slot, int x, int y);
 static void tick_dying(Game *g, int slot);
 static void unit_lord(Game *g, int slot);
+
+/* sub_a98d, the first thing every unit's turn does - and the piece whose
+ * absence stopped the whole economy.
+ *
+ * A unit standing on one of the four castles, or on its own side's productive
+ * ground, costs its side `carrying >> 11` funds a turn.  Anywhere else - or
+ * when the treasury cannot pay - it starves instead, losing `carrying >> 8`
+ * plus one a turn, and when that runs out it dies with the kill credited to
+ * side 4, which is nobody.
+ *
+ * This is where a country's money goes, and it is the only thing that gets a
+ * country started: a side begins with 5000 funds, and at 5000 the rate the
+ * castle taxes at drifts to 1, which collects nothing at all from ground whose
+ * amount is a byte.  Upkeep drains the treasury until the rate climbs, and then
+ * the ground starts paying, the land total falls, and the lord begins pushing
+ * workers out.  Without it the funds sat at 5000 for ever and nothing anywhere
+ * on the map moved.
+ *
+ * Returns 0 when the unit has died and the caller must stop (0xa9c6 sets the
+ * carry and 0x3846 returns on it).
+ */
+static int unit_upkeep(Game *g, int slot)
+{
+    Unit *u = &g->unit[slot];
+    int index = game_cell_index(u->pos & 0xff, u->pos >> 8);
+    unsigned char tile = g->cell[index].tile;
+    int onFriendly;
+    unsigned long cost;
+
+    /* 0xa991: a castle of any side, or this side's own 0x08 + side. */
+    onFriendly = (tile >= CELL_CASTLE0 && tile < CELL_CASTLE0 + PLAYERS) ||
+                 tile == (unsigned char)(CELL_TERRITORY0 + u->side);
+
+    if (onFriendly && u->side < PLAYERS) {
+        cost = (unsigned long)(u->carrying >> 11);
+        if (g->side[u->side].funds >= cost) {
+            g->side[u->side].funds -= cost;
+            return 1;
+        }
+    }
+
+    /* 0xa9b4: starving. */
+    {
+        int lose = (u->carrying >> 8) + 1;
+        if (u->carrying > lose) {
+            u->carrying = (unsigned short)(u->carrying - lose);
+            return 1;
+        }
+        game_kill(g, slot, 4);          /* 0xa9c1: credited to nobody */
+        return 0;
+    }
+}
 
 /* sub_41b5: a unit standing on somebody else's claimed land wipes it back to
  * plain ground.  Its own and its ally's are left alone. */
@@ -1085,6 +1145,7 @@ void game_unit_step(Game *g, int slot)
     }
     if (u->side >= PLAYERS) return;             /* the wild ones, 0x3b86 */
 
+    if (!unit_upkeep(g, slot)) return;          /* 0x3841, sub_a98d */
     wipe_foreign_land(g, slot);                 /* 0x3847 */
 
     if (u->link != 0xff) {                      /* 0x384a */
@@ -1156,6 +1217,18 @@ void game_land_totals(Game *g)
         else continue;
         g->side[side].landTotal += g->cell[i].amount;
     }
+    /* sub_a6a5 does not stop at the ground: its second loop at 0xa6e6 adds
+     * what every unit is carrying to its side's total, skipping the lord
+     * (0xa6f4 tests bit 0x20).  So the number the lord measures itself against
+     * is everything the country is holding, in the ground and in hand, which is
+     * why sending workers out does not by itself make the lord produce more. */
+    for (i = 0; i < UNIT_SLOTS; i++) {
+        const Unit *u = &g->unit[i];
+        if (u->flags & 0x80) continue;
+        if (u->state & 0x20) continue;              /* the lord itself */
+        if (u->side >= SIDES) continue;
+        g->side[u->side].landTotal += u->carrying;
+    }
 }
 
 /* The lord, at 0x3a67 by way of sub_3c7f.  Standing on its own castle it either
@@ -1217,6 +1290,12 @@ static void unit_lord(Game *g, int slot)
 {
     Unit *u = &g->unit[slot];
 
+    {
+        /* 0x3a71: a lord standing on its own castle pays nothing. */
+        int index = game_cell_index(u->pos & 0xff, u->pos >> 8);
+        if (g->cell[index].tile != (unsigned char)(CELL_CASTLE0 + u->side))
+            if (!unit_upkeep(g, slot)) return;  /* 0x3a77 */
+    }
     lord_castle(g, slot);                       /* 0x3a7d, sub_3c7f */
     wipe_foreign_land(g, slot);                 /* 0x3a80, sub_41b5 */
     if (u->link != 0xff) {                      /* 0x3a83 */
