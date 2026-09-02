@@ -256,6 +256,20 @@ static unsigned char compose[GFX_TILES][4];
 static int composeOk;
 static Bank pieces;
 
+/* The four character banks the unit box's portrait comes out of.  They hold
+ * 16x16 pieces, not 32x32 tiles: sub_8789 reads 128 bytes - four planes of
+ * sixteen rows of two - from segment 0x3000 + piece * 8, and sub_8738 puts
+ * four of them together as n, n+1 across the top and n+2, n+3 below.  (That
+ * is not the order sub_8756 uses for the terrain thumbnail, which goes down
+ * the left column first; the two routines walk di differently.)
+ *
+ * 0x6201, 0x6228, 0x624f and the one after read C_0n0L1..L4 to 0x5000:0000,
+ * 0x5000:8000, 0x6000:0000 and 0x6000:8000, and a piece number of 0x400 is
+ * exactly 0x50000 - so the four files are characters 0..63, 64..127, 128..191
+ * and 192..255 of one run. */
+static Bank portraits[4];
+static int portraitsOk;
+
 /* 0x7d0e: when the cursor is over nothing, the box keeps whatever it showed
  * last, in [0x32bf]. */
 static int boxUnit = -1;
@@ -687,6 +701,18 @@ int app_show_map(int number, int size)
 
         snprintf(pname, sizeof pname, "B_%03dM.CH4", map.terrain);
         if (!gfx_load_bank(&pieces, disk, pname, 16)) composeOk = 0;
+    }
+    {
+        int b;
+
+        portraitsOk = 1;
+        for (b = 0; b < 4; b++) {
+            char pname[32];
+
+            gfx_free_bank(&portraits[b]);
+            snprintf(pname, sizeof pname, "C_%03dL%d.CH4", map.terrain, b + 1);
+            if (!gfx_load_bank(&portraits[b], disk, pname, 16)) portraitsOk = 0;
+        }
     }
     boxUnit = -1;
     {
@@ -1228,6 +1254,37 @@ static void draw_units(void)
     }
 }
 
+/* sub_ac00: which of the 256 character tiles a unit shows as.  The pieces of
+ * it are the side (times eight), the way it is facing (bits 1 and 2 of +0x01),
+ * one bit of the turn counter so it walks, and a rank taken from what it is
+ * carrying - unless bit 5 of its state says it is the lord, which outranks
+ * everything.  A unit with no move left this turn (flags bit 0), one that is
+ * dying (bit 1) and the wild ones (side 4) each have their own block. */
+static int portrait_tile(const Unit *u, int turn)
+{
+    int anim = (turn >> 1) & 1;
+    int dl;
+
+    if (u->side == 4) {                             /* 0xac50 */
+        if (u->flags & 2) return (0xc8 | u->want) & 0xff;
+        return 0xc0 | anim | (u->facing & 6);
+    }
+    if (u->flags & 2) {                             /* 0xaca3 */
+        dl = (u->state & 0x20) ? 0xa4 : 0xa0;
+        return (dl | (u->side << 3) | u->want) & 0xff;
+    }
+    if (u->flags & 1) {                             /* 0xac71 */
+        dl = (u->state & 0x20) ? 0x86
+           : u->carrying >= 10000 ? 0x84
+           : u->carrying >= 1000 ? 0x82 : 0x80;
+        return (dl | (u->side << 3) | anim) & 0xff;
+    }
+    dl = (u->state & 0x20) ? 0x60                   /* 0xac16 */
+       : u->carrying >= 10000 ? 0x40
+       : u->carrying >= 1000 ? 0x20 : 0;
+    return (dl | (u->side << 3) | anim | (u->facing & 6)) & 0xff;
+}
+
 /* One turn of the world: the cell sweep and the unit sweep, then the castles
  * take their cut.  The original drives both from its main loop at 0x1a4d. */
 void app_tick(void)
@@ -1685,6 +1742,17 @@ void app_render(void)
             unsigned char colour = (u->state & 0x10) ? 6 : 7;
             char buf[24];
 
+            /* 0x7d2a: the portrait at VRAM 0x25be, row 120 x 496. */
+            if (portraitsOk) {
+                int t = portrait_tile(u, game.turn);
+                Bank *b = &portraits[(t >> 6) & 3];
+                int base = (t & 63) * 4, k;
+
+                for (k = 0; k < 4; k++)
+                    if (base + k < b->count)
+                        gfx_blit_tile(&scr, b, (unsigned char)(base + k),
+                                      496 + (k & 1) * 16, 120 + (k >> 1) * 16);
+            }
             snprintf(buf, sizeof buf, "%5d", u->carrying);
             gfx_text_sjis(&scr, &font, &fontRom, 528, 120, buf, 7);
             snprintf(buf, sizeof buf, "%2d", (u->pos >> 8) & 0xff);
