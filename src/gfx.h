@@ -176,6 +176,16 @@ void gfx_free_bank(Bank *b);
 #define GFX_NAMES 22
 int gfx_load_names(Disk *d, int terrain, unsigned char out[GFX_NAMES][16]);
 
+/* The other half of that tail: the 512 bytes before the names, which 0x617e
+ * copies to DS:0x3c20.  That is 128 map tiles of four bytes, and sub_8756
+ * draws them as a 32x32 out of four 16x16 pieces - top-left, bottom-left,
+ * top-right, bottom-right, in that order, which is the order its di
+ * arithmetic walks.  The pieces come from B_0n0M.CH4: sub_8789 turns a piece
+ * number into the segment 0x3000 + piece * 8, and 0x6144 is what reads the M
+ * bank to segment 0x3000. */
+#define GFX_TILES 128
+int gfx_load_compose(Disk *d, int terrain, unsigned char out[GFX_TILES][4]);
+
 /* Loads a .MAP: 48x48 one-byte cells plus a uint16 terrain-set number.  The
  * file is column-major and is transposed on the way in - see gfx.c. */
 int gfx_load_map(Map *m, Disk *d, const char *name);

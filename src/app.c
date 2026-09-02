@@ -250,6 +250,12 @@ static int namesOk;
 #define GRAPH_COLOURS_AT 0x3484
 static unsigned char sideColour[5] = { 4, 2, 7, 0, 15 };
 
+/* For the thumbnail of the square under the cursor: the tileset's own 32x32
+ * composition table and the 16x16 bank its pieces come from. */
+static unsigned char compose[GFX_TILES][4];
+static int composeOk;
+static Bank pieces;
+
 /* 0x7d0e: when the cursor is over nothing, the box keeps whatever it showed
  * last, in [0x32bf]. */
 static int boxUnit = -1;
@@ -674,6 +680,14 @@ int app_show_map(int number, int size)
     }
     if (!palette_from_terrain(map.terrain)) return 0;
     namesOk = gfx_load_names(disk, map.terrain, names);
+    composeOk = gfx_load_compose(disk, map.terrain, compose);
+    gfx_free_bank(&pieces);
+    {
+        char pname[32];
+
+        snprintf(pname, sizeof pname, "B_%03dM.CH4", map.terrain);
+        if (!gfx_load_bank(&pieces, disk, pname, 16)) composeOk = 0;
+    }
     boxUnit = -1;
     {
         const unsigned char *t = dat_at(GRAPH_COLOURS_AT, 50);
@@ -1689,6 +1703,24 @@ void app_render(void)
                 nm[16] = 0;
                 gfx_text_sjis(&scr, &font, &fontRom, 528, 136, nm, colour);
             }
+        }
+    }
+
+    /* And a picture of it, at VRAM 0x323e - row 160, x 496.  0x7d45 hands
+     * sub_8756 the tile byte, which indexes the composition table four bytes
+     * at a time and draws the four 16x16 pieces as a 32x32. */
+    if (composeOk) {
+        int at2 = game_cell_index(curX, curY);
+        int tile = at2 >= 0 ? game.cell[at2].tile & 0x7f : 0;
+        int k;
+
+        for (k = 0; k < 4; k++) {
+            int piece = compose[tile][k];
+            int ox = (k >= 2) ? 16 : 0, oy = (k & 1) ? 16 : 0;
+
+            if (piece < pieces.count)
+                gfx_blit_tile(&scr, &pieces, (unsigned char)piece,
+                              496 + ox, 160 + oy);
         }
     }
 
