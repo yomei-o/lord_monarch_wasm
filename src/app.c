@@ -1,0 +1,169 @@
+#include "app.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* The map window inside WAKU.  Found by measurement rather than guessed: in the
+ * assembled WAKU image the columns that are index 0 for essentially the whole
+ * height run x = 160..479, and the rows likewise y = 8..391.  320 x 384 is
+ * 20 x 24 cells at 16x16, so the view scrolls over the 48 x 48 map - which is
+ * what a real-time strategy game wants.  A whole-map overview needs 384 px and
+ * does not fit, so that must be its own screen (the MAP button on the panel). */
+#define VIEW_X 160
+#define VIEW_Y 8
+#define VIEW_W 320
+#define VIEW_H 384
+
+#define MAP_COUNT 52
+
+/* Measured off ss0.jpg.  The title has no terrain bank to carry a palette - the
+ * in-game tables ride along on B_0n0L.CH4 - and the real title table has not
+ * been found in PROG.BIN either, so these seven stay measured for now.  DS7TTL
+ * has no E1 plane, so only 0..6 are ever used. */
+static const unsigned char TITLE_PAL[16][3] = {
+    {0, 0, 0}, {0, 2, 2}, {4, 14, 10}, {0, 8, 8},
+    {4, 7, 7}, {7, 10, 10}, {10, 12, 12}, {0, 0, 0},
+    {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0},
+    {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0},
+};
+
+static Screen scr;
+/* The backdrop - the title image, or the frame - is decompressed once per mode
+ * change rather than per frame: WAKU is three or four BZ streams of 32000 bytes
+ * and redoing that every frame would be the whole frame budget. */
+static Screen bg;
+static Disk *disk;
+static Bank bank;
+static Map map;
+static int mode = APP_MODE_TITLE;
+static int mapNumber, tileSize = 16, scrollX, scrollY;
+static char status[256];
+
+const Screen *app_screen(void) { return &scr; }
+int app_mode(void) { return mode; }
+const char *app_status(void) { return status; }
+
+int app_init(const char *imagePath)
+{
+    disk = disk_open(imagePath);
+    if (!disk) {
+        snprintf(status, sizeof status, "%s", disk_error());
+        return 0;
+    }
+    return app_show_title();
+}
+
+void app_shutdown(void)
+{
+    gfx_free_bank(&bank);
+    disk_close(disk);
+    disk = 0;
+}
+
+/* The palette travels with the tileset: the 48 bytes appended to B_0n0L.CH4,
+ * three per index in B, R, G order.  See gfx_set_palette. */
+static int palette_from_terrain(int terrain)
+{
+    char name[32];
+    unsigned n = 0;
+    unsigned char *b;
+
+    snprintf(name, sizeof name, "B_%03dL.CH4", terrain);
+    b = disk_read_bz(disk, name, &n);
+    if (!b || n < 48) {
+        free(b);
+        snprintf(status, sizeof status, "%s: no palette", name);
+        return 0;
+    }
+    gfx_set_palette(&scr, b + n - 48);
+    free(b);
+    return 1;
+}
+
+int app_show_title(void)
+{
+    mode = APP_MODE_TITLE;
+    gfx_set_palette_rgb(&scr, TITLE_PAL);
+    gfx_clear(&bg, 0);
+    if (!gfx_load_screen(&bg, disk, "DS7TTL")) {
+        snprintf(status, sizeof status, "DS7TTL: %s", disk_error());
+        return 0;
+    }
+    snprintf(status, sizeof status, "title");
+    return 1;
+}
+
+int app_show_map(int number, int size)
+{
+    char name[32], bankName[32];
+
+    if (number < 0) number = MAP_COUNT - 1;
+    if (number >= MAP_COUNT) number = 0;
+    snprintf(name, sizeof name, "B_%03d.MAP", number);
+    if (!gfx_load_map(&map, disk, name)) {
+        snprintf(status, sizeof status, "%s: %s", name, disk_error());
+        return 0;
+    }
+    if (!palette_from_terrain(map.terrain)) return 0;
+    gfx_bank_name(&map, size, bankName, sizeof bankName);
+    gfx_free_bank(&bank);
+    if (!gfx_load_bank(&bank, disk, bankName, size)) {
+        snprintf(status, sizeof status, "%s: %s", bankName, disk_error());
+        return 0;
+    }
+    gfx_clear(&bg, 0);
+    if (!gfx_load_screen(&bg, disk, "WAKU"))
+        snprintf(status, sizeof status, "WAKU: %s", disk_error());
+    mode = APP_MODE_MAP;
+    mapNumber = number;
+    tileSize = size;
+    scrollX = scrollY = 0;
+    snprintf(status, sizeof status, "%s  terrain %d  %s  %dx%d tiles",
+             name, map.terrain, bankName, size, size);
+    return 1;
+}
+
+static void scroll_by(int dx, int dy)
+{
+    int maxX = MAP_W - VIEW_W / bank.size;
+    int maxY = MAP_H - VIEW_H / bank.size;
+
+    if (maxX < 0) maxX = 0;
+    if (maxY < 0) maxY = 0;
+    scrollX += dx;
+    scrollY += dy;
+    if (scrollX < 0) scrollX = 0;
+    if (scrollY < 0) scrollY = 0;
+    if (scrollX > maxX) scrollX = maxX;
+    if (scrollY > maxY) scrollY = maxY;
+}
+
+void app_key(int key)
+{
+    if (mode == APP_MODE_TITLE) {
+        if (key == APP_KEY_START) app_show_map(0, tileSize);
+        return;
+    }
+    switch (key) {
+    case APP_KEY_BACK:      app_show_title(); break;
+    case APP_KEY_PREV_MAP:  app_show_map(mapNumber - 1, tileSize); break;
+    case APP_KEY_NEXT_MAP:  app_show_map(mapNumber + 1, tileSize); break;
+    case APP_KEY_LEFT:      scroll_by(-1, 0); break;
+    case APP_KEY_RIGHT:     scroll_by(1, 0); break;
+    case APP_KEY_UP:        scroll_by(0, -1); break;
+    case APP_KEY_DOWN:      scroll_by(0, 1); break;
+    case APP_KEY_TILE8:     app_show_map(mapNumber, 8); break;
+    case APP_KEY_TILE16:    app_show_map(mapNumber, 16); break;
+    case APP_KEY_TILE32:    app_show_map(mapNumber, 32); break;
+    default: break;
+    }
+}
+
+void app_render(void)
+{
+    memcpy(scr.px, bg.px, sizeof scr.px);
+    if (mode == APP_MODE_MAP)
+        gfx_draw_map(&scr, &map, &bank, VIEW_X, VIEW_Y, scrollX, scrollY,
+                     VIEW_W / bank.size + 1, VIEW_H / bank.size + 1);
+}

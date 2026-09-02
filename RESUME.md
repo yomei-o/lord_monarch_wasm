@@ -228,7 +228,7 @@ Windows 版のために書いた `bz.c` がそのまま通る。**実測**:
 5. ~~`.MAP` の構造を確定して地図を絵にする~~ 済
 6. `PROG.BIN` のゲームロジック
 7. ~~ネイティブの描画土台~~ 済（`src/`、`make`）。ゲームロジックはまだ
-8. WASM（ソフトウェア描画のみ、WebGL 不使用）
+8. ~~WASM（ソフトウェア描画のみ、WebGL 不使用）~~ 済（`make wasm` → `docs/`）
 
 ## ネイティブ側の現状
 
@@ -246,6 +246,26 @@ Windows 版のために書いた `bz.c` がそのまま通る。**実測**:
 * **`tmp/monarch.exe` は実行して確認していない。** ウィンドウが開くので、
   デスクトップを使っている最中は動かさない方針。共通部分は
   `monarch_shot` で検証済みなので、残る未検証は DIB の blit だけ
+* ホスト非依存の部分は `src/app.c` に寄せた。Win32・WASM・
+  `monarch_shot view` の 3 つが同じ経路を通る
+
+## WASM 側の現状
+
+`make wasm` で `docs/monarch.js` と `docs/monarch.wasm` ができ、
+`docs/index.html` がそれを読む。GitHub Pages が `docs/` を配信する設定なら
+そのまま動く。
+
+* **WebGL 不使用。** C 側で RGBA に描いて `putImageData` するだけ
+* イメージは `--embed-file` で焼き込み。ディスク読み出しはネイティブと同じ C
+* `node tests/wasm_check.js` — WASM を node で動かして生フレームを吐く。
+  `HEAPU8` は `EXPORTED_RUNTIME_METHODS` に足さないと `undefined` になる。
+  また `Buffer.from(HEAPU8.buffer, p, n)` は**ビュー**なので、次の描画で
+  中身が変わる。`subarray` で複製すること
+* `node tests/page_check.js` — `index.html` のインラインスクリプトを
+  DOM スタブ上で実行して、キーが届くか・`putImageData` が呼ばれるか・
+  Shift 併用で地図が変わらないかを見る
+* **WASM が吐いたフレームとネイティブの PNG はバイト単位で一致**
+  （タイトル / 地形 10 / 地形 50 の 3 枚）
 
 ## 環境
 

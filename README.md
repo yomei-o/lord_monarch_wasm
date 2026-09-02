@@ -184,6 +184,32 @@ Python 実装と突き合わせて確認）。
 行が y = 8..391 なので **320 × 384**。16×16 タイルなら 20 × 24 セル分で、
 48 × 48 のマップに対してスクロールする窓になります。
 
+## WASM（ブラウザ）
+
+```sh
+make wasm      # docs/monarch.js と docs/monarch.wasm
+```
+
+GitHub Pages が `docs/` を配信する設定なら、そのまま
+<https://yomei-o.github.io/lord_monarch_wasm/> で動きます。
+
+* **WebGL は使いません。** C 側で 640×400 の RGBA に描いて `putImageData`
+  するだけです
+* フロッピーイメージは `--embed-file` で焼き込んでいるので、ページは
+  `index.html` + `monarch.js` + `monarch.wasm` の 3 ファイルだけです。
+  ディスクの読み出しはネイティブ版と同じ C コードです
+
+検証はブラウザを開かずにやっています。
+
+```sh
+node tests/wasm_check.js    # WASM を node で動かして生フレームを吐く
+node tests/page_check.js    # index.html のスクリプトを DOM スタブ上で実行
+```
+
+`monarch_shot view` は `app.c` を通るので、ホストの違いを除いた同じ経路です。
+**WASM が吐いたフレームとネイティブが吐いた PNG はバイト単位で一致**します
+（タイトル・地形セット 10・地形セット 50 の 3 枚で確認）。
+
 ## ツール
 
 先行の 2 作から流用したもの（`tools/lzh.py` は super_depth 由来、

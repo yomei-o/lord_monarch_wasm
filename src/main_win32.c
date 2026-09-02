@@ -2,57 +2,31 @@
  *
  *   monarch.exe [image.fim]
  *
- *   SPACE / ENTER   title -> map view
- *   LEFT / RIGHT    previous / next map
- *   1 2 3           8x8 / 16x16 / 32x32 tiles
- *   arrows (in map) scroll when the map is bigger than the window
- *   ESC             quit
+ *   SPACE / ENTER    title -> map view
+ *   LEFT / RIGHT     previous / next map
+ *   arrows + SHIFT   scroll the view
+ *   1 2 3            8x8 / 16x16 / 32x32 tiles
+ *   BACKSPACE        back to the title
+ *   ESC              quit
  *
- * An 8bpp DIB with a palette in its BITMAPINFO is the closest thing Windows has
- * to what the PC-98 does, so the drawing code stays indexed all the way to the
+ * An 8bpp DIB with the palette in its BITMAPINFO is the closest thing Windows
+ * has to what the PC-98 does, so the drawing stays indexed all the way to the
  * blit and the palette can be swapped per terrain set the way the hardware
- * swaps it.  StretchDIBits then does the 2x scale.
+ * swaps it.  StretchDIBits does the 2x scale.
  *
- * There is no game logic here yet - this is the frame the port gets built in.
+ * Everything that is not Windows lives in app.c, shared with the WASM build and
+ * the headless PNG tool.
  */
 #ifndef UNICODE
 #define UNICODE
 #endif
 #include <windows.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
-#include "disk.h"
-#include "gfx.h"
+#include "app.h"
 
 #define ZOOM 2
-
-/* The map window inside WAKU: the columns that are empty for almost the whole
- * height run x = 160..479, and the rows likewise y = 8..391.  So the view is
- * 320 x 384, which at 16x16 is 20 x 24 cells of a 48 x 48 map - a scrolling
- * view, which is what a real-time strategy game wants. */
-#define VIEW_X 160
-#define VIEW_Y 8
-#define VIEW_W 320
-#define VIEW_H 384
-
-enum { MODE_TITLE, MODE_MAP };
-
-static Screen scr;
-static Disk *disk;
-static Bank bank;
-static Map map;
-static int mode = MODE_TITLE;
-static int mapIndex = 0, tileSize = 8, scrollX = 0, scrollY = 0;
-static int dirty = 1;
-
-static const unsigned char TITLE_PAL[16][3] = {
-    {0, 0, 0}, {0, 2, 2}, {4, 14, 10}, {0, 8, 8},
-    {4, 7, 7}, {7, 10, 10}, {10, 12, 12}, {0, 0, 0},
-    {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0},
-    {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0},
-};
 
 static struct {
     BITMAPINFOHEADER h;
@@ -61,10 +35,11 @@ static struct {
 
 static void refresh_palette(void)
 {
+    const Screen *s = app_screen();
     int i;
     for (i = 0; i < 16; i++) {
         unsigned char r, g, b;
-        gfx_rgb(&scr, i, &r, &g, &b);
+        gfx_rgb(s, i, &r, &g, &b);
         bmi.pal[i].rgbRed = r;
         bmi.pal[i].rgbGreen = g;
         bmi.pal[i].rgbBlue = b;
@@ -72,135 +47,55 @@ static void refresh_palette(void)
     }
 }
 
-static int palette_from_terrain(int terrain)
+static void set_title(HWND w)
 {
-    char name[32];
-    unsigned n = 0;
-    unsigned char *b;
-    snprintf(name, sizeof name, "B_%03dL.CH4", terrain);
-    b = disk_read_bz(disk, name, &n);
-    if (!b || n < 48) {
-        free(b);
-        return 0;
-    }
-    gfx_set_palette(&scr, b + n - 48);
-    free(b);
-    refresh_palette();
-    return 1;
-}
-
-/* The maps are B_000.MAP .. B_051.MAP; step through them by number rather than
- * by directory order, which is not sorted on the disk. */
-static int load_map(int n)
-{
-    char name[32], bankName[32];
-    if (n < 0) n = 51;
-    if (n > 51) n = 0;
-    snprintf(name, sizeof name, "B_%03d.MAP", n);
-    if (!gfx_load_map(&map, disk, name)) return 0;
-    mapIndex = n;
-    palette_from_terrain(map.terrain);
-    gfx_bank_name(&map, tileSize, bankName, sizeof bankName);
-    gfx_free_bank(&bank);
-    if (!gfx_load_bank(&bank, disk, bankName, tileSize)) return 0;
-    scrollX = scrollY = 0;
-    return 1;
-}
-
-static void draw(void)
-{
-    if (mode == MODE_TITLE) {
-        gfx_set_palette_rgb(&scr, TITLE_PAL);
-        refresh_palette();
-        gfx_clear(&scr, 0);
-        gfx_load_screen(&scr, disk, "DS7TTL");
-    } else {
-        gfx_clear(&scr, 0);
-        gfx_load_screen(&scr, disk, "WAKU");
-        gfx_draw_map(&scr, &map, &bank, VIEW_X, VIEW_Y, scrollX, scrollY,
-                     VIEW_W / bank.size + 1, VIEW_H / bank.size + 1);
-    }
-    dirty = 0;
-}
-
-static void scroll_by(int dx, int dy)
-{
-    int maxX = MAP_W - VIEW_W / bank.size, maxY = MAP_H - VIEW_H / bank.size;
-    if (maxX < 0) maxX = 0;
-    if (maxY < 0) maxY = 0;
-    scrollX += dx;
-    scrollY += dy;
-    if (scrollX < 0) scrollX = 0;
-    if (scrollY < 0) scrollY = 0;
-    if (scrollX > maxX) scrollX = maxX;
-    if (scrollY > maxY) scrollY = maxY;
-    dirty = 1;
-}
-
-static void title_text(HWND w)
-{
-    wchar_t buf[128];
-    if (mode == MODE_TITLE)
-        wsprintfW(buf, L"Lord Monarch (PC-98) - title");
-    else
-        wsprintfW(buf, L"Lord Monarch (PC-98) - B_%03d.MAP  terrain %d  "
-                  L"%dx%d tiles", mapIndex, map.terrain, bank.size, bank.size);
+    wchar_t buf[320];
+    MultiByteToWideChar(CP_ACP, 0, app_status(), -1, buf, 300);
     SetWindowTextW(w, buf);
+}
+
+static int translate(WPARAM wp, int shift)
+{
+    switch (wp) {
+    case VK_SPACE: case VK_RETURN: return APP_KEY_START;
+    case VK_BACK:                  return APP_KEY_BACK;
+    case VK_LEFT:  return shift ? APP_KEY_LEFT  : APP_KEY_PREV_MAP;
+    case VK_RIGHT: return shift ? APP_KEY_RIGHT : APP_KEY_NEXT_MAP;
+    case VK_UP:    return APP_KEY_UP;
+    case VK_DOWN:  return APP_KEY_DOWN;
+    case '1':      return APP_KEY_TILE8;
+    case '2':      return APP_KEY_TILE16;
+    case '3':      return APP_KEY_TILE32;
+    default:       return 0;
+    }
 }
 
 static LRESULT CALLBACK proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
 {
     switch (m) {
-    case WM_KEYDOWN:
-        switch (wp) {
-        case VK_ESCAPE:
+    case WM_KEYDOWN: {
+        int key;
+        if (wp == VK_ESCAPE) {
             PostQuitMessage(0);
             return 0;
-        case VK_SPACE:
-        case VK_RETURN:
-            if (mode == MODE_TITLE) {
-                mode = MODE_MAP;
-                load_map(0);
-                dirty = 1;
-            }
-            break;
-        case VK_LEFT:
-            if (mode == MODE_MAP) {
-                if (GetKeyState(VK_SHIFT) < 0) scroll_by(-1, 0);
-                else { load_map(mapIndex - 1); dirty = 1; }
-            }
-            break;
-        case VK_RIGHT:
-            if (mode == MODE_MAP) {
-                if (GetKeyState(VK_SHIFT) < 0) scroll_by(1, 0);
-                else { load_map(mapIndex + 1); dirty = 1; }
-            }
-            break;
-        case VK_UP:    scroll_by(0, -1); break;
-        case VK_DOWN:  scroll_by(0, 1);  break;
-        case '1': case '2': case '3':
-            if (mode == MODE_MAP) {
-                tileSize = wp == '1' ? 8 : wp == '2' ? 16 : 32;
-                load_map(mapIndex);
-                dirty = 1;
-            }
-            break;
-        default:
-            break;
         }
-        title_text(w);
-        InvalidateRect(w, 0, FALSE);
+        key = translate(wp, GetKeyState(VK_SHIFT) < 0);
+        if (key) {
+            app_key(key);
+            refresh_palette();
+            set_title(w);
+            InvalidateRect(w, 0, FALSE);
+        }
         return 0;
+    }
     case WM_ERASEBKGND:
         return 1;
     case WM_PAINT: {
         PAINTSTRUCT ps;
         HDC dc = BeginPaint(w, &ps);
-        if (dirty) draw();
-        /* The DIB is bottom-up unless the height is negative; a negative height
-         * keeps our own top-down rows, which is one fewer thing to flip. */
+        app_render();
         StretchDIBits(dc, 0, 0, SCR_W * ZOOM, SCR_H * ZOOM,
-                      0, 0, SCR_W, SCR_H, scr.px,
+                      0, 0, SCR_W, SCR_H, app_screen()->px,
                       (BITMAPINFO *)&bmi, DIB_RGB_COLORS, SRCCOPY);
         EndPaint(w, &ps);
         return 0;
@@ -220,32 +115,31 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     HWND w;
     MSG msg;
     RECT r;
-    char imgPath[MAX_PATH * 2];
+    /* The image on the disk has a Shift-JIS half-width katakana name, so the
+     * default is spelled in bytes rather than as a literal. */
+    char imgPath[MAX_PATH * 2] = "orig/\xdb\xb0\xc4\xde\xd3\xc5\xb0\xb8.FIM";
     int argc = 0;
     LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
 
     (void)prev; (void)cmd;
-    strcpy(imgPath, "orig/\xdb\xb0\xc4\xde\xd3\xc5\xb0\xb8.FIM");
     if (argc > 1)
         WideCharToMultiByte(CP_ACP, 0, argv[1], -1, imgPath, sizeof imgPath,
                             0, 0);
-    disk = disk_open(imgPath);
-    if (!disk) {
-        wchar_t msgbuf[512];
-        MultiByteToWideChar(CP_ACP, 0, disk_error(), -1, msgbuf, 512);
-        MessageBoxW(0, msgbuf, L"Lord Monarch", MB_ICONERROR);
+    if (!app_init(imgPath)) {
+        wchar_t buf[512];
+        MultiByteToWideChar(CP_ACP, 0, app_status(), -1, buf, 512);
+        MessageBoxW(0, buf, L"Lord Monarch", MB_ICONERROR);
         return 1;
     }
 
     memset(&bmi, 0, sizeof bmi);
     bmi.h.biSize = sizeof bmi.h;
     bmi.h.biWidth = SCR_W;
-    bmi.h.biHeight = -SCR_H;            /* top-down */
+    bmi.h.biHeight = -SCR_H;            /* negative: our rows are top-down */
     bmi.h.biPlanes = 1;
     bmi.h.biBitCount = 8;
     bmi.h.biCompression = BI_RGB;
     bmi.h.biClrUsed = 256;
-    gfx_set_palette_rgb(&scr, TITLE_PAL);
     refresh_palette();
 
     memset(&wc, 0, sizeof wc);
@@ -264,14 +158,13 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
                         WS_OVERLAPPEDWINDOW & ~WS_THICKFRAME,
                         CW_USEDEFAULT, CW_USEDEFAULT,
                         r.right - r.left, r.bottom - r.top, 0, 0, inst, 0);
-    title_text(w);
+    set_title(w);
     ShowWindow(w, show);
 
     while (GetMessageW(&msg, 0, 0, 0) > 0) {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
-    gfx_free_bank(&bank);
-    disk_close(disk);
+    app_shutdown();
     return 0;
 }

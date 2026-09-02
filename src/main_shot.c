@@ -5,6 +5,7 @@
  *   monarch_shot <image.fim> frame out.png            [WAKU | WAKU2 | GAKU]
  *   monarch_shot <image.fim> map   B_005.MAP out.png  [--tile 8|16|32]
  *   monarch_shot <image.fim> game  B_005.MAP out.png  [--at X,Y]
+ *   monarch_shot <image.fim> view  <map number> <tile size> out.png
  *
  * The point of this over the Win32 build is that the work happens on a machine
  * whose desktop is in use: a render that has to be looked at goes to a file, not
@@ -14,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "app.h"
 #include "disk.h"
 #include "gfx.h"
 #include "png.h"
@@ -168,6 +170,34 @@ int main(int argc, char **argv)
             free(out);
         }
         gfx_free_bank(&b);
+    } else if (!strcmp(cmd, "view")) {
+        /* Straight through app.c - the same path the Win32 and WASM hosts take -
+         * so a frame from here and a frame out of the browser are comparable
+         * byte for byte.  A map number of -1 leaves it on the title. */
+        int number, size;
+        if (argc < 6) {
+            fprintf(stderr,
+                    "usage: %s <image.fim> view <map> <tile> out.png\n",
+                    argv[0]);
+            return 2;
+        }
+        number = atoi(argv[3]);
+        size = atoi(argv[4]);
+        disk_close(d);
+        if (!app_init(argv[1])) {
+            fprintf(stderr, "%s\n", app_status());
+            return 1;
+        }
+        if (number >= 0 && !app_show_map(number, size)) {
+            fprintf(stderr, "%s\n", app_status());
+            return 1;
+        }
+        app_render();
+        printf("%s\n", app_status());
+        scr = *app_screen();
+        save(argv[5], scr.px, SCR_W, SCR_H, SCR_W);
+        app_shutdown();
+        return 0;
     } else {
         fprintf(stderr, "unknown command %s\n", cmd);
         return 2;

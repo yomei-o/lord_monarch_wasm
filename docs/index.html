@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ロードモナーク (PC-98) — 解析中のビューア</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; background: #14161a; color: #d8dbe0;
+    font: 14px/1.6 "Hiragino Kaku Gothic ProN", "Yu Gothic", Meiryo,
+                    system-ui, sans-serif;
+    display: flex; flex-direction: column; align-items: center;
+    padding: 18px 12px 40px;
+  }
+  h1 { font-size: 17px; font-weight: 600; margin: 0 0 4px; }
+  p.sub { margin: 0 0 16px; color: #8d949e; font-size: 12px; }
+  p.sub a { color: #7fb7e8; }
+  #wrap { position: relative; }
+  canvas {
+    display: block; width: 1280px; max-width: calc(100vw - 24px);
+    height: auto; aspect-ratio: 640 / 400;
+    background: #000; border: 1px solid #2b2f36;
+    image-rendering: pixelated;
+  }
+  #status {
+    margin-top: 8px; font-family: ui-monospace, Consolas, monospace;
+    font-size: 12px; color: #9aa2ad; min-height: 1.6em;
+  }
+  #keys {
+    margin-top: 14px; display: grid; gap: 6px 18px; font-size: 12px;
+    grid-template-columns: auto 1fr; color: #9aa2ad; max-width: 640px;
+  }
+  #keys b { color: #d8dbe0; font-weight: 600; white-space: nowrap; }
+  #buttons { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 6px; }
+  button {
+    font: inherit; font-size: 12px; padding: 6px 12px;
+    background: #232830; color: #d8dbe0;
+    border: 1px solid #363c46; border-radius: 6px; cursor: pointer;
+  }
+  button:hover { background: #2b313b; }
+</style>
+</head>
+<body>
+
+<h1>ロードモナーク (PC-98, 1991) — 解析中のビューア</h1>
+<p class="sub">
+  体験版フロッピーを Ghidra で解析して C に書き直しているところです。
+  まだゲームロジックはなく、ディスクから読んだ絵をそのまま表示しています。
+  <a href="https://github.com/yomei-o/lord_monarch_wasm">ソース</a>
+</p>
+
+<div id="wrap"><canvas id="screen" width="640" height="400"></canvas></div>
+<div id="status">読み込み中…</div>
+
+<div id="buttons">
+  <button data-key="1">スタート / 戻る</button>
+  <button data-key="2">前のマップ</button>
+  <button data-key="3">次のマップ</button>
+  <button data-key="8">8×8</button>
+  <button data-key="9">16×16</button>
+  <button data-key="10">32×32</button>
+</div>
+
+<div id="keys">
+  <b>スペース / Enter</b><span>タイトルからマップ表示へ</span>
+  <b>← →</b><span>前後のマップ（全 52 面）</span>
+  <b>Shift + ← → ↑ ↓</b><span>表示位置のスクロール</span>
+  <b>1 / 2 / 3</b><span>タイルの大きさ 8×8 / 16×16 / 32×32</span>
+  <b>Backspace</b><span>タイトルに戻る</span>
+</div>
+
+<script src="monarch.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  // APP_KEY_* from src/app.h.  Kept as plain numbers so the page and the C
+  // side cannot drift apart silently through a name.
+  var KEY = {
+    START: 1, PREV_MAP: 2, NEXT_MAP: 3, LEFT: 4, RIGHT: 5, UP: 6, DOWN: 7,
+    TILE8: 8, TILE16: 9, TILE32: 10, BACK: 11
+  };
+
+  var canvas = document.getElementById('screen');
+  var ctx = canvas.getContext('2d');
+  var statusEl = document.getElementById('status');
+  var mod = null, image = null, dirty = true;
+
+  function fail(text) {
+    statusEl.textContent = text;
+  }
+
+  // No WebGL on purpose: the frame is rasterised in C and handed over as RGBA,
+  // so this is a putImageData and nothing else.
+  function frame() {
+    if (!mod) return;
+    if (dirty) {
+      mod._lm_render();
+      var p = mod._lm_framebuffer();
+      var w = mod._lm_width(), h = mod._lm_height();
+      if (!image || image.width !== w) image = ctx.createImageData(w, h);
+      image.data.set(mod.HEAPU8.subarray(p, p + w * h * 4));
+      ctx.putImageData(image, 0, 0);
+      statusEl.textContent = mod.UTF8ToString(mod._lm_status());
+      dirty = false;
+    }
+    requestAnimationFrame(frame);
+  }
+
+  function send(key) {
+    if (!mod || !key) return;
+    mod._lm_key(key);
+    dirty = true;
+  }
+
+  function fromEvent(e) {
+    switch (e.key) {
+      case ' ': case 'Enter':  return KEY.START;
+      case 'Backspace':        return KEY.BACK;
+      case 'ArrowLeft':  return e.shiftKey ? KEY.LEFT  : KEY.PREV_MAP;
+      case 'ArrowRight': return e.shiftKey ? KEY.RIGHT : KEY.NEXT_MAP;
+      case 'ArrowUp':    return KEY.UP;
+      case 'ArrowDown':  return KEY.DOWN;
+      case '1': return KEY.TILE8;
+      case '2': return KEY.TILE16;
+      case '3': return KEY.TILE32;
+      default:  return 0;
+    }
+  }
+
+  window.addEventListener('keydown', function (e) {
+    var k = fromEvent(e);
+    if (!k) return;
+    e.preventDefault();          // space and the arrows would scroll the page
+    send(k);
+  });
+
+  Array.prototype.forEach.call(
+    document.querySelectorAll('#buttons button'), function (b) {
+      b.addEventListener('click', function () {
+        send(Number(b.getAttribute('data-key')));
+        window.focus();
+      });
+    });
+
+  if (typeof LordMonarch !== 'function') {
+    fail('monarch.js が読み込めませんでした');
+    return;
+  }
+  LordMonarch().then(function (m) {
+    mod = m;
+    if (!m._lm_init()) {
+      fail('起動できませんでした: ' + m.UTF8ToString(m._lm_status()));
+      return;
+    }
+    frame();
+  }).catch(function (e) {
+    fail('起動できませんでした: ' + e);
+  });
+}());
+</script>
+</body>
+</html>
