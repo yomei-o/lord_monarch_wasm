@@ -925,6 +925,13 @@ int app_sound_take(void)
     return s;
 }
 
+/* Whether the world is advancing.  The host has to ask rather than keep its own
+ * flag: GO on the panel and the R key both toggle this, and a host that only
+ * watched its own key handling would sit still after GO was pressed - which is
+ * exactly what happened, and it looked like the game had stopped producing
+ * soldiers rather than like the clock had stopped. */
+int app_running(void) { return running; }
+
 int app_japanese(void) { return fontRom.loaded; }
 
 int app_font_rom(const unsigned char *data, unsigned n)

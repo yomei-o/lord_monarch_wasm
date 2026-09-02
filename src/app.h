@@ -86,6 +86,10 @@ int app_dialog(void);
 #define APP_SND_FALLEN  0x0302
 #define APP_SND_OVER    0x0f03
 
+/* Whether the world is advancing - GO on the panel and the R key both toggle
+ * it, so a host must ask instead of tracking its own flag. */
+int app_running(void);
+
 void app_sound(int idAndPriority);
 
 /* Takes the pending request and clears it, or 0 when there is none. */

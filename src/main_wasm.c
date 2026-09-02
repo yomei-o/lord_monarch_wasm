@@ -70,6 +70,7 @@ EMSCRIPTEN_KEEPALIVE int lm_japanese(void) { return app_japanese(); }
 
 /* The pending sound request, taken and cleared: (id << 8) | priority, or 0. */
 EMSCRIPTEN_KEEPALIVE int lm_sound(void) { return app_sound_take(); }
+EMSCRIPTEN_KEEPALIVE int lm_running(void) { return app_running(); }
 
 EMSCRIPTEN_KEEPALIVE int lm_dialog(void) { return app_dialog(); }
 EMSCRIPTEN_KEEPALIVE int lm_dialog_lines(void) { return app_dialog_lines(); }
