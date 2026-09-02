@@ -152,6 +152,38 @@ python tools/map.py disk/B_009.MAP tmp/m09.png --tile 16    # 16x16
 
 ![sets](docs/sets.png)
 
+## ネイティブビルド
+
+`src/` に移植の土台があります。まだゲームロジックはありません。
+
+```sh
+make                       # tmp/monarch.exe と tmp/monarch_shot.exe
+make shots                 # tmp/shots/ に確認用の PNG を並べる
+```
+
+| | |
+|---|---|
+| `src/disk.c` | FIM / FDI / raw のヘッダ長を総当たりで判別して FAT12 を読む。**原作と同じでファイル名で読む**ので、アセットを別に固める工程が要らない |
+| `src/bz.c` | ファルコムの `.BZ` 展開器（Windows 版のために書いたもの。コーデックだけ流用） |
+| `src/gfx.c` | 640×400 のパレット番号フレームバッファ。4 プレーンの組み立て、`.CH4` タイルバンク、`.MAP` 描画、地形バンク末尾からのパレット |
+| `src/png.c` | 依存なしの PNG 出力（deflate は stored のみ） |
+| `src/main_shot.c` | **ウィンドウを開かずに** 1 画面描いて PNG にするコンソールツール |
+| `src/main_win32.c` | Win32 ホスト。8bpp DIB + `StretchDIBits` で 2 倍表示 |
+
+```sh
+tmp/monarch_shot.exe orig/*.FIM title tmp/title.png
+tmp/monarch_shot.exe orig/*.FIM map   B_014.MAP tmp/map.png --tile 16
+tmp/monarch_shot.exe orig/*.FIM game  B_005.MAP tmp/game.png
+```
+
+`monarch_shot` の出力は `tools/map.py` の出力と**バイト単位で一致**します
+（FAT12・BZ・プレーン組み立て・タイル・マップ・パレット・PNG の全経路を
+Python 実装と突き合わせて確認）。
+
+枠の中の地図ウィンドウは、`WAKU` でほぼ全高が空いている列が x = 160..479、
+行が y = 8..391 なので **320 × 384**。16×16 タイルなら 20 × 24 セル分で、
+48 × 48 のマップに対してスクロールする窓になります。
+
 ## ツール
 
 先行の 2 作から流用したもの（`tools/lzh.py` は super_depth 由来、
