@@ -36,7 +36,9 @@
     grid-template-columns: auto 1fr; color: #9aa2ad; max-width: 640px;
   }
   #keys b { color: #d8dbe0; font-weight: 600; white-space: nowrap; }
-  #buttons { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 6px; }
+  #buttons { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 6px;
+             align-items: center; }
+  #sndstate { font-size: 12px; color: #9aa2ad; }
   button {
     font: inherit; font-size: 12px; padding: 6px 12px;
     background: #232830; color: #d8dbe0;
@@ -108,6 +110,7 @@
   <button data-key="3">]</button>
   <button data-key="15">タイトル</button>
   <button id="mute" type="button">音を止める</button>
+  <span id="sndstate">待機中（操作すると鳴ります）</span>
 </div>
 
 <div id="keys">
@@ -242,6 +245,7 @@
   });
 
   canvas.addEventListener('click', function (e) {
+    audioKick();
     if (!mod) return;
     var p = framePoint(e);
     mod._lm_click(p.x, p.y);
@@ -261,14 +265,39 @@
   // apart.  These are short synthesised tones, not the original's music - the
   // disk's FM001..FM025.DAT still wait for an OPN to play them.
   var audio = null, muted = false;
-  function audioReady() {
+
+  // A browser will only let an AudioContext run if it was created or resumed
+  // from inside a real user gesture.  The sound requests are picked up in the
+  // animation frame, which is not one, so a context made there is created
+  // suspended and stays that way - silence, with nothing in the console to say
+  // why.  So every key and every click passes through here first.
+  function audioKick() {
     if (muted) return null;
-    if (audio) return audio;
-    var C = typeof window !== 'undefined' &&
-            (window.AudioContext || window.webkitAudioContext);
-    if (!C) return null;
-    try { audio = new C(); } catch (e) { audio = null; }
+    if (!audio) {
+      var C = typeof window !== 'undefined' &&
+              (window.AudioContext || window.webkitAudioContext);
+      if (!C) return null;
+      try { audio = new C(); } catch (e) { audio = null; return null; }
+    }
+    if (audio.state === 'suspended' && audio.resume) audio.resume();
+    showAudioState();
     return audio;
+  }
+
+  /* For playing, not for waking: never creates one. */
+  function audioReady() {
+    if (muted || !audio) return null;
+    if (audio.state === 'suspended' && audio.resume) audio.resume();
+    return audio;
+  }
+
+  function showAudioState() {
+    var el = document.getElementById('sndstate');
+    if (!el) return;
+    el.textContent = muted ? '消音中'
+                   : !audio ? '待機中（操作すると鳴ります）'
+                   : audio.state === 'running' ? '再生中'
+                   : audio.state;
   }
 
   function tone(at, freq, ms, gain, type) {
@@ -337,11 +366,14 @@
       muted = !muted;
       if (muted && audio) { audio.close(); audio = null; }
       muteBtn.textContent = muted ? '音を出す' : '音を止める';
+      if (!muted) audioKick();
+      showAudioState();
     });
   }
 
 
   window.addEventListener('keydown', function (e) {
+    audioKick();
     var k = fromEvent(e);
     if (!k) return;
     e.preventDefault();          // space and the arrows would scroll the page
@@ -351,6 +383,7 @@
   Array.prototype.forEach.call(
     document.querySelectorAll('#buttons button'), function (b) {
       b.addEventListener('click', function () {
+        audioKick();
         send(Number(b.getAttribute('data-key')));
         window.focus();
       });
