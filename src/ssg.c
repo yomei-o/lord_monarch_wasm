@@ -60,6 +60,17 @@ void ssg_write(Ssg *s, int reg, int value)
     }
 }
 
+/* The sixteen levels are a ladder of 3 dB, not a straight 0..15: the part's
+ * DAC is logarithmic, and treating it as linear makes a quiet note far too
+ * loud next to a loud one and turns an envelope's fade into a ramp.  Three
+ * decibels is the sixteen-level SSG's step - the YM2149's thirty-two levels
+ * halve it - and Neko Project II's psggen builds the same ladder by starting
+ * at 0x0c00 and dividing by 1.41492 down to zero, which is where these
+ * numbers were checked. */
+static const short SSG_VOL[16] = {
+    0, 23, 33, 47, 67, 95, 135, 191, 270, 382, 541, 766, 1084, 1534, 2171, 3072
+};
+
 /* One sample.  The counters run at the SSG's own rate, so the caller says how
  * many chip cycles a sample is worth. */
 static int step(Ssg *s, int cycles)
@@ -94,7 +105,7 @@ static int step(Ssg *s, int cycles)
         int noise = (s->mixer >> (ch + 3)) & 1; /* 1 = noise off */
         int on = (tone || s->high[ch]) && (noise || (s->noise & 1));
         if (!tone || !noise)
-            out += on ? s->volume[ch] : 0;
+            out += on ? SSG_VOL[s->volume[ch] & 0x0f] : 0;
     }
     return out;
 }
@@ -119,7 +130,9 @@ void ssg_render(Ssg *s, short *out, int samples, int sampleRate)
          * wherever the number of sounding channels puts it - one channel idles
          * at zero and swings up, which is a step of several thousand at every
          * key-on and sounds like a click rather than a note. */
-        s->dcIn = v * 700;
+        /* Three channels at full is 3 * 3072; six leaves headroom for that
+         * and still comes out at a comfortable level. */
+        s->dcIn = v * 6;
         s->dc = s->dcIn - s->dcPrev + (s->dc * 1023) / 1024;
         s->dcPrev = s->dcIn;
         if (s->dc > 32000) s->dc = 32000;
