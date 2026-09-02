@@ -10,9 +10,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 #include "disk.h"
 #include "sound.h"
+#include "ssg.h"
 
 static int failures;
 
@@ -112,6 +114,69 @@ int main(int argc, char **argv)
         printf("effect %2d: %2d notes over %4d ticks  %s\n", id, notes, t,
                line);
         checkf(notes > 0, "effect %d plays nothing", id, 0);
+    }
+
+    /* The SSG's own table, which sits directly after the FM one - DS:0x244d
+     * plus twelve words is DS:0x2465 exactly, which is why the FM table looked
+     * as though it had four odd entries on the end.  At octave 0 it is the
+     * bottom of the piano: A comes out at 27.50 Hz, which is that note by
+     * definition. */
+    {
+        const unsigned char *per = dat + (SSG_PERIOD_AT - 0x1000);
+        double a0 = ssg_period_hz(ssg_period(per, 0x09, 0));
+        double a4 = ssg_period_hz(ssg_period(per, 0x49, 0));
+        printf("  SSG A octave 0 %7.2f Hz, octave 4 %7.2f Hz\n", a0, a4);
+        checkf(a0 > 27.4 && a0 < 27.6, "SSG A0 is %d.%02d Hz", (int)a0,
+               (int)((a0 - (int)a0) * 100));
+        /* 442.55, not 440, and that is the game's own answer rather than a
+         * mistake: the table sits at octave 0 and sub_1539 shifts right, so
+         * 2269 >> 4 truncates to 141 where the exact value would be 141.8.
+         * The part is handed a whole number, so a whole number is what it
+         * plays.  A quarter of a semitone is the honest bound. */
+        checkf(a4 > 440.0 * 0.986 && a4 < 440.0 * 1.014,
+               "SSG A4 is %d.%02d Hz, over a quarter tone from 440",
+               (int)a4, (int)((a4 - (int)a4) * 100));
+
+        /* And the chip really makes that note.  Render a second of A4 on
+         * channel A and find the strongest frequency by hand - a square wave's
+         * fundamental is its loudest part, so the peak is the pitch. */
+        {
+            static short pcm[16000];
+            Ssg chip;
+            int p = ssg_period(per, 0x49, 0);
+            int rate = 16000, i, best = 0;
+            double bestPower = -1;
+
+            ssg_reset(&chip);
+            ssg_write(&chip, 0, p & 0xff);
+            ssg_write(&chip, 1, (p >> 8) & 0x0f);
+            ssg_write(&chip, 8, 0x0f);
+            ssg_write(&chip, 7, 0x3e);          /* tone on channel A only */
+            ssg_render(&chip, pcm, rate, rate);
+
+            for (i = 200; i < 1200; i++) {
+                double re = 0, im = 0, w = 2.0 * 3.14159265358979 * i / rate;
+                int k;
+                for (k = 0; k < rate; k++) {
+                    re += pcm[k] * cos(w * k);
+                    im += pcm[k] * sin(w * k);
+                }
+                if (re * re + im * im > bestPower) {
+                    bestPower = re * re + im * im;
+                    best = i;
+                }
+            }
+            /* The chip has to agree with the period it was handed, whatever
+             * that period happens to round to. */
+            {
+                double want = ssg_period_hz(p);
+                printf("  the chip's loudest frequency is %d Hz, and the "
+                       "period asks for %.2f\n", best, want);
+                checkf(best > want - 3 && best < want + 3,
+                       "the rendered note peaks at %d Hz against %d asked for",
+                       best, (int)want);
+            }
+        }
     }
 
     free(dat);

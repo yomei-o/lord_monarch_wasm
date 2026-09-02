@@ -35,8 +35,8 @@ $(OUT)/sim.exe: tests/sim.c src/game.c $(CORE) | $(OUT)
 $(OUT)/probe.exe: tests/probe.c src/game.c $(CORE) | $(OUT)
 	$(CC) $(CFLAGS) -Isrc -o $@ $^
 
-$(OUT)/sound_check.exe: tests/sound_check.c src/sound.c $(CORE) | $(OUT)
-	$(CC) $(CFLAGS) -Isrc -o $@ $^
+$(OUT)/sound_check.exe: tests/sound_check.c src/sound.c src/ssg.c $(CORE) | $(OUT)
+	$(CC) $(CFLAGS) -Isrc -o $@ $^ -lm
 
 # The rules, checked against what the disk and the disassembly say.
 check: $(OUT)/game_check.exe $(OUT)/sound_check.exe $(OUT)/monarch.fim
