@@ -195,6 +195,116 @@ LordMonarch().then((m) => {
   console.log(`${inPanel ? 'ok  ' : 'FAIL'}  the left edge opened the panel: ${st}`);
   if (!inPanel) process.exit(1);
 
+  // A whole thing played out on the keys the browser sends, because a test that
+  // only checks an order was accepted does not show that it finishes.  B_014's
+  // side 0 starts with its castle at 14,2 and a worker in the gate at 14,3, and
+  // 12,4 is water.
+  //
+  //   water 0x35  ->  bridge 0x20  ->  rock 0x7a
+  //
+  // built with order 7 and then pulled down again with order 10, each ordered
+  // through the menu the game puts up.
+  {
+    let cx = 14, cy = 3;
+    const move = (x, y) => {
+      while (cx > x) { m._lm_key(KEY.LEFT); cx--; }
+      while (cx < x) { m._lm_key(KEY.RIGHT); cx++; }
+      while (cy > y) { m._lm_key(KEY.UP); cy--; }
+      while (cy < y) { m._lm_key(KEY.DOWN); cy++; }
+      return m.UTF8ToString(m._lm_status());
+    };
+    // The status line only says what is under the cursor when the cursor moves,
+    // so step off the square and back to read it.
+    const look = (x, y) => { move(x + 1, y); return move(x, y); };
+    const tile = (x, y) => {
+      const hit = /tile ([0-9a-f]{2})/.exec(look(x, y));
+      return hit ? parseInt(hit[1], 16) : -1;
+    };
+
+    m._lm_key(KEY.TITLE);
+    m._lm_key(KEY.START);
+    for (let i = 0; i < 14; i++) m._lm_key(KEY.NEXT_MAP);
+    m._lm_key(KEY.TILE16);
+    cx = 14; cy = 3;
+
+    let t = tile(12, 4);
+    let ok = t >= 0x30 && t < 0x60;
+    console.log(`${ok ? 'ok  ' : 'FAIL'}  12,4 starts as water (tile ${t.toString(16)})`);
+    if (!ok) process.exit(1);
+
+    move(14, 3);                          // reading a tile left the cursor there
+    m._lm_key(KEY.START);                 // pick the worker in the gate up
+    if (m._lm_selected() < 0) {
+      console.error('FAIL  nothing was picked up');
+      process.exit(1);
+    }
+    move(12, 4);
+    m._lm_key(KEY.START);                 // the order menu
+    m._lm_key(KEY.DOWN);                  // walk -> bridge
+    m._lm_key(KEY.START);
+    console.log(`ok    ordered: ${m.UTF8ToString(m._lm_status())}`);
+
+    let built = -1;
+    for (let i = 0; i < 400 && built < 0; i++) {
+      m._lm_key(KEY.STEP);
+      if (tile(12, 4) === 0x20) built = i;
+    }
+    console.log(`${built >= 0 ? 'ok  ' : 'FAIL'}  the bridge went in after ` +
+                `${built} ticks`);
+    if (built < 0) process.exit(1);
+
+    // The unit that built it is standing on one of the shores.
+    let who = null;
+    for (const [x, y] of [[13, 4], [12, 3], [12, 5], [11, 4]])
+      if (/yours/.test(look(x, y))) { who = [x, y]; break; }
+    console.log(`${who ? 'ok  ' : 'FAIL'}  the builder is on the shore at ${who}`);
+    if (!who) process.exit(1);
+
+    m._lm_key(KEY.START);
+    move(12, 4);
+    m._lm_key(KEY.START);
+    const lines = m._lm_dialog_lines();
+    console.log(`${lines === 5 ? 'ok  ' : 'FAIL'}  a bridge offers walk, break ` +
+                `and nothing (${lines} lines)`);
+    m._lm_key(KEY.DOWN);                  // walk -> break
+    m._lm_key(KEY.START);
+    console.log(`ok    ordered: ${m.UTF8ToString(m._lm_status())}`);
+
+    let broke = -1;
+    for (let i = 0; i < 800 && broke < 0; i++) {
+      m._lm_key(KEY.STEP);
+      if (tile(12, 4) === 0x7a) broke = i;
+    }
+    console.log(`${broke >= 0 ? 'ok  ' : 'FAIL'}  and it came down to a rock ` +
+                `after ${broke} ticks`);
+    if (broke < 0) process.exit(1);
+  }
+
+  // The lord gets no menu - sub_20f0 skips it for anything with bit 0x20 - and
+  // it does walk, which it has to: taking a castle means walking your own
+  // monarch into it.
+  {
+    m._lm_key(KEY.TITLE);
+    m._lm_key(KEY.START);
+    m._lm_key(KEY.TILE16);
+    // B_000's side 0 castle is at 8,6 and the cursor starts in the gate at 8,7.
+    m._lm_key(KEY.UP);                    // onto the castle, where the lord is
+    m._lm_key(KEY.START);
+    const picked = m._lm_selected();
+    m._lm_key(KEY.DOWN);
+    m._lm_key(KEY.DOWN);                  // two below the castle
+    m._lm_key(KEY.START);
+    const noMenu = m._lm_dialog() === DLG.NONE;
+    const st2 = m.UTF8ToString(m._lm_status());
+    console.log(`${picked >= 0 && noMenu ? 'ok  ' : 'FAIL'}  the lord takes an ` +
+                `order without a menu: ${st2}`);
+    if (picked < 0 || !noMenu) process.exit(1);
+    for (let i = 0; i < 200; i++) m._lm_key(KEY.STEP);
+    const moved = /lord is walking/.test(st2);
+    console.log(`${moved ? 'ok  ' : 'FAIL'}  and it is on its way`);
+    if (!moved) process.exit(1);
+  }
+
   const distinct = (b) => new Set(
     Array.from({length: b.length / 4}, (_, i) => b.readUInt32LE(i * 4))).size;
   console.log(`distinct colours: title ${distinct(title)}, ` +

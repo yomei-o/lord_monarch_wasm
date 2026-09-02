@@ -922,7 +922,19 @@ static void confirm_at(int cx, int cy)
         return;
     }
     /* A destination has been named, so the order menu goes up - which is what
-     * sub_20f0 does, rather than deciding for the player from the terrain. */
+     * sub_20f0 does, rather than deciding for the player from the terrain.  The
+     * one exception is the lord, for which sub_20f0 skips the menu (0x2208
+     * tests bit 0x20 and jumps straight to storing the destination): it has one
+     * thing it can do, which is walk. */
+    if (game.unit[selected].state & 0x20) {
+        int len = game_order_move(&game, selected, cx, cy);
+        snprintf(status, sizeof status, len
+                 ? "the lord is walking to %d,%d, %d squares"
+                 : "no way for the lord to reach %d,%d",
+                 cx, cy, len);
+        selected = -1;
+        return;
+    }
     dlg_open_order(cx, cy);
 }
 

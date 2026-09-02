@@ -1172,7 +1172,8 @@ void game_land_totals(Game *g)
  * So the lord's reserve tracks how much the side's ground is holding, and a
  * worker goes out when the ground has been drained relative to it.
  */
-static void unit_lord(Game *g, int slot)
+/* sub_3c7f, the half of the lord's turn that happens on its own castle. */
+static void lord_castle(Game *g, int slot)
 {
     Unit *u = &g->unit[slot];
     Side *s = &g->side[u->side];
@@ -1202,6 +1203,27 @@ static void unit_lord(Game *g, int slot)
         unsigned long v = u->carrying + (room >> 2) + 1;
         u->carrying = (unsigned short)(v > 0xffff ? 0xffff : v);
     }
+}
+
+/* 0x3a67, which the unit sweep jumps to for anything with bit 0x20 set.  The
+ * lord is not the fixture it looks like: after the castle business at 0x3a7d it
+ * runs the same "follow your path" test at 0x3a83 as every other unit, so a
+ * lord can be sent somewhere - and in this game it has to be, since taking a
+ * castle means walking your own monarch into it.
+ *
+ * An earlier cut of this returned as soon as the lord was off its castle, which
+ * made an order given to a lord look like it had been swallowed. */
+static void unit_lord(Game *g, int slot)
+{
+    Unit *u = &g->unit[slot];
+
+    lord_castle(g, slot);                       /* 0x3a7d, sub_3c7f */
+    wipe_foreign_land(g, slot);                 /* 0x3a80, sub_41b5 */
+    if (u->link != 0xff) {                      /* 0x3a83 */
+        follow_path(g, slot);
+        return;
+    }
+    u->facing = 6;                              /* 0x3a93 */
 }
 
 /* ---------------------------------------------------------------- fighting */
@@ -1745,8 +1767,12 @@ int game_order(Game *g, int slot, int x, int y, int order)
         if (best <= 0) return 0;
     }
     g->unit[slot].home = (unsigned short)((y << 8) | x);
-    g->unit[slot].state =
-        (unsigned char)((g->unit[slot].state & 0xd0) | order);
+    /* A lord keeps its own state: sub_20f0 loads al with 0x2d for it and skips
+     * the menu entirely (0x2208), so the 0x20 bit survives and the state stays
+     * the one the unit sweep dispatches on. */
+    if (!(g->unit[slot].state & 0x20))
+        g->unit[slot].state =
+            (unsigned char)((g->unit[slot].state & 0xd0) | order);
     g->unit[slot].retry = 4;
     return best;
 }
@@ -1760,7 +1786,8 @@ int game_order_move(Game *g, int slot, int x, int y)
     len = game_path_to(g, slot, x, y);
     if (len <= 0) return 0;
     u->home = (unsigned short)((y << 8) | x);
-    u->state = (unsigned char)((u->state & 0xd0) | 2);
+    if (!(u->state & 0x20))                     /* the lord stays 0x2d */
+        u->state = (unsigned char)((u->state & 0xd0) | 2);
     u->retry = 4;
     return len;
 }
