@@ -144,9 +144,12 @@ LordMonarch().then((m) => {
   // Naming a destination puts the order menu up, as sub_20f0 does, and the
   // choices are the ones that square allows.
   m._lm_click(...cell(12, 4));
-  const menu = dlgText();
-  const menuOk = m._lm_dialog() === DLG.ORDER && /BRIDGE IT/.test(menu);
-  console.log(`${menuOk ? 'ok  ' : 'FAIL'}  the order menu offers a bridge: ${menu}`);
+  // The wording depends on whether a font image is present, so this checks the
+  // shape of the menu rather than its text: a heading, a blank, and then walk,
+  // bridge and nothing.
+  const menuOk = m._lm_dialog() === DLG.ORDER && m._lm_dialog_lines() === 5;
+  console.log(`${menuOk ? 'ok  ' : 'FAIL'}  the order menu has the three ` +
+              `choices water allows (${m._lm_dialog_lines()} lines)`);
   if (!menuOk) process.exit(1);
   m._lm_key(KEY.DOWN);            // WALK THERE -> BRIDGE IT
   m._lm_key(KEY.START);

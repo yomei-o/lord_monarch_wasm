@@ -74,6 +74,31 @@ static int haveDim;
 static unsigned char *progDat;
 static unsigned progDatSize;
 
+/* Load a font image from a file, if one is there.  Two candidates, in order:
+ * whatever the host handed over already, and then the free font shipped with
+ * this - Shinonome, which is public domain and whose licence says in as many
+ * words that converting it to another format and embedding it are fine.  The
+ * PC-98's own ROM is NEC's and is never shipped, but --fontrom will take one. */
+static int font_rom_from_file(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    long n;
+    unsigned char *buf;
+    int ok = 0;
+
+    if (!f) return 0;
+    fseek(f, 0, SEEK_END);
+    n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (n > 0 && (buf = (unsigned char *)malloc((size_t)n)) != 0) {
+        if (fread(buf, 1, (size_t)n, f) == (size_t)n)
+            ok = app_font_rom(buf, (unsigned)n);
+        free(buf);
+    }
+    fclose(f);
+    return ok;
+}
+
 /* A pointer to a DS: address inside PROG.DAT, or 0 if it is outside. */
 static const unsigned char *dat_at(unsigned addr, unsigned need)
 {
@@ -207,6 +232,14 @@ int app_init(const char *imagePath)
         snprintf(status, sizeof status, "PROG.DAT: %s", disk_error());
         return 0;
     }
+    /* The disk's own 8x16 ASCII, and then a font image if one is to be found -
+     * with which the dialogs come out in the original's Japanese. */
+    gfx_load_font(&font, disk);
+    if (!fontRom.loaded) {
+        if (!font_rom_from_file("/shinonome.fnt"))
+            if (!font_rom_from_file("font/shinonome.fnt"))
+                font_rom_from_file("shinonome.fnt");
+    }
     return app_show_title();
 }
 
@@ -283,7 +316,6 @@ int app_show_map(int number, int size)
     /* The character bank, when there is one for this size. */
     gfx_free_bank(&chars);
     charsOk = 0;
-    if (!font.loaded) gfx_load_font(&font, disk);
     if (size == 16) {
         char cname[32];
         snprintf(cname, sizeof cname, "C_%03dM.CH4", map.terrain);

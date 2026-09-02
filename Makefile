@@ -52,8 +52,8 @@ wasm: monarch.js
 $(OUT)/monarch.fim: $(IMAGE) | $(OUT)
 	cp "$(IMAGE)" $@
 
-monarch.js: src/main_wasm.c $(APP) $(OUT)/monarch.fim
-	$(EMCC) -O2 -std=c99 -o $@ src/main_wasm.c $(APP) --embed-file $(OUT)/monarch.fim@/monarch.fim -s MODULARIZE=1 -s EXPORT_NAME=LordMonarch -s EXPORTED_RUNTIME_METHODS=ccall,cwrap,UTF8ToString,HEAPU8,HEAPU32 -s ALLOW_MEMORY_GROWTH=1 -s ENVIRONMENT=web,worker,node
+monarch.js: src/main_wasm.c $(APP) $(OUT)/monarch.fim font/shinonome.fnt
+	$(EMCC) -O2 -std=c99 -o $@ src/main_wasm.c $(APP) --embed-file $(OUT)/monarch.fim@/monarch.fim --embed-file font/shinonome.fnt@/shinonome.fnt -s MODULARIZE=1 -s EXPORT_NAME=LordMonarch -s EXPORTED_RUNTIME_METHODS=ccall,cwrap,UTF8ToString,HEAPU8,HEAPU32 -s ALLOW_MEMORY_GROWTH=1 -s ENVIRONMENT=web,worker,node
 
 clean:
 	rm -f $(OUT)/monarch.exe $(OUT)/monarch_shot.exe $(OUT)/game_check.exe $(OUT)/sim.exe monarch.js monarch.wasm
