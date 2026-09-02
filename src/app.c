@@ -1093,6 +1093,37 @@ static void dlg_confirm(void)
     case DLG_INFO:
         dlg_close();
         break;
+    case DLG_OVER:
+        dlg_close();
+        /* 0xb433 onwards.  A win: the last of the fifty-two goes to the ending
+         * (0xb446 sub_b661), and anything else falls into sub_b58f and then
+         * sub_6315, which is the whole of the stage advance -
+         *
+         *     [0x3bc2] = [0xce70]      the stage just reached
+         *     [0x3bd6] = 0             this one is not finished
+         *     sub_6033                 load its map
+         *
+         * and note what it does NOT clear: [0x3bd4], the flag that says the
+         * stage is under way.  0x1afa (GO) reads it, so the next map arrives
+         * already running rather than waiting to be started.
+         *
+         * A loss is sub_b28d, which sets [0x3bd6] to -1 and calls sub_6033
+         * with [0x3bc2] untouched: the same stage again.  It leaves [0x3bd6]
+         * set, so its GO refuses at 0x1b10 until the stage is entered afresh -
+         * here that reads as the map coming back up paused. */
+        if (overSaid == 1) {
+            if (mapNumber + 1 < MAP_COUNT) {
+                app_show_map(mapNumber + 1, tileSize);
+                running = 1;
+            } else {
+                app_show_title();       /* sub_b661, which is not ported */
+                snprintf(status, sizeof status, "all %d maps cleared",
+                         MAP_COUNT);
+            }
+        } else {
+            app_show_map(mapNumber, tileSize);
+        }
+        break;
     case DLG_TAX:
         game.side[game.human < 0 ? 0 : game.human].rate = (unsigned char)value;
         snprintf(status, sizeof status, "tax rate %d of 256", value);
@@ -1426,19 +1457,21 @@ void app_tick(void)
         game_endgame(&game);
     }
 
-    /* What the world did that the screen has to say.  Both of these stop the
-     * clock the way the original does: 0xb1a8 and 0xb2d0 wait for a key. */
+    /* What the world did that the screen has to say.  Neither of these touches
+     * the run flag, and neither does the original: 0xb197 opens its window,
+     * plays 0x302, waits at sub_72ad and closes at sub_c921, and the code
+     * after that just carries on.  A window stops the world only because the
+     * wait is blocking, which is what app_frame does now - so closing one puts
+     * the game back exactly as it was, without a press of GO. */
     if (game.fellSide >= 0) {
         int who = game.fellSide;
 
         game.fellSide = -1;
         app_sound(APP_SND_FALLEN);              /* 0xb19e */
-        running = 0;
         dlg_open_fell(who);
     } else if (game.over && !overSaid) {
         overSaid = game.over;
         app_sound(game.over == 1 ? APP_SND_OK : APP_SND_FALLEN);
-        running = 0;
         dlg_open_over(game.over == 1);
     }
     for (i = 0; i < MAP_W * MAP_H; i++) live.cell[i] = game.cell[i].tile;
@@ -1509,6 +1542,7 @@ int app_sound_take(void)
  * exactly what happened, and it looked like the game had stopped producing
  * soldiers rather than like the clock had stopped. */
 int app_running(void) { return running; }
+int app_map_number(void) { return mapNumber; }
 
 int app_effect_pcm(int id, short *out, int maxSamples, int rate)
 {
@@ -1739,7 +1773,11 @@ void app_render(void)
         return;
     }
     if (mode != APP_MODE_MAP) return;
-    if (running) app_tick();
+    /* A window is modal.  sub_4a4d puts it up and sub_72ad sits there until it
+     * is answered, so nothing in the world moves while one is open - the port
+     * used to keep ticking behind them, which is why the day count and the
+     * fighting ran on under the tax and info windows. */
+    if (running && dlg.what == DLG_NONE) app_tick();
     /* Exactly as many squares as the window holds, and not one more: gfx_draw_map
      * does not clip, and the extra row and column this used to ask for spilled a
      * whole tile over the right and bottom edges of WAKU's frame - which reads

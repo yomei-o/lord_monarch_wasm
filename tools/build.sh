@@ -29,6 +29,7 @@ if [ "$what" = all ] || [ "$what" = native ]; then
     echo "== native"
     $CC -o tmp/monarch_shot.exe src/main_shot.c src/png.c $APP
     $CC -Isrc -o tmp/game_check.exe  tests/game_check.c  src/game.c $CORE
+    $CC -Isrc -o tmp/app_check.exe   tests/app_check.c   $APP
     $CC -Isrc -o tmp/sound_check.exe tests/sound_check.c $SND $CORE
     $CC -Isrc -o tmp/song_wav.exe    tests/song_wav.c    $SND $CORE
     $CC -Isrc -o tmp/sim.exe         tests/sim.c         src/game.c $CORE

@@ -149,4 +149,7 @@ const char *app_status(void);
 int app_show_title(void);
 int app_show_map(int number, int tileSize);
 
+/* Which map is up - the original's [0x3bc2], the stage number. */
+int app_map_number(void);
+
 #endif
