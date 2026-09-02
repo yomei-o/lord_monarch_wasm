@@ -143,7 +143,22 @@ int gfx_load_map(Map *m, Disk *d, const char *name)
         free(data);
         return 0;
     }
-    memcpy(m->cell, data, MAP_W * MAP_H);
+    /* The file is **column-major**: the byte for the square at (x, y) is at
+     * x * 48 + y.  Transposing it here is what makes the picture come out the
+     * way the game draws it - checked against org45.gif, which is B_044 and
+     * matches the transpose on 85% of its squares against 46% for anything
+     * else.  Everything downstream then uses the ordinary y * 48 + x.
+     *
+     * The game itself does not transpose: its own `y * 0x30 + x` over the
+     * stored array simply means its x runs down the screen.  Since that is
+     * consistent throughout, relabelling it here changes nothing but the
+     * direction names. */
+    {
+        int x, y;
+        for (y = 0; y < MAP_H; y++)
+            for (x = 0; x < MAP_W; x++)
+                m->cell[y * MAP_W + x] = data[x * MAP_W + y];
+    }
     m->terrain = data[MAP_W * MAP_H] | (data[MAP_W * MAP_H + 1] << 8);
     free(data);
     return 1;

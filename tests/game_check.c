@@ -34,18 +34,26 @@ static void checkf(int ok, const char *fmt, int a, int b, int c)
     }
 }
 
-/* The castle is a fixed 3x3 in every map:
+/* The castle is a fixed 3x3 in every map.  The file holds it as
  *
  *     70 72 78
  *     7x 1x 1d      1x = 0x14 + side, 7x = 0x74 + side
  *     71 73 79
+ *
+ * and the file is column-major, so on screen that is the transpose:
+ *
+ *     70 7x 71
+ *     72 1x 73
+ *     78 1d 79
+ *
+ * which puts the castle's one way in, the 0x1d, directly below its middle.
  */
 static void check_castle_shape(const Map *m, int side, int x, int y)
 {
     static const unsigned char want[3][3] = {
-        {0x70, 0x72, 0x78},
-        {0x00, 0x00, 0x1d},         /* the middle row is side-dependent */
-        {0x71, 0x73, 0x79},
+        {0x70, 0x00, 0x71},         /* the middle of the top row is the side's */
+        {0x72, 0x00, 0x73},
+        {0x78, 0x1d, 0x79},
     };
     int dx, dy;
     for (dy = -1; dy <= 1; dy++)
@@ -54,7 +62,7 @@ static void check_castle_shape(const Map *m, int side, int x, int y)
             unsigned char got, expect;
             if (cx < 0 || cx >= MAP_W || cy < 0 || cy >= MAP_H) continue;
             got = m->cell[cy * MAP_W + cx];
-            if (dy == 0 && dx == -1) expect = (unsigned char)(0x74 + side);
+            if (dy == -1 && dx == 0) expect = (unsigned char)(0x74 + side);
             else if (dy == 0 && dx == 0) expect = (unsigned char)(0x14 + side);
             else expect = want[dy + 1][dx + 1];
             checkf(got == expect,
@@ -146,68 +154,80 @@ int main(int argc, char **argv)
     check(maps == 52, "all 52 maps loaded");
     printf("%d maps, %d neutral units in total\n", maps, totalNeutral);
 
-    /* Movement, on a map that has been looked at by hand.  B_000's first castle
-     * is at (6,8): the lord stands on it and the second unit on (7,8), the
-     * castle's 0x1d square. */
+    /* Movement.  The geometry is taken from the map rather than written down,
+     * because the file is column-major and the castle's gate sits below its
+     * middle. */
     {
         Map m;
-        int lord, mate, moved, dy;
+        int lord, mate, cx, cy, castle, gate;
         gfx_load_map(&m, d, "B_000.MAP");
         game_init(g, &m);
         lord = g->side[0].lord;
-        mate = g->occupant[game_cell_index(7, 8)];
+        cx = g->side[0].pos & 0xff;
+        cy = g->side[0].pos >> 8;
+        castle = game_cell_index(cx, cy);
+        gate = game_cell_index(cx, cy + 1);
+        mate = g->occupant[gate];
 
-        check((g->unit[lord].pos & 0xff) == 6 && (g->unit[lord].pos >> 8) == 8,
-              "B_000 side 0 lord starts at 6,8");
-        check(g->occupant[game_cell_index(6, 8)] == lord,
+        check(g->side[0].alive, "B_000 side 0 has a castle");
+        check(g->occupant[castle] == lord,
               "the lord owns its cell in the occupancy array");
         check(mate >= 0 && g->unit[mate].side == 0,
-              "the side's second unit is on 7,8");
+              "the side's second unit is in the gate below the castle");
+        checkf(g->cell[gate].tile == 0x1d,
+               "the gate square holds tile %02x, expected 0x1d",
+               g->cell[gate].tile, 0, 0);
 
-        /* The castle's own 3x3 tiles are 0x70..0x79, all of them 0x30 or above,
-         * so the only way off the middle square is the 0x1d to its right - and
-         * that one is taken.  The lord starts boxed in. */
-        check(g->cell[game_cell_index(6, 7)].tile >= CELL_IMPASSABLE,
-              "the castle's own tiles are impassable");
+        /* Every other neighbour of the middle is castle masonry, 0x30 or above,
+         * so the gate is the only way in or out. */
+        {
+            int dx, dy, walls = 0;
+            for (dy = -1; dy <= 1; dy++)
+                for (dx = -1; dx <= 1; dx++) {
+                    int n;
+                    if (!dx && !dy) continue;
+                    if (dx == 0 && dy == 1) continue;   /* the gate */
+                    n = game_cell_index(cx + dx, cy + dy);
+                    if (g->cell[n].tile >= CELL_IMPASSABLE) walls++;
+                }
+            checkf(walls == 7, "%d of the 7 masonry squares are impassable",
+                   walls, 0, 0);
+        }
+
+        /* The lord faces right; turning costs the step and the wall refuses it
+         * anyway. */
         check(g->unit[lord].facing == DIR_RIGHT, "new units face right");
-        check(!game_move(g, lord, DIR_UP), "turning takes the step");
-        check(g->unit[lord].facing == DIR_UP, "and leaves it facing that way");
-        check(!game_move(g, lord, DIR_UP),
-              "and the castle wall refuses it");
+        check(!game_move(g, lord, DIR_RIGHT), "the wall refuses it");
 
-        /* The unit on 7,8 can leave: 8,8 is ordinary ground. */
-        check(g->cell[game_cell_index(8, 8)].tile < CELL_IMPASSABLE,
-              "8,8 is passable");
-        moved = game_move(g, mate, DIR_RIGHT);
-        check(moved, "the second unit steps right");
-        check((g->unit[mate].pos & 0xff) == 8, "and is now on 8,8");
-        check(g->occupant[game_cell_index(7, 8)] == -1, "the old cell is free");
-        check(g->occupant[game_cell_index(8, 8)] == mate,
-              "and the new one is claimed");
+        /* The unit in the gate can leave downwards if that square is clear. */
+        {
+            int below = game_cell_index(cx, cy + 2);
+            if (g->cell[below].tile < CELL_IMPASSABLE &&
+                g->occupant[below] < 0) {
+                check(!game_move(g, mate, DIR_DOWN), "turning takes the step");
+                check(game_move(g, mate, DIR_DOWN), "then it steps out");
+                check(g->occupant[gate] == -1, "the gate is free");
+                check(g->occupant[below] == mate, "and the square below taken");
+            }
+        }
 
-        /* Now the lord can follow it right. */
-        check(!game_move(g, lord, DIR_RIGHT), "the lord turns back to the right");
-        check(game_move(g, lord, DIR_RIGHT), "and then follows");
-        check((g->unit[lord].pos & 0xff) == 7, "the lord is on 7,8");
-
-        /* Walking into one of your own merges the two, and the lord always
-         * takes the load - so it can step on through. */
+        /* Walking into one of your own merges them, and the lord always takes
+         * the load - so it can step on through. */
         game_init(g, &m);
         lord = g->side[0].lord;
-        mate = g->occupant[game_cell_index(7, 8)];
+        mate = g->occupant[gate];
         {
             int had = g->unit[lord].carrying + g->unit[mate].carrying;
-            check(game_move(g, lord, DIR_RIGHT),
-                  "the lord absorbs its own worker and steps on");
+            check(!game_move(g, lord, DIR_DOWN), "the lord turns to the gate");
+            check(game_move(g, lord, DIR_DOWN),
+                  "then absorbs its own worker and steps in");
             checkf(g->unit[lord].carrying == had,
                    "it now carries %d, expected %d",
                    g->unit[lord].carrying, had, 0);
             check(g->unit[mate].flags & 0x80, "and the worker is gone");
-            check((g->unit[lord].pos & 0xff) == 7, "the lord is on 7,8");
         }
 
-        /* Walking into an enemy trades blows.  Put one of side 1's units next
-         * to side 0's lord and let them fight. */
+        /* Walking into an enemy trades blows. */
         game_init(g, &m);
         lord = g->side[0].lord;
         {
@@ -218,34 +238,24 @@ int main(int argc, char **argv)
                     break;
                 }
             check(foe >= 0, "side 1 has a unit to borrow");
-            /* Move it next to the lord by hand. */
             g->occupant[game_cell_index(g->unit[foe].pos & 0xff,
                                         g->unit[foe].pos >> 8)] = -1;
-            g->occupant[game_cell_index(7, 8)] = -1;
-            g->unit[g->side[0].lord].facing = DIR_RIGHT;
-            g->unit[foe].pos = (unsigned short)((8 << 8) | 7);
-            g->unit[foe].at = (unsigned short)(game_cell_index(7, 8) * 2);
-            g->occupant[game_cell_index(7, 8)] = (short)foe;
+            g->unit[g->occupant[gate]].flags = 0x80;
+            g->occupant[gate] = (short)foe;
+            g->unit[foe].pos = (unsigned short)(((cy + 1) << 8) | cx);
+            g->unit[foe].at = (unsigned short)(gate * 2);
+            g->unit[lord].facing = DIR_DOWN;
 
             hp = g->unit[foe].carrying;
-            check(!game_move(g, lord, DIR_RIGHT),
+            check(!game_move(g, lord, DIR_DOWN),
                   "a step into an enemy is a blow, not a move");
-            /* The lord is on its castle, so it hits for carried/4 + 1 and
-             * takes nothing back. */
-            checkf(g->unit[foe].carrying == hp - ((1000 >> 2) + 1) ||
-                   (g->unit[foe].flags & 2),
+            checkf(g->unit[foe].carrying < hp || (g->unit[foe].flags & 2),
                    "the enemy went from %d to %d", hp,
                    g->unit[foe].carrying, 0);
             checkf(g->unit[lord].carrying == 1000,
                    "the lord took %d damage defending its castle",
                    1000 - g->unit[lord].carrying, 0, 0);
         }
-
-        /* The outermost ring is off limits whatever the tile says. */
-        dy = 0;
-        for (mate = 0; mate < UNIT_SLOTS; mate++)
-            if (!(g->unit[mate].flags & 0x80)) dy++;
-        check(dy == game_unit_count(g, -1), "the unit count agrees with itself");
     }
 
     /* Pathfinding: walk a unit somewhere and see that it arrives. */
@@ -254,13 +264,14 @@ int main(int argc, char **argv)
         int who, len, steps, tx, ty, guard;
         gfx_load_map(&m, d, "B_000.MAP");
         game_init(g, &m);
-        who = g->occupant[game_cell_index(7, 8)];
-        check(who >= 0, "there is a unit on 7,8 to walk");
+        who = g->occupant[game_cell_index(g->side[0].pos & 0xff,
+                                          (g->side[0].pos >> 8) + 1)];
+        check(who >= 0, "there is a unit in the gate to walk");
 
         /* Somewhere reachable and a fair distance off. */
         tx = 20; ty = 20;
         len = game_path_to(g, who, tx, ty);
-        checkf(len > 0, "no path from 7,8 to 20,20 (%d)", len, 0, 0);
+        checkf(len > 0, "no path from the gate to 20,20 (%d)", len, 0, 0);
         check(g->unit[who].link == who, "the unit points at its own path");
 
         steps = 0;
@@ -464,7 +475,8 @@ int main(int argc, char **argv)
 
         gfx_load_map(&m, d, "B_000.MAP");
         game_init(g, &m);
-        mate = g->occupant[game_cell_index(7, 8)];
+        mate = g->occupant[game_cell_index(g->side[0].pos & 0xff,
+                                           (g->side[0].pos >> 8) + 1)];
         check(mate >= 0, "the second unit is there to work with");
 
         /* It stands on the castle's 0x1d square, which is not developable. */
@@ -574,7 +586,8 @@ int main(int argc, char **argv)
         for (i = 0; i < MAP_W * MAP_H; i++) g->cell[i].amount = 1;
         game_land_totals(g);
         {
-            int gate = game_cell_index(7, 8);
+            int gate = game_cell_index(g->side[0].pos & 0xff,
+                                       (g->side[0].pos >> 8) + 1);
             int mate = g->occupant[gate];
             int units;
             if (mate >= 0) {

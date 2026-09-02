@@ -35,7 +35,11 @@ def cells(path):
         raise SystemExit('%s: %d bytes, need at least %d' %
                          (path, len(data), W * H + 2))
     tail = data[W * H] | (data[W * H + 1] << 8)
-    return data[:W * H], tail
+    # The file is column-major: the byte for (x, y) is at x * 48 + y.  Transpose
+    # it so that the picture comes out the way the game draws it - org45.gif is
+    # B_044 and matches the transpose on 85% of its squares.
+    cells = bytes(data[x * W + y] for y in range(H) for x in range(W))
+    return cells, tail
 
 
 def bank_for(mp, tail, tw):

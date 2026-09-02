@@ -146,10 +146,10 @@ void game_init(Game *g, const Map *m)
         } else {
             s->lord = -1;
         }
-        /* And one on the next square along, which is the castle's right-hand
-         * cell (tile 0x1d). */
-        if (found % MAP_W + 1 < MAP_W)
-            place(g, found + 1, side, UNIT_STATE_FOLLOW, CELL_FULL_AMOUNT);
+        /* And one in the gate, which after the transpose is the square below
+         * the castle's middle (tile 0x1d). */
+        if (found / MAP_W + 1 < MAP_H)
+            place(g, found + MAP_W, side, UNIT_STATE_FOLLOW, CELL_FULL_AMOUNT);
     }
 
     /* Then the sweep at 0x03d2: a cell whose tile is 6 turns into plain ground
@@ -525,9 +525,10 @@ int game_collect(Game *g, int side)
     if (g->unit[lord].side != side) return 0;        /* 0x358c */
     if (!(g->unit[lord].state & 0x20)) return 0;     /* 0x3591 */
 
-    /* [di + 4]: two cells to the right. */
-    if (castle % MAP_W + 2 < MAP_W) {
-        int t = g->cell[castle + 2].tile - 8;
+    /* [di + 4] is two cells on in the game's own x, which after the transpose
+     * is two squares down. */
+    if (castle / MAP_W + 2 < MAP_H) {
+        int t = g->cell[castle + 2 * MAP_W].tile - 8;
         if (t >= 0 && t < 8 && (t & 3) != side) return 0;   /* 0x35a6 */
     }
 
@@ -1092,9 +1093,9 @@ static void unit_lord(Game *g, int slot)
     if (g->cell[index].tile != CELL_CASTLE0 + u->side) return;  /* 0x3cd9 */
 
     if ((unsigned long)(u->carrying >> 1) > s->landTotal) {      /* 0x3ca0 */
-        int gate = index + 1;
+        int gate = index + MAP_W;
         int give, slot2;
-        if (index % MAP_W + 1 >= MAP_W) return;
+        if (index / MAP_W + 1 >= MAP_H) return;
         if (g->occupant[gate] >= 0) return;                      /* 0x3ce2 */
         give = u->carrying >> 2;                                 /* 0x3cf3 */
         if (give == 0) return;

@@ -65,7 +65,8 @@ int gfx_load_screen_over(Screen *s, Disk *d, const char *name,
 int gfx_load_bank(Bank *b, Disk *d, const char *name, int size);
 void gfx_free_bank(Bank *b);
 
-/* Loads a .MAP: 48x48 one-byte cells plus a uint16 terrain-set number. */
+/* Loads a .MAP: 48x48 one-byte cells plus a uint16 terrain-set number.  The
+ * file is column-major and is transposed on the way in - see gfx.c. */
 int gfx_load_map(Map *m, Disk *d, const char *name);
 
 /* The tile bank a map asks for, e.g. terrain 30 and size 8 -> "B_030S.CH4". */
