@@ -1,51 +1,48 @@
 /* 1000:9239 */
 
-/* WARNING: Control flow encountered bad instruction data */
-/* WARNING: Instruction at (ram,0x00019240) overlaps instruction at (ram,0x0001923e)
-    */
-
-void FUN_1000_9239(undefined2 param_1)
+undefined4 __cdecl16near FUN_1000_9239(void)
 
 {
-  byte bVar1;
-  undefined2 *puVar2;
+  undefined2 uVar1;
+  undefined2 in_CX;
+  int iVar2;
+  int extraout_DX;
+  int extraout_DX_00;
   undefined2 *puVar3;
-  uint uVar4;
-  byte in_AL;
-  undefined1 uVar5;
-  uint uVar6;
-  uint uVar7;
-  int iVar8;
-  undefined2 in_DX;
-  int in_BX;
-  undefined2 *unaff_SI;
-  undefined2 *unaff_DI;
+  int iVar4;
+  uint *unaff_SI;
+  char *unaff_DI;
+  undefined2 *puVar5;
   undefined2 unaff_ES;
   undefined2 unaff_DS;
-  undefined2 uStack0004;
+  undefined2 uVar6;
   
-  *(byte *)(in_BX + (int)unaff_SI) = *(byte *)(in_BX + (int)unaff_SI) | in_AL;
-  uVar5 = in(in_DX);
-  uVar4 = CONCAT11(0xa8,uVar5);
+  puVar3 = (undefined2 *)
+           (((uint)(byte)(((char)*unaff_SI + *unaff_DI) - unaff_DI[1]) * 0x280 + (*unaff_SI >> 8)) *
+            2 + 0x50d);
+  iVar4 = 0x10;
   do {
-    uVar6 = uVar4;
-    for (iVar8 = 4000; iVar8 != 0; iVar8 = iVar8 + -1) {
-      puVar3 = unaff_DI;
-      unaff_DI = unaff_DI + 1;
-      puVar2 = unaff_SI;
-      unaff_SI = unaff_SI + 1;
-      *puVar3 = *puVar2;
-    }
-    uVar7 = uVar6 + 0x7b6;
-    uVar4 = uVar7;
-  } while ((uVar7 < 0xc000) || (uVar4 = uVar6 + 0x27b6, uVar7 < 0xe000));
-  uStack0004 = 0x925f;
-  FUN_1000_25f8();
-  bVar1 = *(byte *)0x3482;
-  *(byte *)0x3482 = bVar1 ^ 1;
-  out(0xa6,bVar1 ^ 1);
-                    /* WARNING: Bad instruction - Truncating control flow here */
-  halt_baddata();
+    uVar6 = 0x926e;
+    FUN_1000_7262();
+    iVar2 = extraout_DX;
+    do {
+      uVar1 = *puVar3;
+      puVar3 = puVar3 + 1;
+      iVar2 = iVar2 + -1;
+    } while (iVar2 != 0);
+    FUN_1000_724a(uVar6);
+    iVar2 = extraout_DX_00;
+    do {
+      puVar5 = puVar3;
+      puVar3 = puVar5 + -1;
+      *puVar3 = uVar1;
+      iVar2 = iVar2 + -1;
+    } while (iVar2 != 0);
+    puVar3 = puVar5 + 0x27;
+    iVar4 = iVar4 + -1;
+  } while (iVar4 != 0);
+  out(0x7c,0);
+  return CONCAT22(in_CX,unaff_ES);
 }
 
 
