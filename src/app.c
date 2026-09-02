@@ -1549,6 +1549,39 @@ void app_render(void)
         gfx_text_sjis(&scr, &font, &fontRom, 560, 96, buf, 7);
     }
 
+    /* What the cursor is standing on.  0x7d4f clears ten cells at VRAM 0x34c4
+     * - row 168, byte 68, so x 544 - and 0x7d67 draws DS:0x1bdb into them:
+     *
+     *     "@3b  @2b,@2b"   with 34c2 | 34c5 | 34c4 after the terminator
+     *
+     * 0x7d5e puts [bx + 0xd27f] in 0x34c2, which is the amount byte of the
+     * cell the cursor is over (DS:0xD27E is the cell array, two bytes each),
+     * and 0x7d61 puts the cursor itself in 0x34c4 - so the two "@2b" print
+     * its high byte and then its low, which is y and then x.
+     *
+     * ss3.jpg has "100" across x 544..567, "10" at 584..599, the comma at 600
+     * and "30" at 608..623, which is exactly three columns, two spaces, two,
+     * one and two.  Its cursor was on a full square at 30 across and 10 down.
+     *
+     * The two lines above this one - VRAM 0x25c2 and 0x2ac2, rows 120 and 136
+     * at x 528 - are the unit standing there rather than the ground, and they
+     * are empty in that photograph because nothing was.  They want the state
+     * names at DS:0xc642, which are loaded from somewhere this port has not
+     * followed yet, so they are not drawn. */
+    {
+        char buf[24];
+        int at = game_cell_index(curX, curY);
+        int amount = at >= 0 ? game.cell[at].amount : 0;
+
+        snprintf(buf, sizeof buf, "%3d", amount);
+        gfx_text_sjis(&scr, &font, &fontRom, 544, 168, buf, 7);
+        snprintf(buf, sizeof buf, "%2d", curY);
+        gfx_text_sjis(&scr, &font, &fontRom, 584, 168, buf, 7);
+        gfx_text_sjis(&scr, &font, &fontRom, 600, 168, ",", 7);
+        snprintf(buf, sizeof buf, "%2d", curX);
+        gfx_text_sjis(&scr, &font, &fontRom, 608, 168, buf, 7);
+    }
+
     /* The purse and the rate along the bottom.  0x7d70 clears sixteen cells at
      * VRAM 0x6e3e - row 352, byte 62, so x 496 - and draws DS:0x1ac0, which is
      *
