@@ -1,0 +1,223 @@
+ゲームが開く窓の中身。tools/lmwin.py の出力そのまま。
+
+sub_4a4d に渡る記述子は
+
+    [si+0]  bx   位置。sub_4b61 にそのまま渡る（bh = 桁、bl = 行）
+    [si+2]  cx   ch = 枠の幅（桁）、cl = 行数
+    [si+4]  cl 個のワード。それぞれ sub_759b の書式文字列の番地
+
+文字列は sub_759b の書式（RESUME.md の「sub_759b の書式」節）。
+0x20 未満は色（-0x10）、'@' は欄で、次の 1 文字が DS:0x2847 の
+".0123456789sSbBwWlLoO?+tgGyY" の位置。数字は桁数、続く英字が種類。
+欄の引数は文字列の NUL の後ろに 1 語ずつ並ぶ。
+
+DS = 0 なので、DS 番地は展開後の PROG.DAT のその位置。
+
+DS:10ff  
+  frame  sub_4b61 bx=1905 cx=0a01  -> column 25, row 5, width 10, 1 line(s)
+   0  DS:1dee  @16t@s<colour 6>実行後<colour 7>   args DS:3bf4 DS:c692
+
+DS:1105  sub_b2f2 0xb410  the win, and its table
+  frame  sub_4b61 bx=0507 cx=0d08  -> column 5, row 7, width 13, 8 line(s)
+   0  DS:146e  @Sの勝利です｡   args DS:c538
+   1  DS:14e7  ------------------------
+   2  DS:147e  経過日数          @5w   args DS:3bcc
+   3  DS:1496  残り日数          @5w   args DS:3bca
+   4  DS:14ae  占領面積      @4w/@4w   args DS:c53a DS:c53e
+   5  DS:14c8  占領率            @3b.@1b%   args DS:c53c DS:c53d
+   6  DS:14e7  ------------------------
+   7  DS:1500  @?   args DS:c4f0
+
+DS:1119  sub_b2f2 0xb46b  somebody else won
+  frame  sub_4b61 bx=0509 cx=0d06  -> column 5, row 9, width 13, 6 line(s)
+   0  DS:146e  @Sの勝利です｡   args DS:c538
+   1  DS:14e7  ------------------------
+   2  DS:147e  経過日数          @5w   args DS:3bcc
+   3  DS:1496  残り日数          @5w   args DS:3bca
+   4  DS:14ae  占領面積      @4w/@4w   args DS:c53a DS:c53e
+   5  DS:14c8  占領率            @3b.@1b%   args DS:c53c DS:c53d
+
+DS:1129  sub_b2f2 0xb41f  a new record, over the win
+  frame  sub_4b61 bx=0311 cx=1101  -> column 3, row 17, width 17, 1 line(s)
+   0  DS:154b  @5w日 繰越日数が増加しました｡   args DS:c544
+
+DS:112f  sub_b28d 0xb2bc  your country has fallen
+  frame  sub_4b61 bx=0109 cx=1402  -> column 1, row 9, width 20, 2 line(s)
+   0  DS:156b  あなたの治める国は亡びてしまいました｡
+   1  DS:152a  <colour 6>もう一度挑戦してください｡<colour 7>
+
+DS:1137  sub_b197         a country has been destroyed
+  frame  sub_4b61 bx=030c cx=1001  -> column 3, row 12, width 16, 1 line(s)
+   0  DS:1591  @Sは滅亡しました｡   args DS:c536
+
+DS:113f  
+  frame  sub_4b61 bx=0311 cx=0f02  -> column 3, row 17, width 15, 2 line(s)
+   0  DS:19db  目標までの経路が仲間によって
+   1  DS:19f8  ふさがれています｡
+
+DS:1147  
+  frame  sub_4b61 bx=0312 cx=1201  -> column 3, row 18, width 18, 1 line(s)
+   0  DS:1a32  目標までの経路に危険な敵がいます｡
+
+DS:1153  0x1b10           GO after the game is over
+  frame  sub_4b61 bx=0412 cx=0f01  -> column 4, row 18, width 15, 1 line(s)
+   0  DS:1af6  マップをロードしてください｡
+
+DS:1159  
+  frame  sub_4b61 bx=0312 cx=1001  -> column 3, row 18, width 16, 1 line(s)
+   0  DS:1b12  ゲーム開始後は変更できません｡
+
+DS:115f  
+  frame  sub_4b61 bx=0212 cx=1201  -> column 2, row 18, width 18, 1 line(s)
+   0  DS:1b30  あなたの治めている国はありません｡
+
+DS:1165  
+  frame  sub_4b61 bx=0212 cx=1201  -> column 2, row 18, width 18, 1 line(s)
+   0  DS:1b52  このマップでは国変更はできません｡
+
+DS:116b  
+  frame  sub_4b61 bx=0312 cx=1001  -> column 3, row 18, width 16, 1 line(s)
+   0  DS:1b74  マップデータが見つかりません｡
+
+DS:1177  
+  frame  sub_4b61 bx=0112 cx=1301  -> column 1, row 18, width 19, 1 line(s)
+   0  DS:1b92  キャラクターデータが見つかりません｡
+
+DS:117d  
+  frame  sub_4b61 bx=0101 cx=0d01  -> column 1, row 1, width 13, 1 line(s)
+   0  DS:1f74  <colour 6>@?マップ・ロード<colour 7>   args DS:3e96
+
+DS:1183  
+  frame  sub_4b61 bx=0101 cx=0b01  -> column 1, row 1, width 11, 1 line(s)
+   0  DS:1868  ゲ ー ム ・ ロ ー ド
+
+DS:1189  
+  frame  sub_4b61 bx=0101 cx=0b01  -> column 1, row 1, width 11, 1 line(s)
+   0  DS:187d  <colour 4>ゲ ー ム ・ セ ー ブ<colour 7>
+
+DS:118f  
+  frame  sub_4b61 bx=0304 cx=1001  -> column 3, row 4, width 16, 1 line(s)
+   0  DS:1894  ユーザーディスク作成しますか？
+
+DS:1195  
+  frame  sub_4b61 bx=0104 cx=1504  -> column 1, row 4, width 21, 4 line(s)
+   0  DS:18b3  ドライブ@?に内容を消してしまってもかまわ   args DS:347c
+   1  DS:18e2  ないディスクを入れてください｡
+   2  DS:1900  ディスクをセット出来たら【RETURN】キーを
+   3  DS:1929  押してください｡
+
+DS:11a1  
+  frame  sub_4b61 bx=0104 cx=1502  -> column 1, row 4, width 21, 2 line(s)
+   0  DS:1939  ドライブ@?のディスクをフォーマット中です｡   args DS:347c
+   1  DS:1969  しばらくお待ちください｡
+
+DS:11a9  
+  frame  sub_4b61 bx=0204 cx=1302  -> column 2, row 4, width 19, 2 line(s)
+   0  DS:199d  データーをＲＡＭドライブに転送中です｡
+   1  DS:19c3  しばらくお待ちください｡
+
+DS:11b1  
+  frame  sub_4b61 bx=0204 cx=1306  -> column 2, row 4, width 19, 6 line(s)
+   0  DS:1ebd  プログラムディスクを取りだし
+   1  DS:1eda  ユーザーディスクをセットして下さい｡
+   2  DS:1efe  （そのままでもかまいません｡）
+   3  DS:1f1c  
+   4  DS:1f1d  準備が出来たら【ＲＥＴＵＲＮ】キーを
+   5  DS:1f42  押してください｡
+
+DS:11c1  
+  frame  sub_4b61 bx=0404 cx=0f01  -> column 4, row 4, width 15, 1 line(s)
+   0  DS:1981  フォーマットが終了しました｡
+
+DS:11c7  
+  frame  sub_4b61 bx=070c cx=0f05  -> column 7, row 12, width 15, 5 line(s)
+   0  DS:1bee  @Sと@Sは   args DS:c52e DS:c530
+   1  DS:1bfb  盟約を交わしました｡
+   2  DS:1c0f  
+   3  DS:1c10  @Sと@Sは   args DS:c532 DS:c534
+   4  DS:1bfb  盟約を交わしました｡
+
+DS:11d5  
+  frame  sub_4b61 bx=0412 cx=0f02  -> column 4, row 18, width 15, 2 line(s)
+   0  DS:1c1d  @Sと@Sの   args DS:c52e DS:c530
+   1  DS:1c2a  同盟は破れました｡
+
+DS:11dd  
+  frame  sub_4b61 bx=0312 cx=1201  -> column 3, row 18, width 18, 1 line(s)
+   0  DS:1c3c  @Sは同盟を拒否しました｡   args DS:c52e
+
+DS:11e3  
+  frame  sub_4b61 bx=0312 cx=1101  -> column 3, row 18, width 17, 1 line(s)
+   0  DS:1c56  @Sの王が倒されました｡   args DS:c546
+
+DS:11ef  
+  frame  sub_4b61 bx=0412 cx=0f01  -> column 4, row 18, width 15, 1 line(s)
+   0  DS:1ca4  上書きしてもよろしいですか｡
+
+DS:11f5  
+  frame  sub_4b61 bx=0311 cx=1202  -> column 3, row 17, width 18, 2 line(s)
+   0  DS:1cc0  このマップはセーブされていません｡
+   1  DS:1ce2  このまま終了してもよろしいですか？
+
+DS:11fd  
+  frame  sub_4b61 bx=0101 cx=0901  -> column 1, row 1, width 9, 1 line(s)
+   0  DS:1d05   マップ・ロード
+
+DS:1209  
+  frame  sub_4b61 bx=0101 cx=0a01  -> column 1, row 1, width 10, 1 line(s)
+   0  DS:1d27  キャラクターロード
+
+DS:120f  
+  frame  sub_4b61 bx=0501 cx=0d01  -> column 5, row 1, width 13, 1 line(s)
+   0  DS:1d3a  マップデーターが不正です｡
+
+DS:1215  
+  frame  sub_4b61 bx=0605 cx=0b05  -> column 6, row 5, width 11, 5 line(s)
+   0  DS:1d54  @s城　@7t@s   args DS:c642 DS:c554 DS:1dbd
+   1  DS:1d68  @s城  @7t@s   args DS:c652 DS:c556 DS:1dbd
+   2  DS:1d7c  @s城  @7t@s   args DS:c662 DS:c558 DS:1dbd
+   3  DS:1d90  @s城  @7t@s   args DS:c672 DS:c55a DS:1dbd
+   4  DS:1da4  外周部当り　　　@?   args DS:c55c
+
+DS:1223  
+  frame  sub_4b61 bx=0101 cx=1506  -> column 1, row 1, width 21, 6 line(s)
+   0  DS:1e03  データーをＲＡＭドライブに転送しますか？
+   1  DS:1e2c  （転送しなくてもかまいません｡）
+   2  DS:1e4c  
+   3  DS:1e4d  「はい」を選ぶとＲＡＭドライブを初期化し
+   4  DS:1e76  ますので、現在ＲＡＭドライブに入っている
+   5  DS:1e9f  内容は全て失われてしまいます｡
+
+DS:1233  
+  frame  sub_4b61 bx=0104 cx=1504  -> column 1, row 4, width 21, 4 line(s)
+   0  DS:1fa2  このマップはＱＵＥＳＴ用です｡
+   1  DS:1fc0  ＥＤＩＴに入ると<colour 6>ＱＵＥＳＴ用とは認められ
+   2  DS:1fea  なく<colour 7>なってしまいます｡
+   3  DS:2001  それでも、よろしいですか？
+
+DS:123f  
+  frame  sub_4b61 bx=0101 cx=0f01  -> column 1, row 1, width 15, 1 line(s)
+   0  DS:201c  マップ名：@16s   args DS:3eaa
+
+DS:12a5  
+  frame  sub_4b61 bx=0111 cx=1501  -> column 1, row 17, width 21, 1 line(s)
+   0  DS:16cf  Drive-@2t@s にプログラムディスクをセットして   args DS:3e80 DS:1860
+
+DS:2958  
+  frame  sub_4b61 bx=0204 cx=130f  -> column 2, row 4, width 19, 15 line(s)
+   0  DS:298e                認定証
+   1  DS:29a3  
+   2  DS:29a4     Ｌｏｒｄ　Ｍｏｎａｒｃｈ　@5t@s   args DS:ce72 DS:2863
+   3  DS:29cd  
+   4  DS:29ce  あなたは　Ｌｏｒｄ　Ｍｏｎａｒｃｈの
+   5  DS:29f3  ＱＵＥＳＴモードにおいて優秀な成績を
+   6  DS:2a18  おさめられました｡
+   7  DS:2a2a  
+   8  DS:2a2b  その栄誉を讃え、ここにロードモナーク
+   9  DS:2a50  @5t@sを認定いたします｡   args DS:ce72 DS:2863
+  10  DS:2a6d  
+  11  DS:2a6e                平成@5t@s年@5t@s月@5t@s日   args DS:c54e DS:28b3 DS:0000 DS:c550 DS:28b3 DS:0000
+  12  DS:2aa8  
+  13  DS:2aa9              日本ファルコム株式会社
+  14  DS:2acc              ロードモナーク認定委員会
+

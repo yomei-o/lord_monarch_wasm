@@ -943,19 +943,65 @@ static void dlg_open_info(void)
     dlg_choice(JP_CLOSE, 0);
 }
 
+/* The tax window, as 0x4e49 and 0x4f08 have it.  It is not a menu of rates:
+ * it is a bar with a knob, and the arrows walk the knob one notch at a time.
+ *
+ *   0x4e49   draws tile 0x8a4, fifteen of 0x8a5 and one 0x8a6 at (120,40) -
+ *            the bar - and puts the knob 0x8a7 on it
+ *   0x4f08   the loop.  sub_c8b0 gives the keys, `and al, 0x6c` keeps four of
+ *            them, and bits 2 and 3 are the two directions:
+ *              4f45  and ah,ah / je   - nought is as low as it goes
+ *              4f4d  cmp ah,0x1e / jae - thirty is as high
+ *            each step writes [side + 0x12], which is Side.rate here, and
+ *            0x4f5b / 0x4f66 leave with 0x601 either way
+ *
+ * So every value from 0 to 30 is reachable, nought included - which is what
+ * the map is winnable with.  The port used to offer six fixed rates out of a
+ * table of its own invention, and the lowest of them was 1.
+ */
+#define TAX_MAX 30                      /* 0x4f4d */
+
+static void tax_lines(void)
+{
+    char buf[DLG_TEXT];
+    int rate = dlg.value[0], i, n = 0;
+
+    dlg.lines = dlg.count = dlg.pick = 0;
+    dlg_say(JP_TAX_TITLE);
+    dlg_say("");
+    /* The bar, one cell per notch, with the knob where 0x4e49 puts 0x8a7. */
+    for (i = 0; i <= TAX_MAX && n < DLG_TEXT - 2; i++)
+        buf[n++] = i == rate ? '#' : '-';
+    buf[n] = 0;
+    dlg_say(buf);
+    snprintf(buf, sizeof buf, JP_TAX_ITEM, rate);
+    dlg_say(buf);
+    dlg_say("");
+    dlg_choice(JP_TAX_SET, rate);
+}
+
 static void dlg_open_tax(void)
 {
-    static const int rate[6] = {1, 4, 7, 10, 13, 16};
-    int i;
     dlg_close();
     dlg.what = DLG_TAX;
-    dlg_sayf(JP_TAX_TITLE, game.side[0].rate, 0, 0);
-    dlg_say("");
-    for (i = 0; i < 6; i++) {
-        char buf[DLG_TEXT];
-        snprintf(buf, sizeof buf, JP_TAX_ITEM, rate[i]);
-        dlg_choice(buf, rate[i]);
+    dlg.value[0] = game.side[game.human < 0 ? 0 : game.human].rate;
+    if (dlg.value[0] > TAX_MAX) dlg.value[0] = TAX_MAX;
+    tax_lines();
+}
+
+/* One notch of the knob.  Returns whether the window took the key. */
+static int tax_step(int by)
+{
+    int rate = dlg.value[0] + by;
+
+    if (dlg.what != DLG_TAX) return 0;
+    if (rate < 0 || rate > TAX_MAX) {   /* 0x4f45 and 0x4f4d both just wait */
+        app_sound(APP_SND_NO);
+        return 1;
     }
+    dlg.value[0] = rate;
+    tax_lines();
+    return 1;
 }
 
 static void dlg_open_speed(void)
@@ -1126,7 +1172,7 @@ static void dlg_confirm(void)
         break;
     case DLG_TAX:
         game.side[game.human < 0 ? 0 : game.human].rate = (unsigned char)value;
-        snprintf(status, sizeof status, "tax rate %d of 256", value);
+        snprintf(status, sizeof status, "tax rate %d of %d", value, TAX_MAX);
         dlg_close();
         break;
     case DLG_SPEED:
@@ -1245,10 +1291,18 @@ void app_key(int key)
      * sub_4be9 sits on the input until the menu is answered. */
     if (dlg.what != DLG_NONE) {
         switch (key) {
+        case APP_KEY_LEFT:
+            tax_step(-1);
+            return;
+        case APP_KEY_RIGHT:
+            tax_step(1);
+            return;
         case APP_KEY_UP:
+            if (tax_step(-1)) return;
             if (dlg.pick > 0) dlg.pick--;
             return;
         case APP_KEY_DOWN:
+            if (tax_step(1)) return;
             if (dlg.pick + 1 < dlg.count) dlg.pick++;
             return;
         case APP_KEY_START:

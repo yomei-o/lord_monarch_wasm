@@ -34,8 +34,12 @@
 #define JP_INFO_TITLE    JP2("THE FOUR COUNTRIES", "\x8el\x82\xc2\x82\xcc\x8d\x91")
 #define JP_INFO_HEAD     JP2("     LAND  HELD   FUNDS", "      \x97\xcc\x92n  \x95\xdb\x97L    \x8e\x91\x8b\xe0")
 #define JP_GONE          JP2("GONE", "\x96\xc5\x96S")
-#define JP_TAX_TITLE     JP2("TAX RATE - NOW %d OF 256", "\x90\xc5\x97\xa6 \x81\\ \x82\xa2\x82\xdc %d / 256")
-#define JP_TAX_ITEM      JP2("%2d OF 256 PER SQUARE", "1\x8f\xa1\x82\xa0\x82\xbd\x82\xe8 %2d / 256")
+/* The window is a slider, not a menu: 0x4f08 walks [side + 0x12] one step at
+ * a time between 0 and 30 (0x4f45 refuses below 0, 0x4f4d refuses at 0x1e)
+ * and 0x4e49 draws it as a bar of tiles with a knob on it. */
+#define JP_TAX_TITLE     JP2("TAX RATE", "\x90\xc5\x97\xa6")
+#define JP_TAX_ITEM      JP2("%2d OF 30", "%2d / 30")
+#define JP_TAX_SET       JP2("SET", "\x8c\x88\x92\xe8")
 #define JP_SPEED_TITLE   JP2("SPEED", "\x91\xac\x93x")
 #define JP_FAST          JP2("FAST", "\x91\xac    \x82\xa2")
 #define JP_NORMAL        JP2("NORMAL", "\x95\x81    \x92\xca")

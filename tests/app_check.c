@@ -50,8 +50,19 @@ int main(int argc, char **argv)
      * is already under the pointer, so a confirm takes it. */
     app_click(24, 64);
     check(app_dialog() == DLG_TAX, "the tax icon opens the tax window");
+    {
+        int k;
+
+        /* 0x4f08 walks the knob one notch at a time and 0x4f45 refuses to go
+         * below nought, so this lands on nought however it started. */
+        for (k = 0; k < 60; k++) app_key(APP_KEY_LEFT);
+        check(strstr(app_dialog_line(3), " 0") != NULL,
+              "the slider goes all the way down to nought");
+    }
     app_key(APP_KEY_START);
-    check(app_dialog() == 0, "and choosing a rate closes it");
+    check(app_dialog() == 0, "and setting it closes it");
+    check(strstr(app_status(), "tax rate 0 of 30") != NULL,
+          "nought is what the game got");
 
     app_key(APP_KEY_RUN);
     check(app_running(), "GO starts the world");
