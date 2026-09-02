@@ -177,6 +177,14 @@ typedef struct {
      * day is 2^(speed + 1) turns.  The day count saturates rather than wraps
      * (0xa749 puts 0xffff back), and the countdown stops at nought. */
     int turn;                           /* DS:3BE8, a byte */
+
+    /* DS:C52C, which the panel reads to colour the purse.  The original sets
+     * it inside the routine that moves money (0xabea, when the side is the
+     * human's) and clears it at the top of the cell sweep (0x32cc), so it
+     * means "the player's money moved this turn".  This port compares the
+     * purse across the turn instead of touching every place that spends: the
+     * two differ only if something credits exactly nought. */
+    int purseMoved;
     int day;                            /* DS:3BCC, days gone */
     int daysLeft;                       /* DS:3BCA */
     int human;                          /* DS:3C00, the side the player has */

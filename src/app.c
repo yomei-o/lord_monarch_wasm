@@ -1194,10 +1194,17 @@ void app_tick(void)
      * one - not once a tick.  0x3332 dispatches on the tile. */
     /* 0x1a43 bumps the turn counter before the sweeps and 0x1a56 reads it
      * after them, so the order here is the interrupt's. */
-    game.turn = (game.turn + 1) & 0xff;
-    game_tick_cells(&game);
-    game_step(&game);
-    game_day(&game);
+    {
+        unsigned long was = game.human >= 0 && game.human < PLAYERS
+                            ? game.side[game.human].funds : 0;
+
+        game.turn = (game.turn + 1) & 0xff;
+        game_tick_cells(&game);
+        game_step(&game);
+        game_day(&game);
+        game.purseMoved = game.human >= 0 && game.human < PLAYERS &&
+                          game.side[game.human].funds != was;
+    }
     for (i = 0; i < MAP_W * MAP_H; i++) live.cell[i] = game.cell[i].tile;
     ticks++;
     {
@@ -1540,6 +1547,37 @@ void app_render(void)
         snprintf(buf, sizeof buf, "%5d",
                  game.daysLeft > 99999 ? 99999 : game.daysLeft);
         gfx_text_sjis(&scr, &font, &fontRom, 560, 96, buf, 7);
+    }
+
+    /* The purse and the rate along the bottom.  0x7d70 clears sixteen cells at
+     * VRAM 0x6e3e - row 352, byte 62, so x 496 - and draws DS:0x1ac0, which is
+     *
+     *     " @?@2t@o@10l\x17@3b\x14%\x17"
+     *
+     * with the words c52c 12fe 1308 | 3c00 12ef | 0000 | 000e | 0012 after its
+     * terminator.  "@2t" works out [0x3c00] * 2 + 0x12ef - the human's slot in
+     * the table of five side-record pointers - and writes it into the 0000
+     * that follows, which "@o" then takes as the base; so 000e and 0012 are
+     * offsets into that record, the purse and the rate.  The "@?" picks a
+     * colour rather than a word: DS:0x1308 is "\x17" and DS:0x12fe is "\x12",
+     * so the money is white while it is moving and dark red when it is not.
+     *
+     * Every column of that is measured off ss3.jpg: "64" sits in x 568..583,
+     * the last two of the ten from 504; the "0" of the rate in 600..607, the
+     * last of three from 584; and the "%" in 608..615, green, which is what
+     * the \x14 before it asks for. */
+    {
+        char buf[24];
+        unsigned long purse = game.side[game.human & 3].funds;
+        int rate = game.side[game.human & 3].rate;
+
+        /* A 32-bit purse is at most ten digits, which is the field. */
+        snprintf(buf, sizeof buf, "%10lu", purse & 0xffffffffUL);
+        gfx_text_sjis(&scr, &font, &fontRom, 504, 352, buf,
+                      (unsigned char)(game.purseMoved ? 7 : 2));
+        snprintf(buf, sizeof buf, "%3d", rate > 999 ? 999 : rate);
+        gfx_text_sjis(&scr, &font, &fontRom, 584, 352, buf, 7);
+        gfx_text_sjis(&scr, &font, &fontRom, 608, 352, "%", 4);
     }
 
     /* The panel last, so nothing can be drawn over it. */
