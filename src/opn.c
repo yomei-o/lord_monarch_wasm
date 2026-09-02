@@ -71,7 +71,7 @@ static const int DETUNE[4][32] = {
     { 0 },
     { 0,0,0,0,1,1,1,1,1,1,1,1,2,2,2,2,2,3,3,3,4,4,4,5,5,6,6,7,8,8,8,8 },
     { 1,1,1,1,2,2,2,2,2,3,3,3,4,4,4,5,5,6,6,7,8,8,9,10,11,12,13,14,16,16,16,16 },
-    { 2,2,2,2,4,4,4,4,4,6,6,6,8,8,8,10,10,12,12,14,16,16,18,20,22,24,26,28,32,32,32,32 }
+    { 2,2,2,2,2,3,3,3,4,4,4,5,5,6,6,7,8,8,9,10,11,12,13,14,16,17,19,20,22,22,22,22 }
 };
 
 /* MUL 0 means a half. */
@@ -233,8 +233,13 @@ void opn_write(Opn *o, int reg, int value)
     if (reg >= 0xb0 && reg <= 0xb2) {
         ch = reg & 3;
         if (ch < OPN_CHANNELS) {
+            int fb = (value >> 3) & 7;
+
             o->ch[ch].algorithm = value & 7;
-            o->ch[ch].feedback = (value >> 3) & 7;
+            /* Kept as the shift the chip applies rather than as written, the
+             * way opngenc.c's 0xb0 does it: 7 is the deepest and shifts by
+             * one, 1 the shallowest and shifts by seven, 0 is no feedback. */
+            o->ch[ch].feedback = fb ? 8 - fb : 0;
         }
         return;
     }
@@ -282,10 +287,14 @@ static void env_step(OpnOp *op, int keycode)
 /* One operator's sample.  `mod` is the phase modulation coming in, in turns. */
 static double op_sample(OpnOp *op, double mod)
 {
-    /* opngeng.c has env = totallevel - envcurve[...]; as an attenuation that
-     * is the curve plus what the total level takes off, and a TL step is eight
-     * envelope steps because totallevel is (~TL & 0x7f) << 3. */
-    double att = envcurve(op->envIdx) + op->totalLevel * 8.0;
+    /* opngeng.c has env = totallevel - envcurve[...] as a level, and
+     * opngenc.c builds totallevel as (~TL & 0x7f) << 3.  As an attenuation in
+     * envelope steps that comes to 1024 - (127 - TL)*8 + curve, which is
+     * curve + 8*TL + 8 - so a TL step is eight steps, and there are eight more
+     * that never go away.  Those eight are only three quarters of a decibel,
+     * but they are three quarters of a decibel on every modulator, and a
+     * modulator that is louder than it should be is a brighter timbre. */
+    double att = envcurve(op->envIdx) + op->totalLevel * 8.0 + 8.0;
     double gain = att >= EVC_ENT ? 0.0 : pow(10.0, -(att * EG_STEP) / 20.0);
 
     op->prev = op->out;
@@ -293,66 +302,78 @@ static double op_sample(OpnOp *op, double mod)
     return op->out;
 }
 
+/* Operator 1's contribution to the rest of the channel: the mean of its last
+ * output and this one while it feeds back, and simply this one when it does
+ * not.  opngeng.c averages only inside the feedback branch. */
+static double op1_sample(OpnCh *c, double fb, double was)
+{
+    double v = op_sample(&c->op[0], fb);
+
+    return c->feedback ? (was + v) / 2.0 : v;
+}
+
 /* The eight ways the four operators wire up.  Slots are in the chip's register
  * order, S1 S3 S2 S4, so op[0] is the one with feedback and op[3] is always a
  * carrier. */
 static double channel_sample(OpnCh *c, double inc[OPN_OPS])
 {
-    double fb, m1, m2, m3, out = 0.0;
+    double fb, was, m1, m2, m3, out = 0.0;
     int i;
 
-    /* Operator 1 modulates itself with the average of its last two outputs.
-     * The chip shifts rather than multiplies, so each register step is a
-     * halving and 7 is the most it can ask for. */
-    fb = c->feedback ? (c->op[0].prev + c->op[0].out) / 2.0 * MOD_TURNS /
-                       (double)(1 << (7 - c->feedback))
-                     : 0.0;
+    /* Operator 1 modulates itself with the output it had last sample, shifted
+     * down by the feedback amount - and what leaves it is the mean of that
+     * output and this one, not this one.  Both halves of that come straight
+     * out of opngeng.c's calcratechannel, and both matter: without the mean
+     * the loop rings near the sample rate, which came out of the speakers as
+     * a buzz on top of the note rather than as a timbre. */
+    was = c->op[0].out;
+    fb = c->feedback ? was * MOD_TURNS / (double)(1 << c->feedback) : 0.0;
 
     switch (c->algorithm) {
     case 0:  /* S1 -> S2 -> S3 -> S4 */
-        m1 = op_sample(&c->op[0], fb);
+        m1 = op1_sample(c, fb, was);
         m2 = op_sample(&c->op[2], m1 * MOD_TURNS);
         m3 = op_sample(&c->op[1], m2 * MOD_TURNS);
         out = op_sample(&c->op[3], m3 * MOD_TURNS);
         break;
     case 1:  /* (S1 + S2) -> S3 -> S4 */
-        m1 = op_sample(&c->op[0], fb);
+        m1 = op1_sample(c, fb, was);
         m2 = op_sample(&c->op[2], 0.0);
         m3 = op_sample(&c->op[1], (m1 + m2) * MOD_TURNS);
         out = op_sample(&c->op[3], m3 * MOD_TURNS);
         break;
     case 2:  /* S1 + (S2 -> S3) -> S4 */
-        m1 = op_sample(&c->op[0], fb);
+        m1 = op1_sample(c, fb, was);
         m2 = op_sample(&c->op[2], 0.0);
         m3 = op_sample(&c->op[1], m2 * MOD_TURNS);
         out = op_sample(&c->op[3], (m1 + m3) * MOD_TURNS);
         break;
     case 3:  /* (S1 -> S2) + S3 -> S4 */
-        m1 = op_sample(&c->op[0], fb);
+        m1 = op1_sample(c, fb, was);
         m2 = op_sample(&c->op[2], m1 * MOD_TURNS);
         m3 = op_sample(&c->op[1], 0.0);
         out = op_sample(&c->op[3], (m2 + m3) * MOD_TURNS);
         break;
     case 4:  /* (S1 -> S2) + (S3 -> S4), two carriers */
-        m1 = op_sample(&c->op[0], fb);
+        m1 = op1_sample(c, fb, was);
         m2 = op_sample(&c->op[2], m1 * MOD_TURNS);
         m3 = op_sample(&c->op[1], 0.0);
         out = m2 + op_sample(&c->op[3], m3 * MOD_TURNS);
         break;
     case 5:  /* S1 -> (S2, S3, S4), three carriers */
-        m1 = op_sample(&c->op[0], fb);
+        m1 = op1_sample(c, fb, was);
         out = op_sample(&c->op[2], m1 * MOD_TURNS) +
               op_sample(&c->op[1], m1 * MOD_TURNS) +
               op_sample(&c->op[3], m1 * MOD_TURNS);
         break;
     case 6:  /* (S1 -> S2) + S3 + S4, three carriers */
-        m1 = op_sample(&c->op[0], fb);
+        m1 = op1_sample(c, fb, was);
         out = op_sample(&c->op[2], m1 * MOD_TURNS) +
               op_sample(&c->op[1], 0.0) +
               op_sample(&c->op[3], 0.0);
         break;
     default: /* 7: all four in parallel */
-        out = op_sample(&c->op[0], fb) +
+        out = op1_sample(c, fb, was) +
               op_sample(&c->op[2], 0.0) +
               op_sample(&c->op[1], 0.0) +
               op_sample(&c->op[3], 0.0);
@@ -391,13 +412,17 @@ void opn_render(Opn *o, short *out, int samples, int sampleRate)
 
             for (s = 0; s < OPN_OPS; s++) {
                 OpnOp *op = &ch->op[s];
-                /* An OPN's note is fnum * 2^(block-1) / 2^20 of its own sample
-                 * rate, per turn; the operator takes that times MUL, with the
-                 * detune added in F-number units first. */
-                double f = ch->fnum + DETUNE[op->detune & 3][kc & 31] *
-                                      ((op->detune & 4) ? -1 : 1);
-                double turnsPerFm = f * pow(2.0, ch->block - 1) / 1048576.0 *
-                                    multiple_of(op->multiple);
+                /* An OPN's note is fnum * 2^(block-1) / 2^20 of its own
+                 * sample rate, per turn, times MUL.  Detune is added to that
+                 * increment and not to the F-number, so the block does not
+                 * scale it: opngenc.c builds keynote as fn << (blk + 21 - 21)
+                 * but detunetable as dt << (0 + 21 - 20), one fixed step
+                 * whatever octave the note is in.  Scaling it by the block
+                 * instead put this port eighteen cents sharp at block four. */
+                double dt = DETUNE[op->detune & 3][kc & 31] *
+                            ((op->detune & 4) ? -1 : 1);
+                double turnsPerFm = (ch->fnum * pow(2.0, ch->block - 1) + dt)
+                                    / 1048576.0 * multiple_of(op->multiple);
 
                 inc[s] = turnsPerFm * perSample;
                 if (op->stage != OPN_OFF) live = 1;

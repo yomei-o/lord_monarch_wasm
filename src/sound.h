@@ -15,8 +15,24 @@
  *   CS:0x11a6         the command jump table, (cmd - 0xf0) * 2, with one
  *                     operand byte already fetched
  *   sub_1518          note byte to F-number, through the table at DS:0x244d
- *   0x0eeb, 0x0ef5    the frequency going out to registers 0xa4 + ch and
- *                     0xa0 + ch, so the effects play on the FM side
+ *
+ * An effect is an SSG sequence, and the interrupt handler is what says so.
+ * It services eight channel structures with two different players:
+ *
+ *   0dcf..0dde   0x3a3a 0x3a5a 0x3a7a -> sub_0e6e, which writes 0xa4 + ch and
+ *                0xa0 + ch at 0x0eeb and 0x0ef5.  Those are the FM registers,
+ *                so voices 0..2 are the FM ones - and 0x0db6 runs sub_1488,
+ *                the FM total-level write, over exactly these three.
+ *   0de1..0df0   0x3a9a 0x3aba 0x3ada -> sub_0f2d, which writes 8 + ch and
+ *                2 * ch at 0x12e0.  Those are the SSG registers.
+ *   0d8b, 0d91   0x3afa 0x3b1a -> sub_0f2d as well.  So the two effect voices
+ *                are SSG, and 0x0e67 marks the voice two structures back
+ *                (0x3aba, 0x3ada - SSG music) as borrowed while an effect
+ *                sounds; 0x12d1 hands it back.
+ *
+ * This entry used to say the opposite, on the strength of 0x0eeb alone: those
+ * writes are in the FM music player, not on any path an effect takes.  Reading
+ * a routine without reading who calls it is how that happened.
  *
  * A sequence is pairs of (duration, note) with commands 0xf0..0xff mixed in:
  *
