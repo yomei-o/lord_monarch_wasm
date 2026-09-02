@@ -11,10 +11,20 @@
 * **画面内で完結する。** パネルの命令はゲーム自身の画面にダイアログを開き、
   行き先を決めると原作どおり命令メニューが出る。文字は同梱の東雲フォント
   （パブリックドメイン）で**日本語表示**
-* **音が出る。** ゲーム自身の効果音を SSG で合成して鳴らす。音程・長さ・
-  **振幅の包絡**（`DS:0x34e2` の4バイト段）まで全部ゲームの表そのまま
+* **音が出る。効果音も曲も。** 効果音は SSG（音程・長さ・**振幅の包絡**＝
+  `DS:0x34e2` の4バイト段まで全部ゲームの表そのまま）。**曲は FM 3ch ＋
+  SSG 3ch** で、`src/opn.c` の OPN は NP2 の `sound/opngen` と突き合わせて
+  合わせてある（音色0の各倍音が 1% 以内、包絡は立ち上がりから −55 dB まで
+  0.1 dB 以内）。**ブラウザでも鳴る**: 画面が呼ぶ曲を `app_song_wanted` が
+  答え、`snd_song_fill` が数千サンプルずつ渡す。`wav/` に全曲 44.1 kHz で
+  書き出せる（`tmp/song_wav.exe <image> <n> [out.wav] [--rate HZ]`）
 * **国が滅ぶところまで動く。** 王を倒した側が跡目を継ぐ
-* **試験が揃っている。** `make check` で native / wasm / ページの3系統
+* **タイトルが原作どおり。** 星空に加えて**下の帯・斜線・3行の文字**
+  （「CPU Power Level 3 / FM sound Driver / Disk Caching」）。文字列も位置も
+  `DS:0x3b4f` の表から読む
+* **試験が揃っている。** `make check` で native / wasm / ページの3系統。
+  `page_check` は偽の AudioContext を持っていて**音の経路も踏む**（無いと
+  `audioKick` が諦めて、音が鳴らないまま検査が通ってしまう）
 
 ## ビルドと試験
 
@@ -39,36 +49,32 @@ bash tools/shots.sh # docs の絵を作り直す（make shots は w64devkit の 
 
 ## 次にやること（順番に意味がある）
 
-0. **np2 を node で動かして実機の音を取る（作りかけ、`tools/np2run.mjs`）。**
-   ブラウザを開かずに済むうえ、**偽の AudioContext を挿せば音声バッファを
-   直接取れる**のでループバック録音が要らない。ここまで動いた:
+0. **OPN は NP2 と突き合わせ済み。エミュレータ全体を起動する必要はもう無い。**
 
-   * npm の `np2-wasm@0.3.1` を `tmp/np2/dist` へ。付属の `NP2` クラスは
-     canvas と document を要求するので使わず、`np2.js` の factory を直接叩く
-   * `Module.wasmBinary` を渡せば node で読める（emscripten の
-     `instantiateAsync` が `fetch` を使い、node の fetch は `file://` を拒む）
-   * **ディスクは FIM の先頭 256 バイトを落とすだけ。** 残り 1,261,568 =
-     1232 × 1024 の生ダンプ、つまり `.hdm` そのもの。
-     `ccall('diskdrv_setfddex', [0, name, 0, 0])` で通る
-   * `getConfig` は本物どおり（名前で聞かれた設定を**ヒープに書き戻す**）。
-     `NP2_TRACE=1` を付けると 58 項目全部読めているのが見える
-   * `/font.bmp` とディスクは起動時に FS にある（確認済み）
-   * SDL2 にソフトウェアレンダラを使わせるため、`var ENV={}` の行に
-     `SDL_RENDER_DRIVER=software` を差し込んだ写しを import している
+   `tmp/npcmp.c` が NP2 の `sound/opngen` だけを標準の C としてビルドし
+   （`tmp/npsnd/` に `opngenc.c` `opngeng.c` と最小の `compiler.h`）、
+   両方に**同じレジスタ列**を食わせて波形を比べる。`tmp/envcmp.c` は同じ要領で
+   包絡を時間軸で比べる。これで「音色が違う」が測れる数字になり、3 つ直った
+   （feedback の深さと平均の取り方、detune をブロックで拡大していたこと、
+   減衰量の 8 ステップ）。**耳ではなく差分表で判断すること。**
 
-   **残り**: `Module.onReady` が呼ばれず、`_np2_resume` が
-   `MainLoop.scheduler is not a function` で落ちる（`emscripten_set_main_loop`
-   に到達していない）。`print`/`printErr` に何も出ないので abort ではなく
-   **early return**。`irori/np2-wasm` の `src/sdl2/np2.c` の `np2_main` が
-   早く帰る場所は 4 つだけ — `fontmng_init` / `sysmenu_create` /
-   `scrnmng_create` / `flagload` が `DID_CANCEL`（`np2oscfg.resume` 時）。
-   `resume: false` を渡せば最後は消せる。**一番怪しいのは
-   `scrnmng_create`**（ウィンドウを作る所）。それぞれに printf を入れて
-   ソースからビルドし直せば 1 回で分かる（あちらの `build-wasm.sh` は
-   `emcmake cmake` と `ninja` の 2 行）
+   測り方の要点（また同じ穴に落ちないように）:
 
-   通れば、**この移植で唯一参照が無い「原曲の音」**が手に入る。
-   タイトルの帯（下の 1.）も同時に決まる
+   * **スペクトルは音そのものの基本周波数で測る。** 間引いた DFT は
+     440 Hz を綺麗にエイリアスさせて「ただの正弦波」に見せる。
+     0.2% の音程差でも 16 倍音は窓の中を 5 周ずれて消えて見える
+   * **アルゴリズム 4/6 は搬送波が複数あって MUL も違う**ので、
+     「一番大きい分音」を探すと両者が別のものを掴む。共通の f0/2 の
+     整数倍で測る
+   * **音色 3 と 10 は合わなくて正しい。** MUL 15・TL 0・feedback 7 は
+     OPN でノイズ（打楽器）を作る定石で、広帯域雑音同士は分音ごとには揃わない
+
+   残った作りかけ（`tools/np2run.mjs`、np2 を node で丸ごと動かす）は
+   **もう要らない**。置いてあるのは、原曲そのものを一度録りたくなった時のため:
+   `Module.onReady` が呼ばれず `_np2_resume` が `MainLoop.scheduler is not a
+   function` で落ちる所で止まっている。`np2_main` が早く帰る 4 か所
+   （`fontmng_init` / `sysmenu_create` / `scrnmng_create` / `flagload`）に
+   printf を入れれば 1 回で分かる。一番怪しいのは `scrnmng_create`
 
 
 0. **タイトルの下の帯。描いた。残る謎は色ひとつだけ。** `FUN_1000_c946` は
@@ -170,10 +176,15 @@ bash tools/shots.sh # docs の絵を作り直す（make shots は w64devkit の 
      容疑者: (a) 効果音が実際には別の音色番号で鳴っている、
      (b) `[si+9]` が実行中にどこかで設定される、
      (c) user が覚えているのは効果音ではなく BGM の残響
+   * **(c) の線が濃くなった。** FM 側で 3 つ直したあと（TL を毎ティック、
+     タイで再アタックしない、`f2` のゲート時間）、曲の減り方はだいぶ変わった。
+     FM の「余韻」は音色の RR そのもので、ソフト包絡は掛かっていない
+     （`sub_1488` の TL ループはマスターフェード中しか回らない）
    * 測り方: `tmp/sound_check.exe` と、`node` から `_lm_effect` を呼んで
      振幅を区間ごとに見る（本文の commit ログに例あり）
-1. **曲（BGM）— 残りは命令 8 個。** 道筋は全部通した。あとは列の命令を
-   足すだけで鳴る。
+1. **曲（BGM）— 鳴っている。** WAV にも出るし、ブラウザでも鳴る。
+   残っているのは精度の話だけ（上の 0. と、音色 3/10 のような打楽器）。
+   書式と道筋はここに残す:
 
    * **読み込み**: `0x5f7e` が `[0x3bc6]` の番号で `FM%03d.DAT` を組み立てて
      読み、**`DS:0x4f1c`** に置く。`[0x3b44]` にそのポインタを入れると
@@ -259,10 +270,11 @@ bash tools/shots.sh # docs の絵を作り直す（make shots は w64devkit の 
    | fe | 13de | 何もしない（FM 側は全消音） | ある |
    | ff | 127f | 終わり | ある |
 
-   いま `song_wav` が 0.27 秒で止まるのは、SSG トラックの頭が
-   `f9 ff ff 14 dc 01 06 f1 0c ...` で、その `f9` が未実装だから。
-   FM 側の表（`0x1186`）は列が同じ書式なので、FM トラックを読むだけなら
-   同じ解釈器で足りる（鳴らないので後回しでよい）
+   命令表は **SSG が `CS:0x11a6`、FM が `CS:0x1186`**、どちらも
+   `(cmd - 0xf0) * 2` で引く。`f2`（`0x11fa`）は両方に共通で
+   **[si+9] のゲート時間**、`f3`（`0x11fe`）は `[si+8]` のデチューン。
+   FM の音量は 3 つとも最後に `jmp 0x1488` して TL を書く
+   （`0x11cc` が `DS:0x2431` 経由の設定、`0x11d8` が +3、`0x11ea` が -3）
 3. **同盟の効果**。設定はできる（パネルの ALLY）が、`allied()` が参照するだけ
 4. **EDIT（`sub_2368`）**。WAKU2 のパネル一式（PSET/LINE/BOX/FILL/GET/PUT/
    XCHG/CHANGE/FORM/INFORM/UNDO/GAME）。モード表は `CS:0x2a8a`
