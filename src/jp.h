@@ -9,6 +9,9 @@
 /* jp(a, b) picks by whether a font ROM is loaded. */
 #define JP2(en, jp) (app_japanese() ? (jp) : (en))
 
+/* "マップ名：", which is what DS:0x123f's window says before the name. */
+#define JP_MAP_NAME      JP2("MAP: ", "\x83\x7d\x83\x62\x83\x76\x96\xbc\x81\x46")
+
 #define JP_INFO_TITLE    JP2("THE FOUR COUNTRIES", "\x8el\x82\xc2\x82\xcc\x8d\x91")
 #define JP_INFO_HEAD     JP2("     LAND  HELD   FUNDS", "      \x97\xcc\x92n  \x95\xdb\x97L    \x8e\x91\x8b\xe0")
 #define JP_GONE          JP2("GONE", "\x96\xc5\x96S")

@@ -247,6 +247,14 @@ static int mapNumber, tileSize = 16, scrollX, scrollY;
 static int mapSet;
 static Disk *loginDisk;
 
+/* The names out of whichever NAME.TXT goes with the set in force, and how
+ * many more frames to show the one just loaded.  The original puts it in the
+ * window at DS:0x123f - fifteen cells at (112, 24) - while a
+ * map is being chosen; here it goes up for a couple of seconds whenever one
+ * is loaded, which is the only time this port chooses. */
+static char mapNames[GFX_MAPS][17];
+static int nameShow;
+
 static int map_count(void) { return mapSet ? MAP_COUNT : LOGIN_COUNT; }
 static int map_file_number(int i) { return mapSet ? i : LOGIN_FIRST + i; }
 static Disk *map_disk(void) { return mapSet ? disk : loginDisk; }
@@ -731,6 +739,8 @@ int app_show_map(int number, int size)
         return 0;
     }
     if (!palette_from_terrain(map.terrain)) return 0;
+    gfx_load_map_names(map_disk(), mapNames);
+    nameShow = 120;
     namesOk = gfx_load_names(disk, map.terrain, names);
     composeOk = gfx_load_compose(disk, map.terrain, compose);
     gfx_free_bank(&pieces);
@@ -1947,6 +1957,17 @@ void app_render(void)
         if (viewMode) outline_icon(ICON_VIEW, 6);
         if (panelIcon >= 0)
             outline_icon(panelIcon, iconLive[panelIcon] ? 7 : 2);
+    }
+
+    /* The map's name, in the window the original shows it in. */
+    if (nameShow > 0 && frameOk && mapNumber >= 0 && mapNumber < GFX_MAPS &&
+        mapNames[mapNumber][0]) {
+        char line[40];
+
+        nameShow--;
+        snprintf(line, sizeof line, "%s%s", JP_MAP_NAME, mapNames[mapNumber]);
+        gfx_window(&scr, frameArt, 112, 24, 15, 1);
+        gfx_text_sjis(&scr, &font, &fontRom, 128, 32, line, 7);
     }
 
     /* The dialog, in the game's own window rather than a box of this port's

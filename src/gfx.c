@@ -460,6 +460,32 @@ int gfx_load_compose(Disk *d, int terrain, unsigned char out[GFX_TILES][4])
     return 1;
 }
 
+int gfx_load_map_names(Disk *d, char out[GFX_MAPS][17])
+{
+    unsigned n = 0;
+    unsigned char *b = disk_read_bz(d, "NAME.TXT", &n);
+    int i, k;
+
+    memset(out, 0, (size_t)GFX_MAPS * 17);
+    if (!b) b = disk_read(d, "NAME.TXT", &n);
+    if (!b) return 0;
+    for (i = 0; i < GFX_MAPS && (unsigned)(i * 16 + 16) <= n; i++) {
+        memcpy(out[i], b + i * 16, 16);
+        out[i][16] = 0;
+        /* Trim the wide spaces the records are padded with, and any NULs. */
+        for (k = 16; k >= 2; k -= 2) {
+            unsigned char a = (unsigned char)out[i][k - 2];
+            unsigned char c2 = (unsigned char)out[i][k - 1];
+
+            if (!a) { out[i][k - 2] = 0; continue; }
+            if (a == 0x81 && c2 == 0x40) out[i][k - 2] = 0;
+            else break;
+        }
+    }
+    free(b);
+    return 1;
+}
+
 int gfx_load_bank(Bank *b, Disk *d, const char *name, int size)
 {
     unsigned n = 0;

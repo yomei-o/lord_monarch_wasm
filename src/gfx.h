@@ -205,6 +205,17 @@ int gfx_load_names(Disk *d, int terrain, unsigned char out[GFX_NAMES][16]);
 #define GFX_TILES 128
 int gfx_load_compose(Disk *d, int terrain, unsigned char out[GFX_TILES][4]);
 
+/* NAME.TXT: one name a map, sixteen bytes each, Shift-JIS padded with the
+ * wide space.  The game's own disk names all fifty-two - "君主たちの継承戦"
+ * is the first - and the LOGiN disk names its three the same way, indexed
+ * from nought, so the record is the map's place in its own set rather than
+ * its file number.  The original shows them through the window at DS:0x123f,
+ * which is "マップ名：@16s".
+ *
+ * Writes GFX_MAPS x 17 bytes, each NUL-terminated. */
+#define GFX_MAPS 52
+int gfx_load_map_names(Disk *d, char out[GFX_MAPS][17]);
+
 /* Loads a .MAP: 48x48 one-byte cells plus a uint16 terrain-set number.  The
  * file is column-major and is transposed on the way in - see gfx.c. */
 int gfx_load_map(Map *m, Disk *d, const char *name);
