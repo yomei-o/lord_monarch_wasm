@@ -264,7 +264,7 @@
   // something this port has not implemented, which you otherwise cannot tell
   // apart.  These are short synthesised tones, not the original's music - the
   // disk's FM001..FM025.DAT still wait for an OPN to play them.
-  var audio = null, muted = false;
+  var audio = null, muted = false, lastSound = '';
 
   // A browser will only let an AudioContext run if it was created or resumed
   // from inside a real user gesture.  The sound requests are picked up in the
@@ -294,10 +294,11 @@
   function showAudioState() {
     var el = document.getElementById('sndstate');
     if (!el) return;
-    el.textContent = muted ? '消音中'
-                   : !audio ? '待機中（操作すると鳴ります）'
-                   : audio.state === 'running' ? '再生中'
-                   : audio.state;
+    var base = muted ? '消音中'
+             : !audio ? '待機中（操作すると鳴ります）'
+             : audio.state === 'running' ? '再生中'
+             : audio.state;
+    el.textContent = lastSound ? base + '  /  ' + lastSound : base;
   }
 
   function tone(at, freq, ms, gain, type) {
@@ -343,9 +344,13 @@
       g.gain.value = 0.5;
       node.connect(g); g.connect(ac.destination);
       node.start();
+      lastSound = 'id ' + id + ' — ゲームの音 ' + buf.length + ' samples';
+      showAudioState();
       return;
     }
     tone(0, 880, 30, 0.05);
+    lastSound = 'id ' + id + ' — 代用のビープ（ゲームの音が取れなかった）';
+    showAudioState();
   }
 
   // The dialog lines are the game's own bytes, which with a font ROM loaded are
