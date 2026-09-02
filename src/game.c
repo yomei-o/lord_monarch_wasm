@@ -1105,7 +1105,7 @@ void game_unit_step(Game *g, int slot)
         if (!state_outward(g, slot))
             u->state = (unsigned char)((u->state & 0xd0) | 1);
         break;
-    case 7: case 9: case 10: case 11:
+    case 6: case 7: case 9: case 10: case 11:
         /* The square orders: fill it in, clear the wood, break a bridge, pull
          * a nest down.  When the job is over the unit looks for fresh work. */
         if (!game_job(g, slot))
@@ -1587,6 +1587,96 @@ static int job_adjacent(const Game *g, int slot)
     return dx + dy == 1;
 }
 
+/* sub_4163, the second half of order 6: the target is somebody else's
+ * productive ground, so the two grind each other down.  The unit's carried
+ * strength meets the square's amount, and both come off - the unit dying if it
+ * had the less of the two, and the ground reverting to plain at 100 when it is
+ * spent.  A unit carrying 256 or more wipes the square outright, because the
+ * original tests only the high byte of what it started with.
+ *
+ * This is the only place a country's ground is taken by force. */
+static int job_attack(Game *g, int slot)
+{
+    Unit *u = &g->unit[slot];
+    int index = game_cell_index(u->home & 0xff, u->home >> 8);
+    Cell *c = &g->cell[index];
+    int owner = (int)c->tile - CELL_TERRITORY0;
+    unsigned short had = u->carrying;
+
+    if (owner < 0 || owner >= PLAYERS) return 0;        /* 0x416d */
+    if (owner == u->side) return 0;                     /* 0x417a */
+    if (g->side[u->side].ally == owner) return 0;       /* 0x417e */
+
+    if (u->carrying > c->amount)
+        u->carrying = (unsigned short)(u->carrying - c->amount);
+    else
+        game_kill(g, slot, owner);      /* sub_4924 zeroes what it carried */
+
+    if (had >> 8) {                                     /* 0x419b */
+        c->tile = 0;
+        c->amount = CELL_START_AMOUNT;
+        return 0;
+    }
+    if (c->amount > (had & 0xff)) {
+        c->amount = (unsigned char)(c->amount - (had & 0xff));
+        return 1;                                       /* more to grind */
+    }
+    c->tile = 0;
+    c->amount = CELL_START_AMOUNT;
+    return 0;
+}
+
+/* Order 6, sub_3f62: put woodland on the square.
+ *
+ *   already woodland 0x7b   -> add to its amount, up to 255
+ *   plain ground 0          -> becomes 0x7b when its amount runs out
+ *   claimed land 0x0c..0x0f -> the same, but only if nothing stands on it
+ *   anybody else's 0x08..0x0b -> not planting at all; sub_4163 takes over
+ *
+ * The bite is carrying / 16 and it costs a quarter of that, which makes it the
+ * cheapest of the orders by a wide margin.  Order 9 undoes it. */
+static int job_plant(Game *g, int slot)
+{
+    Unit *u = &g->unit[slot];
+    int index = game_cell_index(u->home & 0xff, u->home >> 8);
+    Cell *c = &g->cell[index];
+    int take = u->carrying >> 4, cap;
+    unsigned long cost;
+
+    if (c->tile == CELL_WOOD) {
+        cap = 255 - c->amount;                          /* 0x3fe9 */
+        if (take > cap) take = cap;
+        if (take <= 0) return 0;
+        cost = (unsigned long)take >> 2;
+        if (g->side[u->side].funds < cost) return 0;
+        g->side[u->side].funds -= cost;
+        c->amount = (unsigned char)(c->amount + take);
+        return 0;
+    }
+
+    if (c->tile != 0) {
+        if (c->tile < CELL_TERRITORY0 + 4 ||
+            c->tile >= CELL_TERRITORY0 + 8)
+            return job_attack(g, slot);                 /* 0x3f8f, 0x391e */
+        if (g->occupant[index] >= 0) return 0;          /* 0x3f92 */
+    }
+
+    cap = c->amount + 255;                              /* 0x3fa2, a ceiling */
+    if (take > cap) take = cap;
+    if (take <= 0) return 0;
+    cost = (unsigned long)take >> 2;
+    if (g->side[u->side].funds < cost) return 0;
+    g->side[u->side].funds -= cost;
+
+    if (c->amount > take) {
+        c->amount = (unsigned char)(c->amount - take);
+        return 1;
+    }
+    c->tile = CELL_WOOD;
+    c->amount = (unsigned char)(take - c->amount);
+    return 0;
+}
+
 int game_job(Game *g, int slot)
 {
     if (game_unit_free(g, slot)) return 0;
@@ -1595,6 +1685,7 @@ int game_job(Game *g, int slot)
      * all when its path has run out, so there is nothing to wait for. */
     if (!job_adjacent(g, slot)) return 0;
     switch (g->unit[slot].state & 0x0f) {
+    case UNIT_STATE_PLANT:  return job_plant(g, slot);
     case UNIT_STATE_BRIDGE: return game_bridge(g, slot);
     case UNIT_STATE_FELL:   return job_fell(g, slot);
     case UNIT_STATE_BREAK:  return job_break(g, slot);
@@ -1618,11 +1709,17 @@ int game_job_for(const Game *g, int x, int y)
 
 int game_order_job(Game *g, int slot, int x, int y)
 {
+    return game_order(g, slot, x, y, game_job_for(g, x, y));
+}
+
+int game_order(Game *g, int slot, int x, int y, int order)
+{
     static const signed char dx[4] = {0, 1, 0, -1};
     static const signed char dy[4] = {-1, 0, 1, 0};
-    int order = game_job_for(g, x, y), best = 0, d;
+    int best = 0, d;
 
     if (!order || game_unit_free(g, slot)) return 0;
+    if (x <= 0 || x >= MAP_W - 1 || y <= 0 || y >= MAP_H - 1) return 0;
 
     /* sub_c2e7 shortens the path by one step so the unit stops before the
      * target; here that is done by pathing to a neighbour instead, which comes

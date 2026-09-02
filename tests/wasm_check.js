@@ -15,7 +15,8 @@ const LordMonarch = require(path.join(root, 'monarch.js'));
 // APP_KEY_* from src/app.h.
 const KEY = {
   START: 1, PREV_MAP: 2, NEXT_MAP: 3, LEFT: 4, RIGHT: 5, UP: 6, DOWN: 7,
-  TILE8: 8, TILE16: 9, TILE32: 10, BACK: 11,
+  TILE8: 8, TILE16: 9, TILE32: 10, BACK: 11, CASTLES: 12, RUN: 13, STEP: 14,
+  TITLE: 15,
 };
 
 function dump(m, name) {
@@ -104,7 +105,9 @@ LordMonarch().then((m) => {
   // (96 + x*16 + 8, 8 + y*16 + 8).
   icon(1);                       // VIEW was left on by the panel checks above
   // PREV_MAP wraps, so walk from a known point: the title, then map 0.
-  m._lm_key(KEY.BACK);
+  // (BACK is the original's cancel now - it opens the panel - so the way back
+  // to the title is its own key.)
+  m._lm_key(KEY.TITLE);
   m._lm_key(KEY.START);
   for (let i = 0; i < 14; i++) m._lm_key(KEY.NEXT_MAP);
   m._lm_key(KEY.TILE16);
@@ -120,6 +123,36 @@ LordMonarch().then((m) => {
   console.log(`${bridgeOk ? 'ok  ' : 'FAIL'}  clicking water orders a bridge: ` +
               `${bridged}`);
   if (!bridgeOk) process.exit(1);
+
+  // Keyboard only, all the way to an order.  B_014 side 0's castle is at 14,2
+  // and the cursor starts on the gate below it at 14,3, holding a worker.
+  m._lm_key(KEY.TITLE);
+  m._lm_key(KEY.START);
+  for (let i = 0; i < 14; i++) m._lm_key(KEY.NEXT_MAP);
+  m._lm_key(KEY.TILE16);
+  let st = m.UTF8ToString(m._lm_status());
+  console.log(`${/^B_014/.test(st) ? 'ok  ' : 'FAIL'}  keys reached B_014: ${st}`);
+
+  m._lm_key(KEY.START);           // confirm on the gate: pick the worker up
+  st = m.UTF8ToString(m._lm_status());
+  const pickedByKey = m._lm_selected() >= 0;
+  console.log(`${pickedByKey ? 'ok  ' : 'FAIL'}  confirm picked a unit up: ${st}`);
+  if (!pickedByKey) process.exit(1);
+
+  // Walk the cursor onto the water at 12,4 and confirm: a bridge order.
+  m._lm_key(KEY.LEFT); m._lm_key(KEY.LEFT); m._lm_key(KEY.DOWN);
+  m._lm_key(KEY.START);
+  st = m.UTF8ToString(m._lm_status());
+  const bridgedByKey = /^bridge 12,4:/.test(st);
+  console.log(`${bridgedByKey ? 'ok  ' : 'FAIL'}  and confirm ordered a bridge: ${st}`);
+  if (!bridgedByKey) process.exit(1);
+
+  // Pushing the cursor off the left of the map opens the panel.
+  for (let i = 0; i < 20; i++) m._lm_key(KEY.LEFT);
+  st = m.UTF8ToString(m._lm_status());
+  const inPanel = /^panel: /.test(st);
+  console.log(`${inPanel ? 'ok  ' : 'FAIL'}  the left edge opened the panel: ${st}`);
+  if (!inPanel) process.exit(1);
 
   const distinct = (b) => new Set(
     Array.from({length: b.length / 4}, (_, i) => b.readUInt32LE(i * 4))).size;

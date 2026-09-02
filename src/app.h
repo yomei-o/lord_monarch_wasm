@@ -30,7 +30,8 @@ enum {
     APP_KEY_BACK,
     APP_KEY_CASTLES,       /* toggle the unit and castle markers */
     APP_KEY_RUN,           /* run the world tick */
-    APP_KEY_STEP           /* one tick */
+    APP_KEY_STEP,          /* one tick */
+    APP_KEY_TITLE          /* back to the title screen */
 };
 
 /* Opens the image and puts the app on the title screen.  0 on failure, with a
@@ -40,12 +41,15 @@ void app_shutdown(void);
 
 void app_key(int key);
 
-/* The pointer, in screen pixels (0..639, 0..399).  The original is keyboard
- * only - there is no INT 33h anywhere in it - so this is the port's own way in:
- * a click inside the map picks up one of the player's units, and the next click
- * sends it somewhere, which is the game's own "walk there" order (a path and
- * state 2).  Clicks outside the map are ignored for now; the panel's icons have
- * not been decoded. */
+/* APP_KEY_START is the original's confirm button and APP_KEY_BACK its cancel:
+ * on the map, confirm picks a unit up and then says where it goes, and cancel
+ * opens the panel; in the panel the arrows walk the icons, confirm presses one
+ * and cancel returns to the map.  Pushing the cursor off the left of the map
+ * also opens the panel, as sub_269e does.
+ *
+ * The pointer below is the port's own addition - the original has no mouse at
+ * all, not one mouse port in the binary - and it does the same things: a click
+ * on an icon presses it, a click on a square is a confirm there. */
 void app_hover(int x, int y);
 void app_click(int x, int y);
 

@@ -56,7 +56,10 @@
  * the target and works from there.
  *
  *   order  target tile   bite            cost        the square becomes
- *   6      several       see sub_3f62    -           (not ported yet)
+ *   6      0x7b          carrying / 16   a quarter   a deeper wood, up to 255
+ *   6      0x00, 0x0c..f carrying / 16   a quarter   0x7b, woodland
+ *   6      0x08..0x0b    the whole carry -           plain ground, once the two
+ *                                                    have ground each other down
  *   7      0x30..0x5f    carrying / 16   30 a unit   0x20, a bridge
  *   7      0x7a          carrying / 16   2 a unit    0x20, a bridge
  *   9      0x7b          carrying / 32   free        0x00, plain ground
@@ -71,6 +74,7 @@
  * sub_4040 and sub_4247 is a ceiling, not a minus one, which is worth writing
  * down because reading it the other way makes the job stall one short of
  * finishing. */
+#define UNIT_STATE_PLANT   0x06 /* put woodland on it: sub_3f62 */
 #define UNIT_STATE_BRIDGE  0x07 /* fill it in: sub_4040 */
 #define UNIT_STATE_FELL    0x09 /* clear woodland 0x7b: sub_41dc */
 #define UNIT_STATE_BREAK   0x0a /* break a bridge back to rock: sub_4247 */
@@ -333,6 +337,10 @@ int game_job_for(const Game *g, int x, int y);
 /* Issue that order, pathing to the shore or the edge of it as sub_c2e7 does.
  * Returns the path length, or 0. */
 int game_order_job(Game *g, int slot, int x, int y);
+
+/* The same, for an order the square does not ask for by itself.  Order 6 is
+ * the only one: planting a wood is a choice, not a feature of the ground. */
+int game_order(Game *g, int slot, int x, int y, int order);
 
 /* Handy for the viewer and for tests. */
 int game_unit_count(const Game *g, int side);

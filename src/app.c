@@ -83,6 +83,10 @@ static const unsigned char *dat_at(unsigned addr, unsigned need)
 
 static void snapshot_dim_icons(void);
 static int screen_to_icon(int x, int y);
+static void confirm_at(int cx, int cy);
+static void follow_cursor(void);
+static void panel_move(int dx, int dy);
+static const char *icon_name(int idx);
 
 static Screen scr;
 /* The backdrop - the title image, or the frame - is decompressed once per mode
@@ -99,6 +103,12 @@ static int running;
 static long ticks;
 static int hoverX = -1, hoverY = -1;      /* in cells */
 static int hoverIcon = -1;                /* a panel index, 0..13 */
+/* The original is played on the keyboard, and these are the two things it moves
+ * about: a cursor over the map at [0x3be4] and, when the cursor is pushed off
+ * the left of the map, an index into the panel at [0x3bee].  sub_4db2 moves the
+ * panel one with index +- 2 for up and down and bit 0 for left and right. */
+static int curX = MAP_MIN, curY = MAP_MIN;
+static int panelIcon = -1;                /* -1 while the cursor is on the map */
 static int viewMode;                      /* the VIEW icon: scroll, do not pick */
 static int selected = -1;                 /* a unit slot */
 static int mode = APP_MODE_TITLE;
@@ -205,6 +215,12 @@ int app_show_map(int number, int size)
     game_init(&game, &map);
     selected = -1;
     game.human = 0;
+    /* Start on the gate below your own castle, which is where your one spare
+     * unit is standing. */
+    curX = game.side[0].pos & 0xff;
+    curY = (game.side[0].pos >> 8) + 1;
+    if (curY > MAP_MAX) curY = MAP_MAX;
+    panelIcon = -1;
     live = map;
     running = 0;
     ticks = 0;
@@ -259,6 +275,15 @@ static void scroll_by(int dx, int dy)
     if (scrollY < 0) scrollY = 0;
     if (scrollX > maxX) scrollX = maxX;
     if (scrollY > maxY) scrollY = maxY;
+}
+
+static const char *icon_name(int idx)
+{
+    static const char *name[ICON_COUNT] = {
+        "GO", "VIEW", "TAX", "INFO", "SPEED", "ZOOM", "ALLY", "EDIT",
+        "LOAD", "MAP", "SAVE", "FORM", "CRT/LCD", "DRIVE"
+    };
+    return idx >= 0 && idx < ICON_COUNT ? name[idx] : "?";
 }
 
 /* Press one of the panel's fourteen.  The ones this port cannot do say so
@@ -327,26 +352,99 @@ static void icon_press(int idx)
     }
 }
 
+/* Move the cursor one square, and step into the panel when it is pushed off the
+ * left of the map - which is what the original does: sub_269e watches for the
+ * cursor leaving at column 0 and hands over to the panel. */
+static void cursor_move(int dx, int dy)
+{
+    int nx = curX + dx, ny = curY + dy;
+
+    if (nx < MAP_MIN) {
+        /* Off the left: into the panel, on the row nearest the cursor. */
+        int row = (curY - MAP_MIN) * 7 / (MAP_MAX - MAP_MIN + 1);
+        if (row > 6) row = 6;
+        panelIcon = row * 2;
+        snprintf(status, sizeof status, "panel: %s", icon_name(panelIcon));
+        return;
+    }
+    if (nx > MAP_MAX) nx = MAP_MAX;
+    if (ny < MAP_MIN) ny = MAP_MIN;
+    if (ny > MAP_MAX) ny = MAP_MAX;
+    curX = nx;
+    curY = ny;
+    follow_cursor();
+    {
+        int index = game_cell_index(curX, curY);
+        int who = game_cell_occupant(&game, index);
+        snprintf(status, sizeof status,
+                 "%d,%d  tile %02x amount %d%s%s", curX, curY,
+                 game.cell[index].tile, game.cell[index].amount,
+                 who >= 0 ? "  unit of side " : "",
+                 who >= 0 ? (game_unit_side(&game, who) == 0 ? "0 (yours)" :
+                             game_unit_side(&game, who) == 1 ? "1" :
+                             game_unit_side(&game, who) == 2 ? "2" :
+                             game_unit_side(&game, who) == 3 ? "3" : "nobody")
+                          : "");
+    }
+}
+
 void app_key(int key)
 {
     if (mode == APP_MODE_TITLE) {
         if (key == APP_KEY_START) app_show_map(0, tileSize);
         return;
     }
+    /* In the panel the arrows walk the icons and confirm presses one; cancel
+     * comes back to the map.  On the map the arrows move the cursor, confirm is
+     * the two-step order, and cancel opens the panel - the original does the
+     * same, 0x1a9b jumping back into the panel loop at 0x193f. */
+    if (panelIcon >= 0) {
+        switch (key) {
+        case APP_KEY_LEFT:  panel_move(-1, 0); break;
+        case APP_KEY_RIGHT: panel_move(1, 0); break;
+        case APP_KEY_UP:    panel_move(0, -1); break;
+        case APP_KEY_DOWN:  panel_move(0, 1); break;
+        case APP_KEY_START: icon_press(panelIcon); return;
+        case APP_KEY_BACK:
+            panelIcon = -1;
+            snprintf(status, sizeof status, "back to the map");
+            return;
+        default: break;
+        }
+        if (key == APP_KEY_LEFT || key == APP_KEY_RIGHT ||
+            key == APP_KEY_UP || key == APP_KEY_DOWN) {
+            snprintf(status, sizeof status, "panel: %s", icon_name(panelIcon));
+            return;
+        }
+    } else {
+        switch (key) {
+        case APP_KEY_LEFT:  cursor_move(-1, 0); return;
+        case APP_KEY_RIGHT: cursor_move(1, 0); return;
+        case APP_KEY_UP:    cursor_move(0, -1); return;
+        case APP_KEY_DOWN:  cursor_move(0, 1); return;
+        case APP_KEY_START: confirm_at(curX, curY); return;
+        case APP_KEY_BACK:
+            if (selected >= 0) {
+                selected = -1;
+                snprintf(status, sizeof status, "put it down again");
+                return;
+            }
+            panelIcon = 0;
+            snprintf(status, sizeof status, "panel: %s", icon_name(0));
+            return;
+        default: break;
+        }
+    }
     switch (key) {
-    case APP_KEY_BACK:      app_show_title(); break;
     case APP_KEY_PREV_MAP:  app_show_map(mapNumber - 1, tileSize); break;
     case APP_KEY_NEXT_MAP:  app_show_map(mapNumber + 1, tileSize); break;
-    case APP_KEY_LEFT:      scroll_by(-1, 0); break;
-    case APP_KEY_RIGHT:     scroll_by(1, 0); break;
-    case APP_KEY_UP:        scroll_by(0, -1); break;
-    case APP_KEY_DOWN:      scroll_by(0, 1); break;
     case APP_KEY_TILE8:     app_show_map(mapNumber, 8); break;
     case APP_KEY_TILE16:    app_show_map(mapNumber, 16); break;
     case APP_KEY_TILE32:    app_show_map(mapNumber, 32); break;
     case APP_KEY_CASTLES:   showCastles = !showCastles; break;
     case APP_KEY_RUN:       running = !running; break;
     case APP_KEY_STEP:      running = 0; app_tick(); break;
+    case APP_KEY_TITLE:     app_show_title(); break;
     default: break;
     }
 }
@@ -420,37 +518,29 @@ void app_hover(int x, int y)
         hoverX = hoverY = -1;
     }
     hoverIcon = mode == APP_MODE_MAP ? screen_to_icon(x, y) : -1;
+    (void)hoverIcon;
 }
 
 int app_selected(void) { return selected; }
 
-void app_click(int x, int y)
+/* Confirm on a square: sub_20f0.  The first press picks up one of your units,
+ * the second says where it should go and what it should do there. */
+static void confirm_at(int cx, int cy)
 {
-    int cx, cy, index, icon;
-
-    icon = mode == APP_MODE_MAP ? screen_to_icon(x, y) : -1;
-    if (icon >= 0) {
-        icon_press(icon);
-        return;
-    }
-    if (mode == APP_MODE_TITLE) {
-        app_show_map(0, tileSize);
-        return;
-    }
-    if (!screen_to_cell(x, y, &cx, &cy)) return;
-    if (viewMode) {
-        /* VIEW mode: the click centres the window instead of selecting. */
-        scrollX = cx - VIEW_W / bank.size / 2;
-        scrollY = cy - VIEW_H / bank.size / 2;
-        scroll_by(0, 0);
-        return;
-    }
-    index = game_cell_index(cx, cy);
+    int index = game_cell_index(cx, cy);
 
     if (selected < 0) {
         int who = game_cell_occupant(&game, index);
-        if (who >= 0 && game_unit_side(&game, who) == game.human)
-            selected = who;
+        if (who < 0 || game_unit_side(&game, who) != game.human) {
+            snprintf(status, sizeof status,
+                     "%d,%d: none of yours there", cx, cy);
+            return;
+        }
+        selected = who;
+        snprintf(status, sizeof status,
+                 "picked up the unit on %d,%d carrying %d - now say where "
+                 "it should go",
+                 cx, cy, game.unit[who].carrying);
         return;
     }
     /* Send it there.  A square that asks for work rather than a walk - water
@@ -470,10 +560,75 @@ void app_click(int x, int y)
                                                   "pull the nest down at",
                      cx, cy, len);
         } else {
-            game_order_move(&game, selected, cx, cy);
+            int len = game_order_move(&game, selected, cx, cy);
+            snprintf(status, sizeof status, len
+                     ? "walking to %d,%d, %d squares"
+                     : "no way to %d,%d",
+                     cx, cy, len);
         }
     }
     selected = -1;
+}
+
+void app_click(int x, int y)
+{
+    int cx, cy, icon;
+
+    icon = mode == APP_MODE_MAP ? screen_to_icon(x, y) : -1;
+    if (icon >= 0) {
+        panelIcon = icon;
+        icon_press(icon);
+        return;
+    }
+    if (mode == APP_MODE_TITLE) {
+        app_show_map(0, tileSize);
+        return;
+    }
+    if (!screen_to_cell(x, y, &cx, &cy)) return;
+    if (viewMode) {
+        /* VIEW mode: the click centres the window instead of selecting. */
+        scrollX = cx - VIEW_W / bank.size / 2;
+        scrollY = cy - VIEW_H / bank.size / 2;
+        scroll_by(0, 0);
+        return;
+    }
+    panelIcon = -1;
+    curX = cx;
+    curY = cy;
+    confirm_at(cx, cy);
+}
+
+/* Keep the cursor inside the window by scrolling under it. */
+static void follow_cursor(void)
+{
+    int wide, high;
+    if (bank.size <= 0) return;
+    wide = VIEW_W / bank.size;
+    high = VIEW_H / bank.size;
+    if (curX < scrollX) scrollX = curX;
+    if (curX >= scrollX + wide) scrollX = curX - wide + 1;
+    if (curY < scrollY) scrollY = curY;
+    if (curY >= scrollY + high) scrollY = curY - high + 1;
+    scroll_by(0, 0);                    /* clamps */
+}
+
+/* sub_4db2: two columns and seven rows, walked as one index. */
+static void panel_move(int dx, int dy)
+{
+    int n = panelIcon;
+    if (dy) {
+        n += dy * 2;
+        if (n < 0 || n >= ICON_COUNT) return;
+        panelIcon = n;
+        return;
+    }
+    if (dx < 0) {
+        if (!(n & 1)) return;           /* already the left column */
+        panelIcon = n & ~1;
+    } else if (dx > 0) {
+        if (n & 1) return;
+        panelIcon = n | 1;
+    }
 }
 
 /* Copy the dim artwork over an icon, and outline one. */
@@ -506,15 +661,14 @@ void app_render(void)
     if (running) app_tick();
     gfx_draw_map(&scr, &live, &bank, VIEW_X, VIEW_Y, scrollX, scrollY,
                  VIEW_W / bank.size + 1, VIEW_H / bank.size + 1);
-    if (hoverX >= 0)
-        outline_cell(hoverX, hoverY, 6);
-    if (selected >= 0 && !game_unit_free(&game, selected)) {
-        int sx, sy;
-        game_unit_pos(&game, selected, &sx, &sy);
-        outline_cell(sx, sy, 7);
-    } else if (selected >= 0) {
-        selected = -1;
-    }
+    /* No marker under the pointer.  The original has no mouse at all - there is
+     * not one mouse port in the whole binary - so a box following the cursor is
+     * an invention of this port, and drawing over the terrain to show where the
+     * cursor is caused more trouble than it was worth.  Nothing is drawn for
+     * the picked-up unit either: the original draws no such marker, so the
+     * status line says which unit is in hand instead of the port painting over
+     * the terrain to show it. */
+    if (selected >= 0 && game_unit_free(&game, selected)) selected = -1;
     if (showCastles) {
         /* The starting state, as the original builds it.  These marks are ours;
          * the game draws no such thing.  Index 6 is the interface yellow and 2
@@ -530,6 +684,11 @@ void app_render(void)
             if (game.side[i].alive)
                 outline_cell(game.side[i].pos & 0xff, game.side[i].pos >> 8, 7);
     }
+    /* The keyboard cursor.  This one the original does draw - it is the only
+     * thing it has, being played on the keyboard - so unlike a box following a
+     * mouse it belongs on the screen. */
+    if (panelIcon < 0) outline_cell(curX, curY, selected >= 0 ? 7 : 6);
+
     /* The panel last, so nothing can be drawn over it. */
     {
         int i;
@@ -537,6 +696,7 @@ void app_render(void)
             if (!iconLive[i]) draw_dim_icon(i);
         if (running) outline_icon(ICON_GO, 6);
         if (viewMode) outline_icon(ICON_VIEW, 6);
-        if (hoverIcon >= 0) outline_icon(hoverIcon, iconLive[hoverIcon] ? 7 : 2);
+        if (panelIcon >= 0)
+            outline_icon(panelIcon, iconLive[panelIcon] ? 7 : 2);
     }
 }

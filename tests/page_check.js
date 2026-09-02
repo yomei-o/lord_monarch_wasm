@@ -111,17 +111,44 @@ setTimeout(() => {
   check(/\.MAP/.test(els.status.textContent),
         `status shows "${els.status.textContent}"`);
 
+  // The arrows move the cursor while playing; choosing a map is on [ and ].
   const before = els.status.textContent;
   press('ArrowRight');
   pump(4);
-  check(els.status.textContent !== before,
-        `right arrow moved on to "${els.status.textContent}"`);
+  check(/tile [0-9a-f]{2} amount/.test(els.status.textContent),
+        `the right arrow moved the cursor: "${els.status.textContent}"`);
 
-  press('ArrowRight', true);     // shift: scroll, so the map must not change
-  const scrolled = els.status.textContent;
+  press(']');
   pump(4);
-  check(els.status.textContent === scrolled,
-        'shift+right scrolls instead of changing map');
+  check(els.status.textContent !== before,
+        `"]" moved on to "${els.status.textContent}"`);
+  press('[');
+  pump(4);
+  check(/^B_000\.MAP/.test(els.status.textContent),
+        '"[" came back to the first map');
+
+  // Keyboard only, the way the original is played: cancel opens the panel,
+  // the arrows walk it, confirm presses an icon, cancel comes back.
+  check(press('Backspace'), 'cancel is consumed');
+  pump(2);
+  check(/^panel: GO/.test(els.status.textContent),
+        `cancel opened the panel: "${els.status.textContent}"`);
+  press('ArrowDown');
+  pump(2);
+  check(/^panel: TAX/.test(els.status.textContent),
+        `down moved two icons on: "${els.status.textContent}"`);
+  press('ArrowRight');
+  pump(2);
+  check(/^panel: INFO/.test(els.status.textContent),
+        `right moved a column: "${els.status.textContent}"`);
+  press(' ');
+  pump(2);
+  check(/^INFO/.test(els.status.textContent),
+        `confirm pressed it: "${els.status.textContent}"`);
+  press('Backspace');
+  pump(2);
+  check(/back to the map/.test(els.status.textContent),
+        'cancel came back to the map');
 
   const buttonsWired = (handlers['button0:click'] || []).length > 0;
   check(buttonsWired, 'the on-screen buttons are wired up');

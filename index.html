@@ -21,7 +21,10 @@
   canvas {
     display: block; width: 1280px; max-width: calc(100vw - 24px);
     height: auto; aspect-ratio: 640 / 400;
-    background: #000; border: 1px solid #2b2f36;
+    /* An outline rather than a border: a border is part of the element box, so
+     * getBoundingClientRect would include it and every click would come back a
+     * couple of frame pixels off. */
+    background: #000; outline: 1px solid #2b2f36;
     image-rendering: pixelated;
   }
   #status {
@@ -65,7 +68,10 @@
   国は<b>滅びるところまで行きます</b>。王を倒すと倒した側が跡目を継ぎ、国庫と土地と
   兵をそのまま引き取り、城の3×3は更地に戻る。B_051 は誰も操作しなくても
   4786 tick で1国の単独勝利まで進みます。<br>
-  <b>左パネルのアイコンはマウスで押せます。</b>
+  <b>キーボードだけで遊べます</b> — 矢印でカーソル、スペースで決定、Backspace で取消。
+  マップの左端でさらに左を押すと左パネルに入り、そこでも矢印と決定で操作します。
+  原作もこの2ボタン方式で、マウスには対応していません（実行像にマウスのI/Oポートが
+  一つも現れない）。
   上から GO・VIEW（自由スクロール）・税率・情報・速度・拡大縮小・同盟・EDIT、
   下段が LOAD / MAP / SAVE / FORM / CRT・LCD / DRIVE です。
   暗く描かれているものはまだ移植していない命令で、これは原作が
@@ -79,9 +85,11 @@
 <div id="status">読み込み中…</div>
 
 <div id="buttons">
-  <button data-key="1">スタート / 戻る</button>
-  <button data-key="2">前のマップ</button>
-  <button data-key="3">次のマップ</button>
+  <button data-key="1">決定</button>
+  <button data-key="11">取消 / パネル</button>
+  <button data-key="15">タイトル</button>
+  <button data-key="2">前のマップ [</button>
+  <button data-key="3">次のマップ ]</button>
   <button data-key="8">8×8</button>
   <button data-key="9">16×16</button>
   <button data-key="10">32×32</button>
@@ -91,14 +99,18 @@
 </div>
 
 <div id="keys">
-  <b>スペース / Enter</b><span>タイトルからマップ表示へ</span>
-  <b>← →</b><span>前後のマップ（全 52 面）</span>
-  <b>Shift + ← → ↑ ↓</b><span>表示位置のスクロール</span>
-  <b>1 / 2 / 3</b><span>タイルの大きさ 8×8 / 16×16 / 32×32</span>
+  <b>← → ↑ ↓</b><span>カーソル移動。マップの左端でさらに左を押すと左パネルに入る</span>
+  <b>スペース / Enter</b><span>決定。自分のユニットの上で押して拾い、行き先で押すと命令になる。
+    パネルではアイコンを押す</span>
+  <b>Backspace / Esc</b><span>取消。マップでは左パネルを開き、パネルではマップに戻る。
+    ユニットを拾っているときは置き直す</span>
+  <b>1 / 2 / 3</b><span>タイルの大きさ 8×8 / 16×16 / 32×32（パネルの拡大縮小と同じ）</span>
+  <b>R / S</b><span>世界を動かす / 1 ステップだけ進める（パネルの GO と同じ）</span>
+  <b>[ ]</b><span>前後のマップ（全 52 面）。解析用で、原作にこの操作は無い</span>
   <b>C</b><span>城とユニットに印をつける（解析用。原作にこの表示は無い）</span>
-  <b>R / S</b><span>世界を動かす / 1 ステップだけ進める</span>
-  <b>マウス</b><span>自分の勢力のユニットをクリックして選び、行き先をクリックすると歩きます</span>
-  <b>Backspace</b><span>タイトルに戻る</span>
+  <b>T</b><span>タイトルに戻る</span>
+  <b>マウス</b><span>アイコンや升を直接クリックしても同じことができます。
+    原作にマウスは無いので、これはこの移植の足しものです</span>
 </div>
 
 <script src="monarch.js"></script>
@@ -111,7 +123,7 @@
   var KEY = {
     START: 1, PREV_MAP: 2, NEXT_MAP: 3, LEFT: 4, RIGHT: 5, UP: 6, DOWN: 7,
     TILE8: 8, TILE16: 9, TILE32: 10, BACK: 11, CASTLES: 12,
-    RUN: 13, STEP: 14
+    RUN: 13, STEP: 14, TITLE: 15
   };
 
   var canvas = document.getElementById('screen');
@@ -152,12 +164,20 @@
 
   function fromEvent(e) {
     switch (e.key) {
+      // The original's two buttons.  Confirm picks a unit up and then says
+      // where it goes; cancel opens the panel, and closes it again.
       case ' ': case 'Enter':  return KEY.START;
-      case 'Backspace':        return KEY.BACK;
-      case 'ArrowLeft':  return e.shiftKey ? KEY.LEFT  : KEY.PREV_MAP;
-      case 'ArrowRight': return e.shiftKey ? KEY.RIGHT : KEY.NEXT_MAP;
+      case 'Backspace': case 'Escape': return KEY.BACK;
+      case 't': case 'T':      return KEY.TITLE;
+      // The arrows move the cursor - the game is played on the keyboard, and
+      // the cursor is the only thing it has.  Choosing a map is something you
+      // do once, so it has its own keys out of the way.
+      case 'ArrowLeft':  return KEY.LEFT;
+      case 'ArrowRight': return KEY.RIGHT;
       case 'ArrowUp':    return KEY.UP;
       case 'ArrowDown':  return KEY.DOWN;
+      case '[': case '{': return KEY.PREV_MAP;
+      case ']': case '}': return KEY.NEXT_MAP;
       case '1': return KEY.TILE8;
       case '2': return KEY.TILE16;
       case '3': return KEY.TILE32;
