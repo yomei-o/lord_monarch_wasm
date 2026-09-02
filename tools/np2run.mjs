@@ -28,13 +28,27 @@
  *     name and wants the answer written into its heap, and an earlier version
  *     that returned a JS object left every setting unset.
  *
- * What is left: Module.onReady never fires, so the emulator's start-up is
- * stopping before the EM_ASM that calls it, and _np2_resume then dies on
- * "MainLoop.scheduler is not a function" because emscripten_set_main_loop was
- * never reached.  Nothing is printed through print/printErr, so it is not an
- * abort - something in the start-up path is waiting on a piece of browser
- * that is not stubbed here.  Next: find the EM_ASM at ASM_CONSTS 176452 in
- * dist/np2.js and work backwards to what runs before it.
+ *   - the config is read to the end: with NP2_TRACE=1 in the environment this
+ *     logs all 58 settings the emulator asks for, finishing at no_mouse.
+ *   - /font.bmp and the disk image are both in the emulator's filesystem when
+ *     start-up runs.
+ *   - SDL2 is told to take its software renderer.  emscripten's ENV is a
+ *     module-scope var with no way in from outside, so the line declaring it
+ *     is seeded on the way past, into the copy that gets imported.
+ *
+ * What is left: Module.onReady never fires, so start-up is stopping before the
+ * EM_ASM that calls it, and _np2_resume then dies on "MainLoop.scheduler is
+ * not a function" because emscripten_set_main_loop was never reached.  Nothing
+ * comes out of print or printErr, so it is not aborting - it is returning.
+ *
+ * np2_main in src/sdl2/np2.c of irori/np2-wasm has exactly four places it can
+ * leave early, and the config and the two files rule nothing out but narrow
+ * it: fontmng_init, sysmenu_create, scrnmng_create, and flagload returning
+ * DID_CANCEL when np2oscfg.resume is set.  The last is the cheapest to
+ * eliminate - pass resume: false - and scrnmng_create is the likeliest, since
+ * it is the one that wants a window.  Putting a printf in each and rebuilding
+ * from source would settle it in one run; build-wasm.sh in that repo is two
+ * lines of emcmake and ninja.
  */
 import fs from 'fs';
 import path from 'path';
@@ -174,7 +188,18 @@ const canvas = makeCanvas(640, 400);
 const image = fs.readFileSync(imagePath);
 const font = fs.readFileSync(path.join(dist, 'font.bmp'));
 
-const factory = (await import('file://' + path.join(dist, 'np2.js').replace(/\\/g, '/'))).default;
+/* SDL2 under emscripten picks a GL renderer by default and there is no GL
+ * here.  The hint that stops it is an environment variable, and emscripten's
+ * ENV is a module-scope var with no way in from outside - so the line that
+ * declares it gets seeded on the way past, into a copy that is what gets
+ * imported. */
+const np2src = fs.readFileSync(path.join(dist, 'np2.js'), 'utf8');
+const seeded = np2src.replace('var ENV={}',
+  'var ENV={SDL_RENDER_DRIVER:"software",SDL_VIDEODRIVER:"emscripten"}');
+if (seeded === np2src) console.warn('warning: could not seed ENV');
+const patched = path.join(dist, 'np2_node.js');
+fs.writeFileSync(patched, seeded);
+const factory = (await import('file://' + patched.replace(/\\/g, '/'))).default;
 
 let ready = false;
 /* SNDboard 1 is the 26K, which is the YM2203 this game probes for. */
@@ -199,7 +224,10 @@ const Module = {
    * answer written into its own heap.  Returning an object, as this first did,
    * leaves every setting unset and start-up never reaches onReady. */
   getConfig: (pName, type, pValue, size) => {
-    const value = config[Module.UTF8ToString(pName)];
+    const name = Module.UTF8ToString(pName);
+    const value = config[name];
+
+    if (process.env.NP2_TRACE) console.log('[cfg]', name, type, value);
 
     if (value === undefined) return;
     switch (type) {
@@ -228,6 +256,10 @@ await factory(Module);
  * this function awaits. */
 const tick = () => new Promise((r) => setTimeout(r, 0));
 for (let i = 0; i < 2000 && !ready; i++) await tick();
+try {
+  console.log('font in FS:', Module.FS.analyzePath('/font.bmp').exists,
+              ' disk in FS:', Module.FS.analyzePath('/' + path.basename(imagePath)).exists);
+} catch (e) { console.log('FS probe failed:', e.message); }
 console.log('ready:', ready, ' calledRun:', Module.calledRun,
             ' remaining deps:', Module.getPreloadedPackage ? '?' : '-');
 

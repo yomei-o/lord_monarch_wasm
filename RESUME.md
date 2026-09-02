@@ -39,6 +39,38 @@ bash tools/shots.sh # docs の絵を作り直す（make shots は w64devkit の 
 
 ## 次にやること（順番に意味がある）
 
+0. **np2 を node で動かして実機の音を取る（作りかけ、`tools/np2run.mjs`）。**
+   ブラウザを開かずに済むうえ、**偽の AudioContext を挿せば音声バッファを
+   直接取れる**のでループバック録音が要らない。ここまで動いた:
+
+   * npm の `np2-wasm@0.3.1` を `tmp/np2/dist` へ。付属の `NP2` クラスは
+     canvas と document を要求するので使わず、`np2.js` の factory を直接叩く
+   * `Module.wasmBinary` を渡せば node で読める（emscripten の
+     `instantiateAsync` が `fetch` を使い、node の fetch は `file://` を拒む）
+   * **ディスクは FIM の先頭 256 バイトを落とすだけ。** 残り 1,261,568 =
+     1232 × 1024 の生ダンプ、つまり `.hdm` そのもの。
+     `ccall('diskdrv_setfddex', [0, name, 0, 0])` で通る
+   * `getConfig` は本物どおり（名前で聞かれた設定を**ヒープに書き戻す**）。
+     `NP2_TRACE=1` を付けると 58 項目全部読めているのが見える
+   * `/font.bmp` とディスクは起動時に FS にある（確認済み）
+   * SDL2 にソフトウェアレンダラを使わせるため、`var ENV={}` の行に
+     `SDL_RENDER_DRIVER=software` を差し込んだ写しを import している
+
+   **残り**: `Module.onReady` が呼ばれず、`_np2_resume` が
+   `MainLoop.scheduler is not a function` で落ちる（`emscripten_set_main_loop`
+   に到達していない）。`print`/`printErr` に何も出ないので abort ではなく
+   **early return**。`irori/np2-wasm` の `src/sdl2/np2.c` の `np2_main` が
+   早く帰る場所は 4 つだけ — `fontmng_init` / `sysmenu_create` /
+   `scrnmng_create` / `flagload` が `DID_CANCEL`（`np2oscfg.resume` 時）。
+   `resume: false` を渡せば最後は消せる。**一番怪しいのは
+   `scrnmng_create`**（ウィンドウを作る所）。それぞれに printf を入れて
+   ソースからビルドし直せば 1 回で分かる（あちらの `build-wasm.sh` は
+   `emcmake cmake` と `ninja` の 2 行）
+
+   通れば、**この移植で唯一参照が無い「原曲の音」**が手に入る。
+   タイトルの帯（下の 1.）も同時に決まる
+
+
 0. **タイトルの下の帯。形は読めたが色が合わない。** 星空（下）を入れたあとに
    残った唯一の差。`FUN_1000_c946` は
 
