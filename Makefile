@@ -18,7 +18,7 @@ PYTHON  ?= python
 IMAGE   ?= $(firstword $(wildcard orig/*.FIM))
 
 CORE = src/disk.c src/gfx.c src/bz.c src/lmz.c
-APP  = src/app.c src/game.c src/sound.c src/ssg.c $(CORE)
+APP  = src/app.c src/game.c src/sound.c src/ssg.c src/opn.c $(CORE)
 
 all: $(OUT)/monarch.exe $(OUT)/monarch_shot.exe $(OUT)/game_check.exe $(OUT)/sim.exe $(OUT)/probe.exe $(OUT)/sound_check.exe $(OUT)/song_wav.exe
 
@@ -37,10 +37,10 @@ $(OUT)/sim.exe: tests/sim.c src/game.c $(CORE) | $(OUT)
 $(OUT)/probe.exe: tests/probe.c src/game.c $(CORE) | $(OUT)
 	$(CC) $(CFLAGS) -Isrc -o $@ $^
 
-$(OUT)/sound_check.exe: tests/sound_check.c src/sound.c src/ssg.c $(CORE) | $(OUT)
+$(OUT)/sound_check.exe: tests/sound_check.c src/sound.c src/ssg.c src/opn.c $(CORE) | $(OUT)
 	$(CC) $(CFLAGS) -Isrc -o $@ $^ -lm
 
-$(OUT)/song_wav.exe: tests/song_wav.c src/sound.c src/ssg.c $(CORE) | $(OUT)
+$(OUT)/song_wav.exe: tests/song_wav.c src/sound.c src/ssg.c src/opn.c $(CORE) | $(OUT)
 	$(CC) $(CFLAGS) -Isrc -o $@ $^ -lm
 
 # The rules, checked against what the disk and the disassembly say.

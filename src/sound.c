@@ -1,5 +1,6 @@
 #include "sound.h"
 #include "ssg.h"
+#include "opn.h"
 
 #include <string.h>
 
@@ -445,70 +446,140 @@ int snd_song_track(const unsigned char *song, unsigned songSize, int track,
     return 1;
 }
 
+/* The FM side.  A song's first three tracks go to the YM2203's FM channels,
+ * and they are the half this port was missing.
+ *
+ *   0x11c6 -> 0x1430   command 0xf0 uploads a voice: 24 registers from
+ *                      0x30 + channel stepping by four, out of the song's own
+ *                      table at file offset 0x20 + timbre * 32, then the
+ *                      twenty-fifth byte to 0xb0 + channel
+ *   sub_1488           the volume, as TL on the carriers only.  The mask is
+ *                      DS:0x2445 indexed by the algorithm - 08 08 08 08 0c 0e
+ *                      0e 0f, which is the standard carrier set and agrees
+ *                      with the wiring in opn.c - and the level is
+ *                      0x48 - ((0x48 - volume) * [0x3b42] >> 8)
+ *   0x0ee0             the note: F-number to 0xa4 + ch then 0xa0 + ch
+ *   0x13fe, 0x140d     key on and off through register 0x28
+ */
+#define FM_CARRIER_AT 0x2445        /* eight masks, one per algorithm */
+#define FM_MASTER 0xff              /* DS:0x3b42, which nothing here changes */
+
+static void fm_write_tl(Opn *opn, const unsigned char *progDat,
+                        unsigned progDatSize, int ch, int algorithm,
+                        int volume)
+{
+    unsigned off = (unsigned)(FM_CARRIER_AT - 0x1000) + (unsigned)(algorithm & 7);
+    int mask, tl, s;
+
+    if (off >= progDatSize) return;
+    mask = progDat[off];
+    if (volume > 0x48) tl = 0x7f;
+    else tl = 0x48 - (((0x48 - volume) * FM_MASTER) >> 8);
+    for (s = 0; s < 4; s++)
+        if (mask >> s & 1) opn_write(opn, 0x40 + s * 4 + ch, tl);
+}
+
+/* 0x1430, the voice upload. */
+static void fm_load_voice(Opn *opn, const unsigned char *song, unsigned songSize,
+                          int ch, int timbre, int *algorithmOut)
+{
+    unsigned at = 0x20 + (unsigned)timbre * 32;
+    int s, i;
+
+    /* The old voice is silenced first: 0xff into 0x80 + ch and the three
+     * above it. */
+    for (s = 0; s < 4; s++) opn_write(opn, 0x80 + s * 4 + ch, 0xff);
+    if (at + 25 > songSize) return;
+    for (i = 0; i < 24; i++) opn_write(opn, 0x30 + i * 4 + ch, song[at + i]);
+    opn_write(opn, 0xb0 + ch, song[at + 24]);
+    *algorithmOut = song[at + 24] & 7;
+}
+
 int snd_render_song(const unsigned char *progDat, unsigned progDatSize,
                     const unsigned char *song, unsigned songSize,
                     short *out, int maxSamples, int sampleRate)
 {
-    /* The three SSG channels, which on the chip are A, B and C: periods in
-     * registers 0/1, 2/3 and 4/5, levels in 8, 9 and 10. */
-    const unsigned char *periods;
-    /* Writable, because command 0xf9 defines an envelope as the song plays.
-     * It starts as the table PROG.DAT ships. */
-    unsigned char env[256];
-    SndVoice v[3];
-    int live[3];
+    const unsigned char *periods, *fnums;
+    unsigned char env[256];         /* writable: command 0xf9 fills it in */
+    SndVoice v[6];
+    int live[6], algo[3];
     Ssg chip;
+    Opn opn;
     int made = 0, ch, mixer;
     int perTick = sampleRate / SND_TICK_HZ;
 
     if (progDatSize < (unsigned)(SSG_PERIOD_AT - 0x1000) + 32) return 0;
     if (progDatSize < (unsigned)(SND_ENV_AT - 0x1000) + 256) return 0;
+    if (progDatSize < (unsigned)(SND_FNUM_AT - 0x1000) + 32) return 0;
     periods = progDat + (SSG_PERIOD_AT - 0x1000);
+    fnums = progDat + (SND_FNUM_AT - 0x1000);
     memcpy(env, progDat + (SND_ENV_AT - 0x1000), sizeof env);
 
-    for (ch = 0; ch < 3; ch++) {
+    for (ch = 0; ch < 6; ch++) {
         unsigned off = 0, len = 0;
 
-        live[ch] = snd_song_track(song, songSize, 3 + ch, &off, &len) &&
+        live[ch] = snd_song_track(song, songSize, ch, &off, &len) &&
                    snd_start_bytes(&v[ch], song + off, (int)len);
-        v[ch].chan = ch;
+        v[ch].chan = ch % 3;
         v[ch].envRam = env;
     }
-    if (!live[0] && !live[1] && !live[2]) return 0;
+    for (ch = 0; ch < 3; ch++) algo[ch] = 0;
+    if (!live[0] && !live[1] && !live[2] && !live[3] && !live[4] && !live[5])
+        return 0;
 
     ssg_reset(&chip);
-    /* Register 7 is one byte for all three channels - bit n turns channel n's
-     * tone off, bit n+3 its noise - so it has to be kept and edited, not
-     * rewritten per channel.  Writing "this channel on" from inside the
-     * channel loop turned the other two off and made three parts sound like
-     * one. */
     mixer = 0x3f;
     ssg_write(&chip, 7, mixer);
+    opn_reset(&opn, (double)SND_CLOCK);
 
     for (;;) {
         int any = 0, room;
 
+        /* The three FM parts. */
         for (ch = 0; ch < 3; ch++) {
-            int keyed = 0, level;
+            int keyed = 0, timbreWas;
+
+            if (!live[ch]) continue;
+            timbreWas = v[ch].timbre;
+            if (!snd_tick(&v[ch], &keyed)) {
+                live[ch] = 0;
+                opn_write(&opn, 0x28, ch);           /* key off */
+                continue;
+            }
+            any = 1;
+            /* Command 0xf0 on the FM side is a voice, not an envelope index. */
+            if (v[ch].timbre != timbreWas)
+                fm_load_voice(&opn, song, songSize, ch, v[ch].timbre, &algo[ch]);
+            if (keyed) {
+                unsigned short f = snd_fnumber(fnums, v[ch].note, 0);
+
+                opn_write(&opn, 0x28, ch);           /* off before on */
+                opn_write(&opn, 0xa4 + ch, f >> 8);
+                opn_write(&opn, 0xa0 + ch, f & 0xff);
+                fm_write_tl(&opn, progDat, progDatSize, ch, algo[ch],
+                            v[ch].volume);
+                opn_write(&opn, 0x28, 0xf0 | ch);    /* all four operators on */
+            } else if (!v[ch].keyed) {
+                opn_write(&opn, 0x28, ch);
+            }
+        }
+
+        /* The three SSG parts. */
+        for (ch = 3; ch < 6; ch++) {
+            int c = ch - 3, keyed = 0, level;
 
             if (!live[ch]) continue;
             if (!snd_tick(&v[ch], &keyed)) {
-                /* Same tail as an effect: into the release and let it run out
-                 * rather than cutting the note off dead. */
                 snd_env_release(&v[ch], env);
                 if (v[ch].spent) {
                     live[ch] = 0;
-                    ssg_write(&chip, 8 + ch, 0);
-                    mixer |= (1 << ch) | (8 << ch);
+                    ssg_write(&chip, 8 + c, 0);
+                    mixer |= (1 << c) | (8 << c);
                     ssg_write(&chip, 7, mixer);
                 }
             } else {
                 any = 1;
                 if (v[ch].chipPending) {
-                    /* The song writing the chip itself: the noise period and
-                     * the mixer, mostly, which is how the percussion part
-                     * works at all.  Its own register 7 replaces the one kept
-                     * here rather than fighting it. */
                     int r = v[ch].chipReg & 0x0f;
 
                     if (r == 7) mixer = v[ch].chipVal;
@@ -517,40 +588,35 @@ int snd_render_song(const unsigned char *progDat, unsigned progDatSize,
                 }
                 if (keyed) {
                     int p = ssg_period(periods, v[ch].note, 0);
-
                     int a4 = v[ch].algo;
 
-                    ssg_write(&chip, ch * 2, p & 0xff);
-                    ssg_write(&chip, ch * 2 + 1, (p >> 8) & 0x0f);
+                    ssg_write(&chip, c * 2, p & 0xff);
+                    ssg_write(&chip, c * 2 + 1, (p >> 8) & 0x0f);
                     /* sub_10ee: [si+4] is this channel's half of register 7.
-                     * Bit 7 means tone only - and skips the noise period -
-                     * bit 6 means noise only, and the low bits are the noise
-                     * period.  A song's percussion part is a channel with
-                     * 0x40 in here; without this it played the drum line as
-                     * very high tones, which is what FM002 and FM005 were. */
+                     * Bit 7 is tone only - and skips the noise period - bit 6
+                     * is noise only, and the low bits are the noise period. */
                     if (!(a4 & 0x80)) ssg_write(&chip, 6, a4 & 0x1f);
-                    mixer &= ~((1 << ch) | (8 << ch));
-                    if (a4 & 0x40) mixer |= 1 << ch;        /* tone off */
-                    if (a4 & 0x80) mixer |= 8 << ch;        /* noise off */
+                    mixer &= ~((1 << c) | (8 << c));
+                    if (a4 & 0x40) mixer |= 1 << c;
+                    if (a4 & 0x80) mixer |= 8 << c;
                     ssg_write(&chip, 7, mixer);
                     snd_env_key(&v[ch], env);
                 }
-                /* 0x0f40: a tied note goes into its release when its
-                 * remaining ticks reach [si+9], which command 0xf2 sets and
-                 * an effect leaves at zero. */
                 if (v[ch].keyed && v[ch].tie &&
                     v[ch].wait <= v[ch].tieAt + 1 && !(v[ch].stage & 8))
                     snd_env_release(&v[ch], env);
             }
             level = v[ch].keyed ? snd_env_step(&v[ch], env) : 0;
             level = (level * (v[ch].volume + 1)) >> 8;
-            ssg_write(&chip, 8 + ch, level > 15 ? 15 : level);
+            ssg_write(&chip, 8 + c, level > 15 ? 15 : level);
         }
+
         if (!any) break;
         room = maxSamples - made;
         if (room > perTick) room = perTick;
         if (room <= 0) break;
         ssg_render(&chip, out + made, room, sampleRate);
+        opn_render(&opn, out + made, room, sampleRate);
         made += room;
     }
     return made;
