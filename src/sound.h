@@ -97,6 +97,11 @@ typedef struct {
      * one in PROG.DAT. */
     unsigned char *envRam;
     int envBase;                /* [0x3b3f], the slot f9 counts from */
+    /* Command 0xfa writes a chip register straight out of the sequence, which
+     * is how a song reaches the noise generator and the mixer - the third SSG
+     * part of most of these songs is percussion and does nothing else.  The
+     * interpreter has no chip, so it leaves the write here for the renderer. */
+    int chipReg, chipVal, chipPending;
 } SndVoice;
 
 /* Loads effect `id` out of PROG.DAT.  0 if there is no such effect. */

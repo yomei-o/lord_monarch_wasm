@@ -186,11 +186,11 @@ static int command(SndVoice *v, int cmd)
         return 1;
     }
     case 0xfa:                              /* 0x13d6: straight to the chip */
-        /* dh = al, dl = the next byte, sub_740d.  Nothing here has a chip to
-         * write to at sequence level - the renderer owns it - so the pair is
-         * read and dropped, which at least keeps the walk in step. */
+        /* dh = al, dl = the next byte, sub_740d.  Left for the renderer. */
         if (v->pos >= v->len) return 0;
-        v->pos++;
+        v->chipReg = a;
+        v->chipVal = v->seq[v->pos++];
+        v->chipPending = 1;
         return 1;
     case 0xfd: {                            /* 0x1225: a conditional jump */
         /* bx += the sixteen-bit word that starts at the operand, and the jump
@@ -419,6 +419,9 @@ int snd_start_bytes(SndVoice *v, const unsigned char *seq, int len)
     memset(v, 0, sizeof *v);
     v->note = -1;
     v->volume = 0x0f;
+    /* FUN_1000_0bda gives every SSG channel [si+4] = 0x80, which sub_10ee
+     * reads as "tone, no noise". */
+    v->algo = 0x80;
     if (!seq || len <= 0) return 0;
     if (len > SND_SEQ_MAX) len = SND_SEQ_MAX;
     for (i = 0; i < len; i++) v->seq[i] = seq[i];
@@ -455,7 +458,7 @@ int snd_render_song(const unsigned char *progDat, unsigned progDatSize,
     SndVoice v[3];
     int live[3];
     Ssg chip;
-    int made = 0, ch;
+    int made = 0, ch, mixer;
     int perTick = sampleRate / SND_TICK_HZ;
 
     if (progDatSize < (unsigned)(SSG_PERIOD_AT - 0x1000) + 32) return 0;
@@ -474,7 +477,13 @@ int snd_render_song(const unsigned char *progDat, unsigned progDatSize,
     if (!live[0] && !live[1] && !live[2]) return 0;
 
     ssg_reset(&chip);
-    ssg_write(&chip, 7, 0x3f);              /* everything off to begin with */
+    /* Register 7 is one byte for all three channels - bit n turns channel n's
+     * tone off, bit n+3 its noise - so it has to be kept and edited, not
+     * rewritten per channel.  Writing "this channel on" from inside the
+     * channel loop turned the other two off and made three parts sound like
+     * one. */
+    mixer = 0x3f;
+    ssg_write(&chip, 7, mixer);
 
     for (;;) {
         int any = 0, room;
@@ -487,15 +496,43 @@ int snd_render_song(const unsigned char *progDat, unsigned progDatSize,
                 /* Same tail as an effect: into the release and let it run out
                  * rather than cutting the note off dead. */
                 snd_env_release(&v[ch], env);
-                if (v[ch].spent) { live[ch] = 0; ssg_write(&chip, 8 + ch, 0); }
+                if (v[ch].spent) {
+                    live[ch] = 0;
+                    ssg_write(&chip, 8 + ch, 0);
+                    mixer |= (1 << ch) | (8 << ch);
+                    ssg_write(&chip, 7, mixer);
+                }
             } else {
                 any = 1;
+                if (v[ch].chipPending) {
+                    /* The song writing the chip itself: the noise period and
+                     * the mixer, mostly, which is how the percussion part
+                     * works at all.  Its own register 7 replaces the one kept
+                     * here rather than fighting it. */
+                    int r = v[ch].chipReg & 0x0f;
+
+                    if (r == 7) mixer = v[ch].chipVal;
+                    ssg_write(&chip, r, v[ch].chipVal);
+                    v[ch].chipPending = 0;
+                }
                 if (keyed) {
                     int p = ssg_period(periods, v[ch].note, 0);
 
+                    int a4 = v[ch].algo;
+
                     ssg_write(&chip, ch * 2, p & 0xff);
                     ssg_write(&chip, ch * 2 + 1, (p >> 8) & 0x0f);
-                    ssg_write(&chip, 7, 0x38 | (0x07 & ~(1 << ch)));
+                    /* sub_10ee: [si+4] is this channel's half of register 7.
+                     * Bit 7 means tone only - and skips the noise period -
+                     * bit 6 means noise only, and the low bits are the noise
+                     * period.  A song's percussion part is a channel with
+                     * 0x40 in here; without this it played the drum line as
+                     * very high tones, which is what FM002 and FM005 were. */
+                    if (!(a4 & 0x80)) ssg_write(&chip, 6, a4 & 0x1f);
+                    mixer &= ~((1 << ch) | (8 << ch));
+                    if (a4 & 0x40) mixer |= 1 << ch;        /* tone off */
+                    if (a4 & 0x80) mixer |= 8 << ch;        /* noise off */
+                    ssg_write(&chip, 7, mixer);
                     snd_env_key(&v[ch], env);
                 }
                 /* 0x0f40: a tied note goes into its release when its
