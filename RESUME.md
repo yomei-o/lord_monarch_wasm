@@ -33,12 +33,23 @@ gcc / clang / MSVC のどれかを見つけて使う（既定は MSVC 2022 + Win
 開発者プロンプト無しで動く。`cmd /c start` が MSVC を掴むと固まるので
 `tools/lowpri.sh` は通さない）。`python` は Store の 3.11 が実体で応答する。
 
+**`make` もこのマシンには無い。** Makefile は説明として残っているだけで、
+実際に動くのは次の 2 本:
+
 ```sh
-make                # native（monarch.exe は起動しない。user と同じ画面なので）
-make wasm           # monarch.js / monarch.wasm をリポジトリ直下に。index.html に版を刻印
-make check          # game_check / sound_check / wasm_check / page_check
-bash tools/shots.sh # docs の絵を作り直す（make shots は w64devkit の sh が落ちる）
+sh tools/build.sh          # native ＋ wasm。native / wasm を付ければ片方だけ
+sh tools/check.sh          # build してから game/sound/wasm/page の 4 つ
+sh tools/check.sh -n       # 既にビルド済みのものを試すだけ
+bash tools/shots.sh        # tmp/shots/ に一通り描く
 ```
+
+**`node` も PATH に無い**（emsdk が持っている）。上の 2 本が自分で通すが、
+手で叩くときは
+`export PATH="/c/prog/emsdk/emsdk/node/22.16.0_64bit/bin:$PATH"`。
+**PATH に入れる時は POSIX 形式**でないと引かれない（`C:/...` は駄目）。
+
+曲を WAV にするのは `./tmp/song_wav.exe tmp/monarch.fim <n> out.wav [--rate HZ]`
+（既定 44100）。
 
 * Python は **`C:/prog/emsdk/emsdk/python/3.13.3_64bit/python.exe`** が確実
   （emsdk が持っている）。Store の `python` も 3.11 の実体が入っていて応答する。
