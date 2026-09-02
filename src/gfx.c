@@ -4,6 +4,59 @@
 #include <stdlib.h>
 #include <string.h>
 
+int gfx_load_font(Font *f, Disk *d)
+{
+    unsigned n = 0;
+    unsigned char *b = disk_read_bz(d, "C_MOJI.DAT", &n);
+
+    f->loaded = 0;
+    if (!b) return 0;
+    if (n >= sizeof f->glyph) {
+        memcpy(f->glyph, b, sizeof f->glyph);
+        f->loaded = 1;
+    }
+    free(b);
+    return f->loaded;
+}
+
+int gfx_text_width(const char *t)
+{
+    int n = 0;
+    while (t[n]) n++;
+    return n * 8;
+}
+
+void gfx_text(Screen *s, const Font *f, int x, int y, const char *t,
+              unsigned char colour)
+{
+    int i;
+    if (!f->loaded) return;
+    for (i = 0; t[i]; i++) {
+        const unsigned char *g = f->glyph[(unsigned char)t[i]];
+        int gx = x + i * 8, row;
+        if (gx + 8 > SCR_W) break;
+        for (row = 0; row < 16; row++) {
+            int gy = y + row, bit;
+            if (gy < 0 || gy >= SCR_H) continue;
+            for (bit = 0; bit < 8; bit++)
+                if (g[row] & (0x80 >> bit))
+                    s->px[(size_t)gy * SCR_W + gx + bit] = colour;
+        }
+    }
+}
+
+void gfx_box(Screen *s, int x, int y, int w, int h, unsigned char fill,
+             unsigned char edge)
+{
+    int i, j;
+    if (x < 0 || y < 0 || x + w > SCR_W || y + h > SCR_H) return;
+    for (j = 0; j < h; j++)
+        for (i = 0; i < w; i++) {
+            int onEdge = i == 0 || j == 0 || i == w - 1 || j == h - 1;
+            s->px[(size_t)(y + j) * SCR_W + x + i] = onEdge ? edge : fill;
+        }
+}
+
 void gfx_clear(Screen *s, unsigned char index)
 {
     memset(s->px, index, sizeof s->px);

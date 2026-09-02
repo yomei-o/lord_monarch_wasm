@@ -68,6 +68,11 @@
   国は<b>滅びるところまで行きます</b>。王を倒すと倒した側が跡目を継ぎ、国庫と土地と
   兵をそのまま引き取り、城の3×3は更地に戻る。B_051 は誰も操作しなくても
   4786 tick で1国の単独勝利まで進みます。<br>
+  <b>操作はすべて画面の中で完結します。</b>
+  パネルの命令はゲーム自身の画面にダイアログを開き、行き先を決めたあとには
+  原作と同じように命令の選択メニューが出ます。文字はディスクに入っている
+  ゲーム自身のフォント（<code>C_MOJI.DAT</code>、8×16 の1bpp）で描いていて、
+  漢字は本体のフォントROM側にあってディスクに無いので英字になっています。<br>
   <b>キーボードだけで遊べます</b> — 矢印でカーソル、スペースで決定、Backspace で取消。
   マップの左端でさらに左を押すと左パネルに入り、そこでも矢印と決定で操作します。
   原作もこの2ボタン方式で、マウスには対応していません（実行像にマウスのI/Oポートが
@@ -84,18 +89,19 @@
 <div id="wrap"><canvas id="screen" width="640" height="400"></canvas></div>
 <div id="status">読み込み中…</div>
 
+<!-- Keys, and nothing more.  Everything the game does is on the game's own
+     screen now - the left panel and its dialogs - so these are here only so a
+     touch screen has something to press. -->
 <div id="buttons">
+  <button data-key="4">←</button>
+  <button data-key="6">↑</button>
+  <button data-key="7">↓</button>
+  <button data-key="5">→</button>
   <button data-key="1">決定</button>
   <button data-key="11">取消 / パネル</button>
+  <button data-key="2">[</button>
+  <button data-key="3">]</button>
   <button data-key="15">タイトル</button>
-  <button data-key="2">前のマップ [</button>
-  <button data-key="3">次のマップ ]</button>
-  <button data-key="8">8×8</button>
-  <button data-key="9">16×16</button>
-  <button data-key="10">32×32</button>
-  <button data-key="12">城とユニット</button>
-  <button data-key="13">世界を動かす</button>
-  <button data-key="14">1 ステップ</button>
 </div>
 
 <div id="keys">
@@ -106,6 +112,8 @@
     ユニットを拾っているときは置き直す</span>
   <b>1 / 2 / 3</b><span>タイルの大きさ 8×8 / 16×16 / 32×32（パネルの拡大縮小と同じ）</span>
   <b>R / S</b><span>世界を動かす / 1 ステップだけ進める（パネルの GO と同じ）</span>
+  <b>ダイアログ</b><span>↑↓で選び、決定で実行、取消で閉じる。税率・情報・速度・拡大縮小・同盟、
+    それに命令の選択はすべて画面の中に出ます</span>
   <b>[ ]</b><span>前後のマップ（全 52 面）。解析用で、原作にこの操作は無い</span>
   <b>C</b><span>城とユニットに印をつける（解析用。原作にこの表示は無い）</span>
   <b>T</b><span>タイトルに戻る</span>
@@ -146,7 +154,16 @@
       if (!image || image.width !== w) image = ctx.createImageData(w, h);
       image.data.set(mod.HEAPU8.subarray(p, p + w * h * 4));
       ctx.putImageData(image, 0, 0);
-      statusEl.textContent = mod.UTF8ToString(mod._lm_status());
+      // While a dialog is up its heading goes here too, so what the screen is
+      // asking is also readable as text.
+      if (mod._lm_dialog()) {
+        statusEl.textContent = 'dialog: ' +
+          mod.UTF8ToString(mod._lm_dialog_line(0)) + '  —  ' +
+          mod.UTF8ToString(mod._lm_dialog_line(
+            Math.max(0, mod._lm_dialog_pick()) + 2));
+      } else {
+        statusEl.textContent = mod.UTF8ToString(mod._lm_status());
+      }
       dirty = false;
     }
     requestAnimationFrame(frame);

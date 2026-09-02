@@ -95,6 +95,77 @@ static Screen scr;
 static Screen bg;
 static Disk *disk;
 static Bank bank;
+/* The characters.  C_0n0M.CH4 is 256 tiles of 16x16 and holds all four
+ * countries; the first 32 are something else, then it runs kind-major and
+ * side-minor in blocks of eight frames:
+ *
+ *   32 + kind * 32 + side * 8 + facing
+ *
+ * The side order is the one the terrain bank uses for the castle middles
+ * 0x14..0x17 - green, red, white, blue - which is how it was pinned down rather
+ * than by eye.  Index 15 is the sheet's own background and gfx_blit_tile
+ * already treats it as transparent.
+ *
+ * At 32x32 each country has its own file, C_0n0L1..L4, whose layout has not
+ * been worked out yet; at 8x8 there is no character art at all.  Both fall back
+ * to a square in the country's colour, which at least says where a unit is. */
+static Bank chars;
+static int charsOk;
+static Font font;
+
+/* An on-screen dialog, which is where the game's own answers belong: the
+ * original draws its windows and menus on the 640 x 400 screen (sub_4a4d lays
+ * out a table of lines, sub_49bb the same with one line choosable), and a port
+ * that answers in the host's chrome instead does not feel like the game.
+ *
+ * The text is what the disk's own font can draw, which is ASCII: the kanji in
+ * the original's messages come from the PC-98 font ROM and are not on the
+ * floppy. */
+#define DLG_LINES 14
+#define DLG_TEXT 34
+enum {
+    DLG_NONE, DLG_INFO, DLG_TAX, DLG_SPEED, DLG_ZOOM, DLG_ALLY, DLG_ORDER
+};
+static struct {
+    int what;                       /* DLG_* , DLG_NONE when closed */
+    int lines;
+    int first;                      /* the first choosable line */
+    int count;                      /* how many are choosable */
+    int pick;                       /* 0..count-1 */
+    int value[DLG_LINES];           /* what each choice means */
+    char line[DLG_LINES][DLG_TEXT];
+} dlg;
+
+static void dlg_close(void)
+{
+    dlg.what = DLG_NONE;
+    dlg.lines = dlg.count = dlg.pick = 0;
+}
+
+static void dlg_say(const char *t)
+{
+    if (dlg.lines >= DLG_LINES) return;
+    snprintf(dlg.line[dlg.lines], DLG_TEXT, "%s", t);
+    dlg.lines++;
+}
+
+static void dlg_sayf(const char *fmt, int a, int b, int c)
+{
+    if (dlg.lines >= DLG_LINES) return;
+    snprintf(dlg.line[dlg.lines], DLG_TEXT, fmt, a, b, c);
+    dlg.lines++;
+}
+
+/* Add a choosable line.  The first one marks where the menu starts. */
+static void dlg_choice(const char *t, int value)
+{
+    if (dlg.lines >= DLG_LINES) return;
+    if (!dlg.count) dlg.first = dlg.lines;
+    dlg.value[dlg.lines] = value;
+    dlg.count++;
+    dlg_say(t);
+}
+
 static Map map;
 static Game game;
 static Map live;                /* the map as the simulation has it now */
@@ -204,6 +275,16 @@ int app_show_map(int number, int size)
         snprintf(status, sizeof status, "%s: %s", bankName, disk_error());
         return 0;
     }
+    /* The character bank, when there is one for this size. */
+    gfx_free_bank(&chars);
+    charsOk = 0;
+    if (!font.loaded) gfx_load_font(&font, disk);
+    if (size == 16) {
+        char cname[32];
+        snprintf(cname, sizeof cname, "C_%03dM.CH4", map.terrain);
+        charsOk = gfx_load_bank(&chars, disk, cname, 16);
+    }
+
     gfx_clear(&bg, 0);
     if (!gfx_load_screen(&bg, disk, "WAKU"))
         snprintf(status, sizeof status, "WAKU: %s", disk_error());
@@ -286,6 +367,112 @@ static const char *icon_name(int idx)
     return idx >= 0 && idx < ICON_COUNT ? name[idx] : "?";
 }
 
+static void dlg_open_info(void)
+{
+    int i;
+    dlg_close();
+    dlg.what = DLG_INFO;
+    dlg_say("THE FOUR COUNTRIES");
+    dlg_say("");
+    dlg_say("     LAND  HELD   FUNDS");
+    for (i = 0; i < PLAYERS; i++) {
+        int plain, claimed;
+        char buf[DLG_TEXT];
+        game_land_count(&game, i, &plain, &claimed);
+        snprintf(buf, sizeof buf, " %s%d  %4d  %4d  %6lu%s",
+                 i == game.human ? ">" : " ", i, plain, claimed,
+                 game.side[i].funds, game.side[i].alive ? "" : "  GONE");
+        dlg_say(buf);
+    }
+    dlg_say("");
+    dlg_choice("CLOSE", 0);
+}
+
+static void dlg_open_tax(void)
+{
+    static const int rate[6] = {1, 4, 7, 10, 13, 16};
+    int i;
+    dlg_close();
+    dlg.what = DLG_TAX;
+    dlg_sayf("TAX RATE - NOW %d OF 256", game.side[0].rate, 0, 0);
+    dlg_say("");
+    for (i = 0; i < 6; i++) {
+        char buf[DLG_TEXT];
+        snprintf(buf, sizeof buf, "%2d OF 256 PER SQUARE", rate[i]);
+        dlg_choice(buf, rate[i]);
+    }
+}
+
+static void dlg_open_speed(void)
+{
+    dlg_close();
+    dlg.what = DLG_SPEED;
+    dlg_say("SPEED");
+    dlg_say("");
+    dlg_choice("FAST", 0);
+    dlg_choice("NORMAL", 1);
+    dlg_choice("SLOW", 2);
+}
+
+static void dlg_open_zoom(void)
+{
+    dlg_close();
+    dlg.what = DLG_ZOOM;
+    dlg_say("SQUARE SIZE");
+    dlg_say("");
+    dlg_choice("16 X 16", 16);
+    dlg_choice("32 X 32", 32);
+    dlg_choice("8 X 8   (WHOLE MAP)", 8);
+}
+
+static void dlg_open_ally(void)
+{
+    int i;
+    dlg_close();
+    dlg.what = DLG_ALLY;
+    dlg_say("ALLIANCE");
+    dlg_say("");
+    for (i = 0; i < PLAYERS; i++) {
+        char buf[DLG_TEXT];
+        if (i == game.human || !game.side[i].alive) continue;
+        snprintf(buf, sizeof buf, "ALLY WITH COUNTRY %d%s", i,
+                 game.side[game.human].ally == i ? "   (NOW)" : "");
+        dlg_choice(buf, i);
+    }
+    dlg_choice("NO ALLIANCE", 0x80);
+}
+
+/* The order menu, which is what sub_20f0 puts up once a destination has been
+ * named: the choices are the ones the square allows. */
+static void dlg_open_order(int cx, int cy)
+{
+    unsigned char t = game.cell[game_cell_index(cx, cy)].tile;
+    int mine = game.human;
+
+    dlg_close();
+    dlg.what = DLG_ORDER;
+    dlg.value[0] = (cy << 8) | cx;              /* remembered in value[0] */
+    dlg_sayf("SQUARE %d,%d - TILE %02x", cx, cy, t);
+    dlg_say("");
+    dlg_choice("WALK THERE", 2);
+    if (t == CELL_ROCK || (t >= CELL_IMPASSABLE && t < CELL_WATER_END))
+        dlg_choice("BRIDGE IT  30 A DEPTH", UNIT_STATE_BRIDGE);
+    if (t == CELL_WOOD) {
+        dlg_choice("CLEAR THE WOOD", UNIT_STATE_FELL);
+        dlg_choice("THICKEN THE WOOD", UNIT_STATE_PLANT);
+    }
+    if (t == 0 || (t >= CELL_TERRITORY0 + 4 && t < CELL_TERRITORY0 + 8))
+        dlg_choice("PLANT A WOOD", UNIT_STATE_PLANT);
+    if (t >= CELL_TERRITORY0 && t < CELL_TERRITORY0 + PLAYERS &&
+        t - CELL_TERRITORY0 != mine)
+        dlg_choice("ATTACK THE GROUND", UNIT_STATE_PLANT);
+    if (t >= CELL_BRIDGE && t < CELL_BRIDGE_END)
+        dlg_choice("BREAK THE BRIDGE", UNIT_STATE_BREAK);
+    if (t == CELL_NEST)
+        dlg_choice("PULL THE NEST DOWN", UNIT_STATE_NEST);
+    dlg_choice("NOTHING", 0);
+}
+
 /* Press one of the panel's fourteen.  The ones this port cannot do say so
  * rather than doing nothing, because a button that silently ignores you is
  * indistinguishable from a broken hit test. */
@@ -296,58 +483,113 @@ static void icon_press(int idx)
     case ICON_GO:
         /* The original's GO leaves the panel and the world starts moving. */
         running = !running;
+        panelIcon = -1;
         snprintf(status, sizeof status, "GO: %s",
                  running ? "running" : "paused");
         break;
     case ICON_VIEW:
         viewMode = !viewMode;
-        snprintf(status, sizeof status, "VIEW mode %s (%s)",
-                 viewMode ? "on" : "off",
-                 viewMode ? "the arrows scroll, clicks do not select"
-                          : "clicks select again");
+        snprintf(status, sizeof status, "VIEW mode %s",
+                 viewMode ? "on" : "off");
         break;
-    case ICON_TAX: {
-        /* [side + 0x12].  It drifts on its own towards 18 - funds/256 once the
-         * treasury is full, so a setting here is a nudge, not a lock. */
-        Side *me = &game.side[game.human < 0 ? 0 : game.human];
-        me->rate = (unsigned char)(me->rate >= 17 ? 1 : me->rate + 1);
-        snprintf(status, sizeof status, "tax rate %d/256 per square",
-                 me->rate);
-        break;
-    }
-    case ICON_INFO: {
-        /* The four rows sub_4f76 lays out. */
-        int i, n = 0;
-        n += snprintf(status + n, sizeof status - n, "INFO ");
-        for (i = 0; i < PLAYERS; i++) {
-            int plain, claimed;
-            game_land_count(&game, i, &plain, &claimed);
-            n += snprintf(status + n, sizeof status - n,
-                          " %d:%d/%lu%s", i, plain + claimed,
-                          game.side[i].funds, game.side[i].alive ? "" : "*");
-        }
-        break;
-    }
-    case ICON_SPEED:
-        game.speed = (game.speed + 1) % 3;
-        snprintf(status, sizeof status, "speed %s",
-                 game.speed == 0 ? "fast" :
-                 game.speed == 1 ? "normal" : "slow");
-        break;
-    case ICON_ZOOM:
-        app_show_map(mapNumber,
-                     tileSize == 8 ? 16 : tileSize == 16 ? 32 : 8);
-        break;
+    case ICON_TAX:   dlg_open_tax();   break;
+    case ICON_INFO:  dlg_open_info();  break;
+    case ICON_SPEED: dlg_open_speed(); break;
+    case ICON_ZOOM:  dlg_open_zoom();  break;
+    case ICON_ALLY:  dlg_open_ally();  break;
     case ICON_MAP:
         app_show_map(mapNumber + 1 >= MAP_COUNT ? 0 : mapNumber + 1, tileSize);
         break;
     default:
         snprintf(status, sizeof status,
                  "%s is in the original but not in this port yet",
-                 idx == ICON_ALLY  ? "ALLY"  : idx == ICON_EDIT ? "EDIT" :
+                 idx == ICON_EDIT ? "EDIT" :
                  idx == ICON_LOAD  ? "LOAD"  : idx == ICON_SAVE ? "SAVE" :
                  idx == ICON_FORM  ? "FORM"  : idx == ICON_CRT  ? "CRT/LCD" :
                  "DRIVE");
+        break;
+    }
+}
+
+/* Confirm inside a dialog. */
+static void dlg_confirm(void)
+{
+    int line = dlg.first + dlg.pick;
+    int value = dlg.value[line];
+    int what = dlg.what;
+
+    switch (what) {
+    case DLG_INFO:
+        dlg_close();
+        break;
+    case DLG_TAX:
+        game.side[game.human < 0 ? 0 : game.human].rate = (unsigned char)value;
+        snprintf(status, sizeof status, "tax rate %d of 256", value);
+        dlg_close();
+        break;
+    case DLG_SPEED:
+        game.speed = value;
+        snprintf(status, sizeof status, "speed %s",
+                 value == 0 ? "fast" : value == 1 ? "normal" : "slow");
+        dlg_close();
+        break;
+    case DLG_ZOOM:
+        dlg_close();
+        app_show_map(mapNumber, value);
+        break;
+    case DLG_ALLY: {
+        /* An alliance holds from both ends, and sub_b102 breaks it from both
+         * ends when a country falls, so it is set the same way. */
+        Side *me = &game.side[game.human < 0 ? 0 : game.human];
+        if (me->ally < PLAYERS) game.side[me->ally].ally = 0x80;
+        if (value < PLAYERS) {
+            me->ally = (unsigned char)value;
+            game.side[value].ally = (unsigned char)game.human;
+            snprintf(status, sizeof status, "allied with country %d", value);
+        } else {
+            me->ally = 0x80;
+            snprintf(status, sizeof status, "no alliance");
+        }
+        dlg_close();
+        break;
+    }
+    case DLG_ORDER: {
+        int cx = dlg.value[0] & 0xff, cy = dlg.value[0] >> 8;
+        int who = selected, len = 0;
+        dlg_close();
+        selected = -1;
+        if (who < 0 || game_unit_free(&game, who)) {
+            snprintf(status, sizeof status, "the unit is gone");
+            break;
+        }
+        if (value == 0) {
+            snprintf(status, sizeof status, "no order given");
+            break;
+        }
+        if (value == 2) {
+            len = game_order_move(&game, who, cx, cy);
+            snprintf(status, sizeof status, len ? "walking to %d,%d, %d squares"
+                                                : "no way to %d,%d",
+                     cx, cy, len);
+        } else {
+            static const char *what[16] = {
+                0, 0, 0, 0, 0, 0, "plant", "bridge", 0, "clear",
+                "break", "nest", 0, 0, 0, 0
+            };
+            const char *name = what[value & 15] ? what[value & 15] : "order";
+            len = game_order(&game, who, cx, cy, value);
+            if (len)
+                snprintf(status, sizeof status,
+                         "%s %d,%d - %d squares to walk first", name, cx, cy,
+                         len);
+            else
+                snprintf(status, sizeof status, "cannot reach %d,%d for %s",
+                         cx, cy, name);
+        }
+        break;
+    }
+    default:
+        dlg_close();
         break;
     }
 }
@@ -394,6 +636,28 @@ void app_key(int key)
         if (key == APP_KEY_START) app_show_map(0, tileSize);
         return;
     }
+    /* A dialog takes the keys while it is up, which is what the original does:
+     * sub_4be9 sits on the input until the menu is answered. */
+    if (dlg.what != DLG_NONE) {
+        switch (key) {
+        case APP_KEY_UP:
+            if (dlg.pick > 0) dlg.pick--;
+            return;
+        case APP_KEY_DOWN:
+            if (dlg.pick + 1 < dlg.count) dlg.pick++;
+            return;
+        case APP_KEY_START:
+            dlg_confirm();
+            return;
+        case APP_KEY_BACK:
+            dlg_close();
+            snprintf(status, sizeof status, "cancelled");
+            return;
+        default:
+            return;                 /* nothing else gets through */
+        }
+    }
+
     /* In the panel the arrows walk the icons and confirm presses one; cancel
      * comes back to the map.  On the map the arrows move the cursor, confirm is
      * the two-step order, and cancel opens the panel - the original does the
@@ -470,6 +734,61 @@ static void outline_cell(int cx, int cy, unsigned char colour)
     }
 }
 
+/* A square of colour, for when there is no character art at this size. */
+static void fill_cell(int cx, int cy, unsigned char colour, int inset)
+{
+    const int n = bank.size;
+    int x0 = VIEW_X + (cx - scrollX) * n, y0 = VIEW_Y + (cy - scrollY) * n;
+    int x, y;
+
+    if (x0 < VIEW_X || y0 < VIEW_Y ||
+        x0 + n > VIEW_X + VIEW_W || y0 + n > VIEW_Y + VIEW_H) return;
+    for (y = inset; y < n - inset; y++)
+        for (x = inset; x < n - inset; x++)
+            scr.px[(size_t)(y0 + y) * SCR_W + x0 + x] = colour;
+}
+
+/* The colour each country is drawn in, taken from its own castle middle in the
+ * terrain bank rather than chosen: 0x14 + side. */
+static unsigned char side_colour(int side)
+{
+    static const unsigned char c[SIDES] = {12, 2, 7, 13, 6};
+    return side >= 0 && side < SIDES ? c[side] : 6;
+}
+
+/* Every unit inside the window.  The original draws these from its own display
+ * list; here it is a straight sweep, which comes to the same picture. */
+static void draw_units(void)
+{
+    int i;
+    for (i = 0; i < UNIT_SLOTS; i++) {
+        const Unit *u = &game.unit[i];
+        int x, y, sprite;
+        if (u->flags & 0x80) continue;
+        x = u->pos & 0xff;
+        y = u->pos >> 8;
+        if (x < scrollX || y < scrollY) continue;
+        if (x >= scrollX + VIEW_W / bank.size) continue;
+        if (y >= scrollY + VIEW_H / bank.size) continue;
+
+        if (!charsOk) {
+            fill_cell(x, y, side_colour(u->side), bank.size / 4);
+            continue;
+        }
+        if (u->side >= PLAYERS) {
+            sprite = 176 + (u->facing & 7);      /* the wild ones */
+        } else {
+            sprite = 32 + (u->side & 3) * 8 + (u->facing & 7);
+        }
+        if (sprite < chars.count)
+            gfx_blit_tile(&scr, &chars, (unsigned char)sprite,
+                          VIEW_X + (x - scrollX) * bank.size,
+                          VIEW_Y + (y - scrollY) * bank.size);
+        else
+            fill_cell(x, y, side_colour(u->side), bank.size / 4);
+    }
+}
+
 /* One turn of the world: the cell sweep and the unit sweep, then the castles
  * take their cut.  The original drives both from its main loop at 0x1a4d. */
 void app_tick(void)
@@ -523,6 +842,17 @@ void app_hover(int x, int y)
 
 int app_selected(void) { return selected; }
 
+/* Which dialog is up, 0 for none, so a headless run can see the same thing a
+ * player sees.  The values are the DLG_* order: INFO TAX SPEED ZOOM ALLY
+ * ORDER. */
+int app_dialog(void) { return dlg.what; }
+int app_dialog_lines(void) { return dlg.lines; }
+const char *app_dialog_line(int i)
+{
+    return i >= 0 && i < dlg.lines ? dlg.line[i] : "";
+}
+int app_dialog_pick(void) { return dlg.count ? dlg.pick : -1; }
+
 /* Confirm on a square: sub_20f0.  The first press picks up one of your units,
  * the second says where it should go and what it should do there. */
 static void confirm_at(int cx, int cy)
@@ -543,36 +873,32 @@ static void confirm_at(int cx, int cy)
                  cx, cy, game.unit[who].carrying);
         return;
     }
-    /* Send it there.  A square that asks for work rather than a walk - water
-     * or a rock to fill in, woodland to clear, a bridge to break, a nest to
-     * pull down - becomes that order; everything else is a walk.  If it cannot
-     * get there the selection just clears. */
-    {
-        int order = game_job_for(&game, cx, cy);
-        if (order) {
-            int len = game_order_job(&game, selected, cx, cy);
-            snprintf(status, sizeof status, len
-                     ? "%s %d,%d: %d squares to walk first"
-                     : "%s %d,%d: no way to reach it",
-                     order == UNIT_STATE_BRIDGE ? "bridge" :
-                     order == UNIT_STATE_FELL   ? "clear the wood at" :
-                     order == UNIT_STATE_BREAK  ? "break the bridge at" :
-                                                  "pull the nest down at",
-                     cx, cy, len);
-        } else {
-            int len = game_order_move(&game, selected, cx, cy);
-            snprintf(status, sizeof status, len
-                     ? "walking to %d,%d, %d squares"
-                     : "no way to %d,%d",
-                     cx, cy, len);
-        }
-    }
-    selected = -1;
+    /* A destination has been named, so the order menu goes up - which is what
+     * sub_20f0 does, rather than deciding for the player from the terrain. */
+    dlg_open_order(cx, cy);
 }
+
+/* Where the dialog is drawn, so a click can be turned back into a line. */
+#define DLG_X (VIEW_X + 24)
+#define DLG_Y (VIEW_Y + 40)
+#define DLG_W (DLG_TEXT * 8 + 16)
+#define DLG_LINE 16
 
 void app_click(int x, int y)
 {
     int cx, cy, icon;
+
+    if (dlg.what != DLG_NONE) {
+        int row = (y - DLG_Y - 8) / DLG_LINE;
+        if (x >= DLG_X && x < DLG_X + DLG_W &&
+            row >= dlg.first && row < dlg.first + dlg.count) {
+            dlg.pick = row - dlg.first;
+            dlg_confirm();
+        } else {
+            dlg_close();
+        }
+        return;
+    }
 
     icon = mode == APP_MODE_MAP ? screen_to_icon(x, y) : -1;
     if (icon >= 0) {
@@ -601,18 +927,19 @@ void app_click(int x, int y)
     confirm_at(cx, cy);
 }
 
-/* Keep the cursor inside the window by scrolling under it. */
+/* sub_a656: the window is centred on the cursor and then clamped - scroll =
+ * cursor - half the window - rather than nudged along when the cursor reaches
+ * an edge.  It reads quite differently in the hand: the map moves under a
+ * cursor that stays in the middle. */
 static void follow_cursor(void)
 {
     int wide, high;
     if (bank.size <= 0) return;
     wide = VIEW_W / bank.size;
     high = VIEW_H / bank.size;
-    if (curX < scrollX) scrollX = curX;
-    if (curX >= scrollX + wide) scrollX = curX - wide + 1;
-    if (curY < scrollY) scrollY = curY;
-    if (curY >= scrollY + high) scrollY = curY - high + 1;
-    scroll_by(0, 0);                    /* clamps */
+    scrollX = curX - wide / 2;
+    scrollY = curY - high / 2;
+    scroll_by(0, 0);                    /* clamps to 0..MAP - window */
 }
 
 /* sub_4db2: two columns and seven rows, walked as one index. */
@@ -693,6 +1020,8 @@ void app_render(void)
             if (game.side[i].alive)
                 outline_cell(game.side[i].pos & 0xff, game.side[i].pos >> 8, 7);
     }
+    draw_units();
+
     /* The keyboard cursor.  This one the original does draw - it is the only
      * thing it has, being played on the keyboard - so unlike a box following a
      * mouse it belongs on the screen. */
@@ -707,5 +1036,23 @@ void app_render(void)
         if (viewMode) outline_icon(ICON_VIEW, 6);
         if (panelIcon >= 0)
             outline_icon(panelIcon, iconLive[panelIcon] ? 7 : 2);
+    }
+
+    /* The dialog over everything, as the original's windows are. */
+    if (dlg.what != DLG_NONE) {
+        int i, h = dlg.lines * DLG_LINE + 16;
+        gfx_box(&scr, DLG_X, DLG_Y, DLG_W, h, 1, 7);
+        for (i = 0; i < dlg.lines; i++) {
+            int ly = DLG_Y + 8 + i * DLG_LINE;
+            int chosen = dlg.count && i == dlg.first + dlg.pick;
+            if (chosen) {
+                int j, k;
+                for (j = 0; j < DLG_LINE; j++)
+                    for (k = 0; k < DLG_W - 8; k++)
+                        scr.px[(size_t)(ly + j) * SCR_W + DLG_X + 4 + k] = 9;
+            }
+            gfx_text(&scr, &font, DLG_X + 8, ly, dlg.line[i],
+                     (unsigned char)(chosen ? 6 : 7));
+        }
     }
 }

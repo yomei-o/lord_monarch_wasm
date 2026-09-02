@@ -55,6 +55,14 @@ void app_click(int x, int y);
 
 /* -1 when nothing is picked up. */
 int app_selected(void);
+
+/* The dialog the game is showing, 0 when there is none.  Everything the panel
+ * answers goes into one of these rather than into the host's own furniture, the
+ * way the original draws its windows on its own screen. */
+int app_dialog(void);
+int app_dialog_lines(void);
+const char *app_dialog_line(int i);
+int app_dialog_pick(void);
 void app_render(void);
 
 /* One turn of the world - the cell sweep, the unit sweep and the castles. */

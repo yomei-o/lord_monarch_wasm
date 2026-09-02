@@ -34,6 +34,25 @@ typedef struct {
     int terrain;                /* 10, 20, 30, 40 or 50 - the map's own set */
 } Map;
 
+/* The game's own font: C_MOJI.DAT decompresses to 4096 bytes, which is 256
+ * glyphs of 8 x 16 one bit per pixel, indexed by the character code - 0x30 is
+ * "0", 0x41 is "A".  The kanji in the messages come from the PC-98's own font
+ * ROM and are not on the disk at all, so this is the whole of the text the
+ * disk can draw. */
+typedef struct {
+    unsigned char glyph[256][16];
+    int loaded;
+} Font;
+
+int gfx_load_font(Font *f, Disk *d);
+void gfx_text(Screen *s, const Font *f, int x, int y, const char *t,
+              unsigned char colour);
+int gfx_text_width(const char *t);
+
+/* A filled rectangle with a one-pixel edge, which is all a dialog needs. */
+void gfx_box(Screen *s, int x, int y, int w, int h, unsigned char fill,
+             unsigned char edge);
+
 void gfx_clear(Screen *s, unsigned char index);
 
 /* Sets the palette from a 48-byte table in the disk's own layout: three bytes

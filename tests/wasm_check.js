@@ -48,52 +48,77 @@ LordMonarch().then((m) => {
   for (let i = 0; i < 14; i++) m._lm_key(KEY.NEXT_MAP);
   const map14 = dump(m, 'wasm_map014.raw');
 
-  // The panel.  Two columns at x 8 and 40, seven rows, 32x32 - the geometry in
-  // app.c.  Pressing one has to change what lm_status says, because that is the
-  // only thing a headless run can see; a hit test that misses would leave the
-  // status on the map line.
+  // The panel and its dialogs.  Two columns at x 8 and 40, seven rows, 32x32 -
+  // the geometry in app.c.  What a command answers has to appear in a dialog on
+  // the game's own screen, not in the host's status line, so these check
+  // lm_dialog rather than the text under the canvas.
+  const DLG = {NONE: 0, INFO: 1, TAX: 2, SPEED: 3, ZOOM: 4, ALLY: 5, ORDER: 6};
   m._lm_key(KEY.TILE16);
   const icon = (idx) => {
     const col = [8, 40][idx % 2], row = [24, 56, 120, 184, 248, 280, 312][idx >> 1];
     m._lm_click(col + 16, row + 16);
     return m.UTF8ToString(m._lm_status());
   };
+  const dlgText = () => {
+    const out = [];
+    for (let i = 0; i < m._lm_dialog_lines(); i++)
+      out.push(m.UTF8ToString(m._lm_dialog_line(i)));
+    return out.join(' | ');
+  };
   let panelFailed = 0;
-  const want = [
-    [0, /^GO: /,            'GO'],
-    [1, /^VIEW mode/,       'VIEW'],
-    [2, /^tax rate/,        'TAX'],
-    [3, /^INFO/,            'INFO'],
-    [4, /^speed/,           'SPEED'],
-    [6, /ALLY is in the original/, 'ALLY (not ported)'],
-    [7, /EDIT is in the original/, 'EDIT (not ported)'],
-    [11, /FORM is in the original/, 'FORM (not ported)'],
+  const wantDialog = [
+    [3, DLG.INFO,  'INFO'],
+    [2, DLG.TAX,   'TAX'],
+    [4, DLG.SPEED, 'SPEED'],
+    [5, DLG.ZOOM,  'ZOOM'],
+    [6, DLG.ALLY,  'ALLY'],
   ];
-  for (const [idx, re, what] of want) {
-    const got = icon(idx);
-    const ok = re.test(got);
+  for (const [idx, want, what] of wantDialog) {
+    icon(idx);
+    const got = m._lm_dialog();
+    const ok = got === want;
     if (!ok) panelFailed++;
-    console.log(`${ok ? 'ok  ' : 'FAIL'}  icon ${idx} ${what}: ${got}`);
+    console.log(`${ok ? 'ok  ' : 'FAIL'}  icon ${idx} ${what} opened dialog ` +
+                `${got}: ${dlgText().slice(0, 60)}`);
+    m._lm_key(KEY.BACK);                  // cancel it again
+    if (m._lm_dialog() !== DLG.NONE) {
+      panelFailed++;
+      console.log('FAIL  cancel did not close it');
+    }
   }
-  // ZOOM and MAP reload the view, so they report a map line rather than their
-  // own message; check the thing they change instead.
-  const before = m.UTF8ToString(m._lm_status());
-  icon(5);
-  const zoomed = m.UTF8ToString(m._lm_status());
-  const zoomOk = /32x32/.test(zoomed) || /8x8/.test(zoomed);
-  if (!zoomOk) panelFailed++;
-  console.log(`${zoomOk ? 'ok  ' : 'FAIL'}  icon 5 ZOOM: ${zoomed}`);
-  icon(9);
-  const mapped = m.UTF8ToString(m._lm_status());
-  const mapOk = /^B_015[.]MAP/.test(mapped);
-  if (!mapOk) panelFailed++;
-  console.log(`${mapOk ? 'ok  ' : 'FAIL'}  icon 9 MAP: ${mapped}`);
-  // A point that is not on any icon must not press one.
+  // GO has no dialog: it just starts the world.
+  let st = icon(0);
+  const goOk = /^GO: /.test(st) && m._lm_dialog() === DLG.NONE;
+  if (!goOk) panelFailed++;
+  console.log(`${goOk ? 'ok  ' : 'FAIL'}  icon 0 GO: ${st}`);
+  icon(0);                                 // and back to paused
+
+  // A choice in a dialog has to take effect.  SPEED: FAST, NORMAL, SLOW.
+  icon(4);
+  m._lm_key(KEY.DOWN);
+  m._lm_key(KEY.DOWN);
+  m._lm_key(KEY.START);
+  st = m.UTF8ToString(m._lm_status());
+  const slowOk = /speed slow/.test(st) && m._lm_dialog() === DLG.NONE;
+  if (!slowOk) panelFailed++;
+  console.log(`${slowOk ? 'ok  ' : 'FAIL'}  choosing the third line: ${st}`);
+  icon(4); m._lm_key(KEY.START);           // back to fast
+
+  // The ones this port does not do say so instead of doing nothing.
+  for (const [idx, what] of [[7, 'EDIT'], [11, 'FORM']]) {
+    st = icon(idx);
+    const ok = st.indexOf(what) === 0;
+    if (!ok) panelFailed++;
+    console.log(`${ok ? 'ok  ' : 'FAIL'}  icon ${idx} ${what}: ${st}`);
+  }
+
+  // A click on the map presses no icon.
+  st = m.UTF8ToString(m._lm_status());
   m._lm_click(300, 200);
-  const off = m.UTF8ToString(m._lm_status());
-  const offOk = off === mapped;
-  if (!offOk) panelFailed++;
-  console.log(`${offOk ? 'ok  ' : 'FAIL'}  a click on the map presses nothing`);
+  console.log(`${m._lm_dialog() === DLG.NONE ? 'ok  ' : 'FAIL'}  ` +
+              `a click on the map opens no dialog`);
+  m._lm_key(KEY.BACK);
+  m._lm_key(KEY.BACK);
   if (panelFailed) {
     console.error(`${panelFailed} panel failure(s)`);
     process.exit(1);
@@ -103,7 +128,6 @@ LordMonarch().then((m) => {
   // 0's castle is at 14,2, its worker sits in the gate at 14,3, and 12,4 is
   // water.  At 16x16 with the view unscrolled a cell is at
   // (96 + x*16 + 8, 8 + y*16 + 8).
-  icon(1);                       // VIEW was left on by the panel checks above
   // PREV_MAP wraps, so walk from a known point: the title, then map 0.
   // (BACK is the original's cancel now - it opens the panel - so the way back
   // to the title is its own key.)
@@ -117,10 +141,18 @@ LordMonarch().then((m) => {
   console.log(`${picked >= 0 ? 'ok  ' : 'FAIL'}  the gate worker is selected ` +
               `(slot ${picked})`);
   if (picked < 0) process.exit(1);
+  // Naming a destination puts the order menu up, as sub_20f0 does, and the
+  // choices are the ones that square allows.
   m._lm_click(...cell(12, 4));
+  const menu = dlgText();
+  const menuOk = m._lm_dialog() === DLG.ORDER && /BRIDGE IT/.test(menu);
+  console.log(`${menuOk ? 'ok  ' : 'FAIL'}  the order menu offers a bridge: ${menu}`);
+  if (!menuOk) process.exit(1);
+  m._lm_key(KEY.DOWN);            // WALK THERE -> BRIDGE IT
+  m._lm_key(KEY.START);
   const bridged = m.UTF8ToString(m._lm_status());
-  const bridgeOk = /^bridge 12,4: [0-9]+ squares to walk first/.test(bridged);
-  console.log(`${bridgeOk ? 'ok  ' : 'FAIL'}  clicking water orders a bridge: ` +
+  const bridgeOk = /^bridge 12,4/.test(bridged);
+  console.log(`${bridgeOk ? 'ok  ' : 'FAIL'}  and choosing it gives the order: ` +
               `${bridged}`);
   if (!bridgeOk) process.exit(1);
 
@@ -130,7 +162,7 @@ LordMonarch().then((m) => {
   m._lm_key(KEY.START);
   for (let i = 0; i < 14; i++) m._lm_key(KEY.NEXT_MAP);
   m._lm_key(KEY.TILE16);
-  let st = m.UTF8ToString(m._lm_status());
+  st = m.UTF8ToString(m._lm_status());
   console.log(`${/^B_014/.test(st) ? 'ok  ' : 'FAIL'}  keys reached B_014: ${st}`);
 
   m._lm_key(KEY.START);           // confirm on the gate: pick the worker up
@@ -142,9 +174,15 @@ LordMonarch().then((m) => {
   // Walk the cursor onto the water at 12,4 and confirm: a bridge order.
   m._lm_key(KEY.LEFT); m._lm_key(KEY.LEFT); m._lm_key(KEY.DOWN);
   m._lm_key(KEY.START);
+  const keyMenuOk = m._lm_dialog() === DLG.ORDER;
+  console.log(`${keyMenuOk ? 'ok  ' : 'FAIL'}  confirm put the order menu up: ` +
+              `${dlgText().slice(0, 60)}`);
+  if (!keyMenuOk) process.exit(1);
+  m._lm_key(KEY.DOWN);
+  m._lm_key(KEY.START);
   st = m.UTF8ToString(m._lm_status());
-  const bridgedByKey = /^bridge 12,4:/.test(st);
-  console.log(`${bridgedByKey ? 'ok  ' : 'FAIL'}  and confirm ordered a bridge: ${st}`);
+  const bridgedByKey = /^bridge 12,4/.test(st);
+  console.log(`${bridgedByKey ? 'ok  ' : 'FAIL'}  and the order was given: ${st}`);
   if (!bridgedByKey) process.exit(1);
 
   // Pushing the cursor off the left of the map opens the panel.

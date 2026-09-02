@@ -143,9 +143,12 @@ setTimeout(() => {
         `right moved a column: "${els.status.textContent}"`);
   press(' ');
   pump(2);
-  check(/^INFO/.test(els.status.textContent),
-        `confirm pressed it: "${els.status.textContent}"`);
-  press('Backspace');
+  check(/^dialog: THE FOUR COUNTRIES/.test(els.status.textContent),
+        `confirm opened the dialog on the game's own screen: ` +
+        `"${els.status.textContent}"`);
+  press('Backspace');            // close the dialog
+  pump(2);
+  press('Backspace');            // and leave the panel
   pump(2);
   check(/back to the map/.test(els.status.textContent),
         'cancel came back to the map');

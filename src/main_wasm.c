@@ -53,6 +53,14 @@ void lm_click(int x, int y) { app_click(x, y); }
 EMSCRIPTEN_KEEPALIVE
 int lm_selected(void) { return app_selected(); }
 
+EMSCRIPTEN_KEEPALIVE int lm_dialog(void) { return app_dialog(); }
+EMSCRIPTEN_KEEPALIVE int lm_dialog_lines(void) { return app_dialog_lines(); }
+EMSCRIPTEN_KEEPALIVE int lm_dialog_pick(void) { return app_dialog_pick(); }
+EMSCRIPTEN_KEEPALIVE const char *lm_dialog_line(int i)
+{
+    return app_dialog_line(i);
+}
+
 /* Expands the indexed frame to RGBA.  A 16-entry lookup rebuilt each frame is
  * cheaper than it looks and means a palette change needs no invalidation. */
 EMSCRIPTEN_KEEPALIVE

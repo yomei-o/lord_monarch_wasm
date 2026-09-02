@@ -6,7 +6,8 @@
  *   monarch_shot <image.fim> map   B_005.MAP out.png  [--tile 8|16|32]
  *   monarch_shot <image.fim> game  B_005.MAP out.png  [--at X,Y]
  *   monarch_shot <image.fim> view  <map number> <tile size> out.png
- *                                 [--ticks N]  run the world first
+ *                                 [--ticks N]     run the world first
+ *                                 [--press 11,7]  send APP_KEY_* codes
  *
  * The point of this over the Win32 build is that the work happens on a machine
  * whose desktop is in use: a render that has to be looked at goes to a file, not
@@ -196,6 +197,20 @@ int main(int argc, char **argv)
         {
             int t, ticks = arg_int(argc, argv, "--ticks", 0);
             for (t = 0; t < ticks; t++) app_tick();
+        }
+        /* --press 11,7,7,1 sends APP_KEY_* codes before the render, which is
+         * how a dialog or a panel state gets into a headless picture. */
+        {
+            int i;
+            for (i = 1; i + 1 < argc; i++)
+                if (!strcmp(argv[i], "--press")) {
+                    const char *c = argv[i + 1];
+                    while (*c) {
+                        app_key(atoi(c));
+                        while (*c && *c != ',') c++;
+                        if (*c == ',') c++;
+                    }
+                }
         }
         app_render();
         printf("%s\n", app_status());
