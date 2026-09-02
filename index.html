@@ -139,10 +139,10 @@
 <!-- BUILD is bumped by "make wasm".  Without it a browser will happily hold
      on to a monarch.js from an earlier build and then fail on whichever
      function was added since - which is exactly what happened once. -->
-<script src="monarch.js?v=65191cf2"></script>
+<script src="monarch.js?v=aeae64fb"></script>
 <script>
   // Stamped by tools/stamp.py from the wasm's own hash.
-  window.LM_BUILD = '65191cf2';
+  window.LM_BUILD = 'aeae64fb';
 
 (function () {
   'use strict';
@@ -392,7 +392,14 @@
     bgmStop();
     bgm.playing = n;
     bgm.gain = ac.createGain();
-    bgm.gain.gain.value = 0.35;          // under the effects, as on the chip
+    /* One gain for the lot now that an effect plays on the song's own chip -
+     * it takes a channel from the music rather than sitting on top of it, so
+     * the balance between them is the chip's and only the master is set here.
+     * 0.35 was chosen when effects had a louder node of their own, and it
+     * left everything too quiet.  The songs peak between 0.43 and 0.73 of
+     * full scale (FM016 and FM004 are the two ends of that), so 0.85 is as
+     * loud as this goes with room to spare. */
+    bgm.gain.gain.value = 0.85;
     bgm.node = ac.createScriptProcessor(4096, 0, 1);
     bgm.node.onaudioprocess = function (ev) {
       var out = ev.outputBuffer.getChannelData(0);

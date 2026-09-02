@@ -877,6 +877,39 @@ int main(int argc, char **argv)
         printf("B_051 after 12000 ticks: %d of 4 countries left\n", alive);
     }
 
+    /* The first map, played the way somebody who knows this game says it can
+     * be won: the tax at nought and the purse never empty.  One country has
+     * to be left at the end of it.
+     *
+     * This is the check that would have caught the missing rule at 0x37d0 -
+     * a unit grinding down the square it steps into.  Without it nobody can
+     * take ground from anybody, every country survives for ever, and the map
+     * simply fills up and stops. */
+    {
+        Map first;
+        long t;
+        int i, alive = 0, mine = 0, claimed;
+
+        gfx_load_map(&first, d, "B_000.MAP");
+        game_init(g, &first);
+        game_land_totals(g);
+        g->human = 0;
+        for (t = 0; t < 12000; t++) {
+            g->side[0].rate = 0;
+            g->side[0].funds = 999999999UL;
+            g->turn = (g->turn + 1) & 0xff;
+            game_tick_cells(g);
+            game_step(g);
+        }
+        for (i = 0; i < PLAYERS; i++) if (g->side[i].alive) alive++;
+        game_land_count(g, 0, &mine, &claimed);
+        checkf(alive == 1, "B_000 with no tax and a full purse left %d "
+               "countries, not 1 (side 0 holds %d)", alive, mine, 0);
+        checkf(mine > 200, "side 0 only holds %d squares", mine, 0, 0);
+        printf("B_000, tax 0 and money: side 0 holds %d, %d country left\n",
+               mine, alive);
+    }
+
     /* The calendar.  A day is 2^(speed + 1) turns - sub_a731 takes 0xfe,
      * shifts it left by [0x3c02], inverts it and tests the turn counter
      * against that - and the countdown starts at 3200, which is what

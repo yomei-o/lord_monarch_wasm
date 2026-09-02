@@ -11,6 +11,10 @@ const signed char GAME_DY[8] = {-1, -1,  0,  1,  1,  1,  0, -1 };
 
 int game_cell_index(int x, int y) { return y * MAP_W + x; }
 
+/* sub_4163: what happens to a square somebody else holds when a unit reaches
+ * it.  Defined further down, next to the jobs. */
+static int attack_cell(Game *g, int slot, int index);
+
 int game_move(Game *g, int slot, int dir)
 {
     Unit *u = &g->unit[slot];
@@ -42,6 +46,17 @@ int game_move(Game *g, int slot, int dir)
     if (game_merge(g, slot, to)) return 0;          /* 0x37c3 */
     if (u->flags & 0x80) return 0;
     if (g->occupant[to] >= 0) {                     /* 0x37c9 */
+        if (u->retry) u->retry--;
+        return 0;
+    }
+    /* 0x37d0.  Every step runs sub_4163 on the square it is about to enter,
+     * and only enters when that says the way is clear - so walking into
+     * somebody else's ground is what takes it away from them.  Leaving this
+     * out is why land, once claimed, was never lost: a country could only
+     * ever grow into empty squares, and once the map was full nothing moved
+     * again. */
+    if (!attack_cell(g, slot, to)) {
+        if (u->flags & 0x80) return 0;              /* it died doing it */
         if (u->retry) u->retry--;
         return 0;
     }
@@ -1707,17 +1722,27 @@ static int job_adjacent(const Game *g, int slot)
  * original tests only the high byte of what it started with.
  *
  * This is the only place a country's ground is taken by force. */
-static int job_attack(Game *g, int slot)
+/* sub_4163, against one square.  Returns what the original leaves in the
+ * carry: 1 (set) when there is nothing here to fight and the caller may go
+ * ahead, 0 (clear) while the square is being ground down - and also on the
+ * step that finishes it off, because 0x41ad clears the carry after writing
+ * the square back to plain ground.  So a unit spends one more step outside
+ * the square it has just taken, and walks in on the next.
+ *
+ * What the unit is carrying decides how much it takes off: a whole unit of a
+ * hundred (anything with a high byte) flattens the square outright, and below
+ * that it comes off the square's amount a step at a time.  A unit that has
+ * less than the square holds dies against it. */
+static int attack_cell(Game *g, int slot, int index)
 {
     Unit *u = &g->unit[slot];
-    int index = game_cell_index(u->home & 0xff, u->home >> 8);
     Cell *c = &g->cell[index];
     int owner = (int)c->tile - CELL_TERRITORY0;
     unsigned short had = u->carrying;
 
-    if (owner < 0 || owner >= PLAYERS) return 0;        /* 0x416d */
-    if (owner == u->side) return 0;                     /* 0x417a */
-    if (g->side[u->side].ally == owner) return 0;       /* 0x417e */
+    if (owner < 0 || owner >= PLAYERS) return 1;        /* 0x4170 */
+    if (owner == u->side) return 1;                     /* 0x417a */
+    if (g->side[u->side].ally == owner) return 1;       /* 0x417e */
 
     if (u->carrying > c->amount)
         u->carrying = (unsigned short)(u->carrying - c->amount);
@@ -1727,15 +1752,30 @@ static int job_attack(Game *g, int slot)
     if (had >> 8) {                                     /* 0x419b */
         c->tile = 0;
         c->amount = CELL_START_AMOUNT;
+        g->stamp++;
         return 0;
     }
     if (c->amount > (had & 0xff)) {
         c->amount = (unsigned char)(c->amount - (had & 0xff));
-        return 1;                                       /* more to grind */
+        return 0;                                       /* more to grind */
     }
     c->tile = 0;
     c->amount = CELL_START_AMOUNT;
+    g->stamp++;
     return 0;
+}
+
+/* The same thing as a job, for the square a unit was sent to.  A job answers
+ * "is there more to do", which is the carry the other way round except that
+ * the step which destroys the square is finished with it. */
+static int job_attack(Game *g, int slot)
+{
+    Unit *u = &g->unit[slot];
+    int index = game_cell_index(u->home & 0xff, u->home >> 8);
+    unsigned char was = g->cell[index].tile;
+
+    if (attack_cell(g, slot, index)) return 0;
+    return g->cell[index].tile == was;
 }
 
 /* Order 6, sub_3f62: put woodland on the square.

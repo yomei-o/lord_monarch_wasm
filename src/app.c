@@ -947,18 +947,26 @@ static void icon_press(int idx)
         snprintf(status, sizeof status, "GO: %s",
                  running ? "running" : "paused");
         break;
+    /* Every one of these is a panel command that was accepted, and the
+     * original says so: 0x1a78 checks that the player has a side and then
+     * plays 0x602 before doing the work, and 0x1e5b, 0x202c, 0x2055 and
+     * 0x2201 do the same at their own commands.  The comment that used to
+     * stand here said they fell through to a sound at the end of the switch.
+     * There was no sound at the end of the switch, so opening a dialog made
+     * no noise at all. */
     case ICON_VIEW:
+        app_sound(APP_SND_OK);
         viewMode = !viewMode;
         snprintf(status, sizeof status, "VIEW mode %s",
                  viewMode ? "on" : "off");
         break;
-    case ICON_TAX:   dlg_open_tax();   break;
-    /* every case below falls through to the sound at the end */
-    case ICON_INFO:  dlg_open_info();  break;
-    case ICON_SPEED: dlg_open_speed(); break;
-    case ICON_ZOOM:  dlg_open_zoom();  break;
-    case ICON_ALLY:  dlg_open_ally();  break;
+    case ICON_TAX:   app_sound(APP_SND_OK); dlg_open_tax();   break;
+    case ICON_INFO:  app_sound(APP_SND_OK); dlg_open_info();  break;
+    case ICON_SPEED: app_sound(APP_SND_OK); dlg_open_speed(); break;
+    case ICON_ZOOM:  app_sound(APP_SND_OK); dlg_open_zoom();  break;
+    case ICON_ALLY:  app_sound(APP_SND_OK); dlg_open_ally();  break;
     case ICON_MAP:
+        app_sound(APP_SND_OK);
         app_show_map(mapNumber + 1 >= MAP_COUNT ? 0 : mapNumber + 1, tileSize);
         break;
     default:
