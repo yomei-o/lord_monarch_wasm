@@ -104,6 +104,21 @@ typedef struct {
     /* The rest of the channel structure, which the songs use and the effects
      * never touch.  The offsets are the original's, off DS:0x3a3a + ch*0x20. */
     int tieAt;                  /* [si+9], command 0xf2 - see snd_tick */
+
+    /* What sub_0e6e needs and the SSG player does not.  snd_tick fills these
+     * in without touching `keyed` or the flag it hands back, so the SSG side
+     * is unchanged.
+     *
+     *   waitWas    [si] as it stood before the tick's `dec`, which is what
+     *              0x0e7d compares against [si+9]
+     *   noteEvent  a note byte was taken this tick (0x0eac)
+     *   restEvent  a duration with bit 7 set was taken instead (0x0ece)
+     *   prevTie    the tie flag of the note that just ended - the `ah` that
+     *              0x0ebc rotates, not the one 0x0eb9 shifts in
+     *   pitchNew   whether 0x0ec5 marks the F-number as needing a write:
+     *              always, unless the note before was tied and the same
+     */
+    int waitWas, noteEvent, restEvent, prevTie, pitchNew;
     int param8;                 /* [si+8], command 0xf3 */
     int algo;                   /* [si+4], command 0xf4 */
     int tempo;                  /* command 0xf5, which lands in [0x3b3d] */

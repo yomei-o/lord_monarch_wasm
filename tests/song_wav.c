@@ -16,8 +16,12 @@
 #include "disk.h"
 #include "sound.h"
 
-#define RATE 22050
-#define MAX_SAMPLES (RATE * 200)
+/* The chip makes a sample every 72 clocks, which is 55,467 a second, and its
+ * modulators put real energy well above 11 kHz.  Rendering at 22,050 folded
+ * all of that back down as a ring on top of the note; 44,100 moves the fold
+ * above most of it.  --rate takes anything. */
+#define RATE_DEFAULT 44100
+#define MAX_SAMPLES (RATE_DEFAULT * 200)
 
 static void put32(FILE *f, unsigned v)
 {
@@ -29,6 +33,9 @@ static void put16(FILE *f, unsigned v)
 {
     fputc(v & 0xff, f); fputc(v >> 8 & 0xff, f);
 }
+
+/* Set from --rate; see RATE_DEFAULT. */
+static int rate = RATE_DEFAULT;
 
 static void write_wav(const char *path, const short *pcm, long n)
 {
@@ -42,15 +49,15 @@ static void write_wav(const char *path, const short *pcm, long n)
     put32(f, 16);
     put16(f, 1);
     put16(f, 1);
-    put32(f, RATE);
-    put32(f, RATE * 2);
+    put32(f, rate);
+    put32(f, rate * 2);
     put16(f, 2);
     put16(f, 16);
     fwrite("data", 1, 4, f);
     put32(f, (unsigned)(n * 2));
     for (i = 0; i < n; i++) put16(f, (unsigned)(unsigned short)pcm[i]);
     fclose(f);
-    printf("%s  %.2fs\n", path, (double)n / RATE);
+    printf("%s  %.2fs at %d Hz\n", path, (double)n / rate, rate);
 }
 
 int main(int argc, char **argv)
@@ -60,9 +67,16 @@ int main(int argc, char **argv)
     unsigned datN = 0, songN = 0;
     char name[32];
     short *pcm;
+    long max;
     int n, t;
 
-    if (argc < 3) { puts("song_wav <image.fim> <n> [out.wav]"); return 2; }
+    if (argc < 3) {
+        puts("song_wav <image.fim> <n> [out.wav] [--rate HZ]");
+        return 2;
+    }
+    for (t = 1; t + 1 < argc; t++)
+        if (!strcmp(argv[t], "--rate")) rate = atoi(argv[t + 1]);
+    if (rate < 8000 || rate > 96000) rate = RATE_DEFAULT;
     d = disk_open(argv[1]);
     if (!d) { printf("%s\n", disk_error()); return 1; }
     dat = disk_read_lz(d, "PROG.DAT", &datN);
@@ -80,9 +94,10 @@ int main(int argc, char **argv)
         else
             printf("  track %d: no\n", t);
     }
-    pcm = (short *)calloc(MAX_SAMPLES, sizeof *pcm);
+    max = (long)rate * 200;
+    pcm = (short *)calloc((size_t)max, sizeof *pcm);
     if (!pcm) return 1;
-    n = snd_render_song(dat, datN, song, songN, pcm, MAX_SAMPLES, RATE);
+    n = snd_render_song(dat, datN, song, songN, pcm, (int)max, rate);
     if (n <= 0) { puts("nothing rendered"); return 1; }
     write_wav(argc > 3 ? argv[3] : "song.wav", pcm, n);
     return 0;

@@ -244,6 +244,9 @@ static int command(SndVoice *v, int cmd)
 int snd_tick(SndVoice *v, int *keyedNow)
 {
     if (keyedNow) *keyedNow = 0;
+    v->noteEvent = 0;
+    v->restEvent = 0;
+    v->waitWas = v->wait;
     if (v->done) return 0;
 
     /* sub_0f2d: the note runs until its count reaches zero. */
@@ -277,6 +280,9 @@ int snd_tick(SndVoice *v, int *keyedNow)
         if (v->wait == 0) v->wait = 1;
         if (d & 0x80) {
             v->keyed = 0;
+            v->restEvent = 1;                       /* 0x0ece */
+            v->prevTie = v->tie;
+            v->tie = 0;                             /* 0x0ed1: [si+0xa] = 0 */
             return 1;
         }
         v->keyed = 0;                               /* 0x0f71, sub_111e */
@@ -285,14 +291,20 @@ int snd_tick(SndVoice *v, int *keyedNow)
             return 0;
         }
         n = v->seq[v->pos++];
+        v->prevTie = v->tie;
         v->tie = (n & 0x80) != 0;
         n &= 0x7f;
+        v->noteEvent = 1;
+        /* 0x0ebe: the F-number is rewritten unless the note before this one
+         * was tied and had the same pitch. */
+        v->pitchNew = !(v->prevTie && n == v->note);
         /* A tie onto the same note leaves it alone; anything else keys on. */
         if (!(v->tie && n == v->note)) {
             v->note = n;
             v->keyed = 1;
             if (keyedNow) *keyedNow = 1;
         }
+        v->note = n;
         return 1;
     }
 }
@@ -493,9 +505,21 @@ int snd_song_track(const unsigned char *song, unsigned songSize, int track,
 #define FM_VOL_AT 0x2431            /* what the FM side's 0xf1 maps through */
 #define FM_MASTER 0xff              /* DS:0x3b42, which nothing here changes */
 
+/* sub_1488.  `last` is [si+0x1d], the level the chip was given: the original
+ * works the new one out every time it is called and writes nothing when it
+ * comes out the same, so this keeps that byte too.
+ *
+ * When it is called matters as much as what it writes.  All three volume
+ * commands end in `jmp 0x1488` - 0x11cc sets the level through DS:0x2431,
+ * 0x11d8 adds three and 0x11ea takes three off - and the voice upload at
+ * 0x147c puts 0xff in [si+0x1d] and calls it as well.  On top of that the
+ * interrupt runs it over all three FM voices at 0x0daf whenever [0x3b40]
+ * says a master fade is in progress.  Calling it once at key-on, which is
+ * what this used to do, meant a part that swells or dies away inside a note
+ * stayed wherever it started. */
 static void fm_write_tl(Opn *opn, const unsigned char *progDat,
                         unsigned progDatSize, int ch, int algorithm,
-                        int volume)
+                        int volume, int *last)
 {
     unsigned off = (unsigned)(FM_CARRIER_AT - 0x1000) + (unsigned)(algorithm & 7);
     int mask, tl, s;
@@ -504,6 +528,8 @@ static void fm_write_tl(Opn *opn, const unsigned char *progDat,
     mask = progDat[off];
     if (volume > 0x48) tl = 0x7f;
     else tl = 0x48 - (((0x48 - volume) * FM_MASTER) >> 8);
+    if (tl == *last) return;
+    *last = tl;
     for (s = 0; s < 4; s++)
         if (mask >> s & 1) opn_write(opn, 0x40 + s * 4 + ch, tl);
 }
@@ -531,7 +557,7 @@ int snd_render_song(const unsigned char *progDat, unsigned progDatSize,
     const unsigned char *periods, *fnums;
     unsigned char env[256];         /* writable: command 0xf9 fills it in */
     SndVoice v[6];
-    int live[6], algo[3];
+    int live[6], algo[3], fmTl[3];
     Ssg chip;
     Opn opn;
     int made = 0, ch, mixer;
@@ -555,7 +581,7 @@ int snd_render_song(const unsigned char *progDat, unsigned progDatSize,
         if (ch < 3 && progDatSize > (unsigned)(FM_VOL_AT - 0x1000) + 32)
             v[ch].fmVol = progDat + (FM_VOL_AT - 0x1000);
     }
-    for (ch = 0; ch < 3; ch++) algo[ch] = 0;
+    for (ch = 0; ch < 3; ch++) { algo[ch] = 0; fmTl[ch] = -1; }
     if (!live[0] && !live[1] && !live[2] && !live[3] && !live[4] && !live[5])
         return 0;
 
@@ -581,18 +607,32 @@ int snd_render_song(const unsigned char *progDat, unsigned progDatSize,
             if (v[ch].voiceWanted) {
                 fm_load_voice(&opn, song, songSize, ch, v[ch].timbre, &algo[ch]);
                 v[ch].voiceWanted = 0;
+                fmTl[ch] = 0xff;                     /* 0x147c: [si+0x1d]=0xff */
             }
-            if (keyed) {
-                unsigned short f = snd_fnumber(fnums, v[ch].note, 0);
-
-                opn_write(&opn, 0x28, ch);           /* off before on */
-                opn_write(&opn, 0xa4 + ch, f >> 8);
-                opn_write(&opn, 0xa0 + ch, f & 0xff);
-                fm_write_tl(&opn, progDat, progDatSize, ch, algo[ch],
-                            v[ch].volume);
-                opn_write(&opn, 0x28, 0xf0 | ch);    /* all four operators on */
-            } else if (!v[ch].keyed) {
+            /* Every tick, not only at key-on: see fm_write_tl. */
+            fm_write_tl(&opn, progDat, progDatSize, ch, algo[ch],
+                        v[ch].volume, &fmTl[ch]);
+            /* 0x0e75: a note that is not tied lets go [si+9] ticks early, so
+             * the voice's own release has somewhere to ring. */
+            if (!v[ch].tie && v[ch].tieAt && v[ch].waitWas == v[ch].tieAt)
                 opn_write(&opn, 0x28, ch);
+            if (v[ch].restEvent) {
+                opn_write(&opn, 0x28, ch);           /* 0x0ece */
+            } else if (v[ch].noteEvent) {
+                /* 0x0e89: the note that just ended lets go only if it was not
+                 * tied - and then 0x0ea9 keys on either way.  Writing 0x28
+                 * with the bits already set is what a legato is on this chip:
+                 * the envelope only restarts on a nought-to-one edge, so
+                 * keying off first, which is what this used to do whenever a
+                 * tied note changed pitch, re-attacked every slur. */
+                if (!v[ch].prevTie) opn_write(&opn, 0x28, ch);
+                if (v[ch].pitchNew) {
+                    unsigned short f = snd_fnumber(fnums, v[ch].note, 0);
+
+                    opn_write(&opn, 0xa4 + ch, f >> 8);
+                    opn_write(&opn, 0xa0 + ch, f & 0xff);
+                }
+                opn_write(&opn, 0x28, 0xf0 | ch);
             }
         }
 
