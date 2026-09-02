@@ -204,7 +204,10 @@ const factory = (await import('file://' + patched.replace(/\\/g, '/'))).default;
 let ready = false;
 /* SNDboard 1 is the 26K, which is the YM2203 this game probes for. */
 const config = { fontfile: 'font.bmp', SampleHz: RATE, Latencys: 100, SNDboard: 1,
-                 BEEP_vol: 3, xspeaker: false };
+                 BEEP_vol: 3, xspeaker: false,
+                 /* np2_main leaves early if flagload says DID_CANCEL, which it
+                  * only reaches when this is on. */
+                 e_resume: false, s_resume: false, resume: false };
 const Module = {
   canvas,
   /* node's fetch will not take a file:// URL, and emscripten's instantiateAsync

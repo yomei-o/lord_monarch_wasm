@@ -121,11 +121,22 @@ int snd_start_bytes(SndVoice *v, const unsigned char *seq, int len);
 int snd_song_track(const unsigned char *song, unsigned songSize, int track,
                    unsigned *offOut, unsigned *lenOut);
 
-/* Renders a song's three SSG tracks together.  The three FM tracks are not
- * rendered and are not missing: see the note on snd_render_effect - this
- * program never loads an FM voice, so on this floppy they make no sound.  The
- * voice table the song carries (seven 32-byte blocks from offset 0x20, in the
- * YM2203's own register order) is therefore never uploaded. */
+/* Renders a song's three SSG tracks together.  Its three FM tracks are NOT
+ * rendered, and they are not silent on the real machine - this is the half of
+ * the song that is missing.
+ *
+ * An earlier reading had it that no FM voice was ever uploaded.  That was
+ * wrong, and wrong in a way worth remembering: the upload is at 0x1430, which
+ * tools/lmdis.py never reached.  It follows flow, and the only way into the FM
+ * command handlers is the indirect "jmp word ptr cs:[di]" through the table at
+ * 0x1186, so they sat in the 5.2% of bytes the map does not cover.  What it
+ * does: bx = 0x3f3c + timbre * 32, which is the song's own voice table at file
+ * offset 0x20; twenty-four registers from 0x30 + channel stepping by four,
+ * which is DT/MUL, TL, KS/AR, AM/DR, SR and SL/RR for the four operators; then
+ * the twenty-fifth byte to 0xb0 + channel, whose low three bits are the
+ * algorithm sub_1488 needs.
+ *
+ * So playing these songs properly needs a four-operator OPN core. */
 int snd_render_song(const unsigned char *progDat, unsigned progDatSize,
                     const unsigned char *song, unsigned songSize,
                     short *out, int maxSamples, int sampleRate);
@@ -142,11 +153,8 @@ int snd_tick(SndVoice *v, int *keyedNow);
  * sub_0f2d step it, with the level multiplied by volume + 1 and shifted down
  * eight as sub_10c2 does.
  *
- * Nothing FM is involved, and that is not a shortcut: this program never writes
- * a single FM operator register - not 0x30, 0x50, 0x60, 0x70, 0x80 or 0xb0 - so
- * after a reset every rate is zero, no envelope ever rises, and the FM channels
- * are silent however diligently the driver keys them.  Everything audible on
- * this disk comes out of the SSG.
+ * Nothing FM is involved here because an effect is an SSG sequence.  The songs
+ * are not: see the note on snd_render_song.
  */
 int snd_render_effect(const unsigned char *progDat, unsigned progDatSize,
                       int id, short *out, int maxSamples, int sampleRate);
