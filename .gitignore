@@ -16,3 +16,6 @@
 FONT.ROM*
 font.rom
 *.ROM
+
+# Python leaves these beside the tools.
+__pycache__/

@@ -6,13 +6,15 @@
 #
 # The WASM build bakes the floppy image in with --embed-file, so the page is
 # just two files and the disk reader is the same code as the native build's.
-CC      ?= gcc
+# w64devkit is no longer on this machine; tools/cc.sh finds whatever compiler
+# is (gcc, clang, or MSVC without needing a developer prompt).
+CC      ?= sh tools/cc.sh
 CFLAGS  ?= -O2 -Wall -Wextra -std=c99
 OUT     ?= tmp
 EMCC    ?= C:/prog/emsdk/emsdk/upstream/emscripten/emcc.exe
-# Spelled out rather than "python": Windows ships a Store alias of that name
-# which answers and then does nothing.
-PYTHON  ?= C:/Python313/python.exe
+# This was C:/Python313/python.exe, which is gone from this machine.  The
+# Store's own 3.11 is a real interpreter and does answer to "python".
+PYTHON  ?= python
 IMAGE   ?= $(firstword $(wildcard orig/*.FIM))
 
 CORE = src/disk.c src/gfx.c src/bz.c src/lmz.c

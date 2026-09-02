@@ -131,6 +131,8 @@ static void confirm_at(int cx, int cy);
 static void follow_cursor(void);
 static void panel_move(int dx, int dy);
 static const char *icon_name(int idx);
+static void stars_init(void);
+static void stars_tick(void);
 
 static Screen scr;
 /* The backdrop - the title image, or the frame - is decompressed once per mode
@@ -290,6 +292,140 @@ static int palette_from_terrain(int terrain)
     return 1;
 }
 
+/* ---------------------------------------------------------- the starfield */
+
+/* The title's stars are not in DS7TTL - the disk's three planes hold the logo
+ * and nothing else, all of it inside the top eight rows of a 20x10 grid.  They
+ * are drawn by the interrupt the title installs at INT 0Ah, which on a PC-98 is
+ * IRQ2, the vertical retrace: sub_c6ad (0xc6ad) writes 0x0949 into [0x28], and
+ * the loop is at 0x098c.
+ *
+ * FUN_1000_c946 builds the table.  DS:0x3bb4 holds a count that comes from the
+ * machine's speed setting at DS:0x3c1e - 0x80 at level 3, halved for each level
+ * below - and DS:0x3bb6 marks the end at base + count*8.  Eight bytes a count
+ * means the table is count*2 entries of four:
+ *
+ *     uint16 position   a byte offset into one 32000-byte plane
+ *     uint16 step       0x50, 0xa0 or 0xf0 - one, two or three rows a frame
+ *
+ * so at level 3 there are 256 stars.  The interrupt walks only [0x3bb4] = 128
+ * of them per retrace and remembers where it stopped in DS:0x3bb2, so each star
+ * moves every other frame.
+ *
+ * The dot is four rows of one byte - 0x18, 0x3c, 0x3c, 0x18, a round four-pixel
+ * blob - ORed into the E plane on its own: the interrupt sets DS to 0xe000 and
+ * touches no other segment.  Over the background, index 0, that reads as index
+ * 8, and index 8 is #ddddff, which is what the stars measure in ss0.jpg.
+ *
+ * A star that steps past the end of the plane is respawned at a random byte
+ * column in the top row with a fresh step. */
+#define STAR_MAX   256
+#define STAR_PLANE 32000
+#define STAR_ROW   80              /* bytes across, 640/8 */
+
+static unsigned short starPos[STAR_MAX];
+static unsigned short starStep[STAR_MAX];
+static int starCount;              /* DS:0x3bb4 * 2 */
+static int starWalk;               /* DS:0x3bb4, how many move per frame */
+static int starAt;                 /* DS:0x3bb2 */
+static unsigned short starRnd;     /* DS:0x3c06, the seed sub_9a36 turns */
+static unsigned short starLcg;     /* DS:0x3bb8, the one sub_0a38 turns */
+
+/* sub_9a36: a 16-bit shift register, taps at 15 and 1. */
+static unsigned short star_rand(void)
+{
+    unsigned bit = ((starRnd >> 14) ^ starRnd) & 1;
+
+    starRnd = (unsigned short)((starRnd << 1) | bit);
+    return starRnd;
+}
+
+/* One of the three steps, chosen the way both the fill loop at 0xc993 and the
+ * respawn at 0xa0c do it: one eighth each for the two slow ones. */
+static unsigned short star_step_for(unsigned char r)
+{
+    r &= 7;
+    if (r == 0) return 0x50;
+    if (r < 2) return 0xa0;
+    return 0xf0;
+}
+
+/* sub_0a38, the respawn's own generator.  It returns the old high byte in ah
+ * and a fresh 7-bit value in al; the caller takes the step from ah and the
+ * column from al. */
+static unsigned short star_lcg(void)
+{
+    unsigned short old = starLcg;
+    unsigned short next = (unsigned short)(old * 3 + 1);
+    unsigned char al = (unsigned char)((old & 0xff) + (next >> 8)) & 0x7f;
+
+    starLcg = (unsigned short)((next & 0x00ff) | ((unsigned)al << 8));
+    return (unsigned short)((old & 0xff00) | al);
+}
+
+static void stars_init(void)
+{
+    int i;
+
+    /* DS:0x3c1e is the speed setting the boot menu picks; the shipped default
+     * is 3, which is also what ss0.jpg was taken at ("CPU Power Level 3"). */
+    starWalk = 0x80;
+    starCount = starWalk * 2;
+    starAt = 0;
+    starRnd = 1;
+    starLcg = 1;
+    for (i = 0; i < starCount; i++)
+        starPos[i] = (unsigned short)(star_rand() & 0x7fff);
+    for (i = 0; i < starCount; i++)
+        starStep[i] = star_step_for((unsigned char)star_rand());
+}
+
+/* Draw one star's four rows into the E plane, which here means setting bit 3
+ * of the index.  The original ORs the same bytes into both display pages. */
+static void star_draw(unsigned pos)
+{
+    static const unsigned char row[4] = { 0x18, 0x3c, 0x3c, 0x18 };
+    int i;
+
+    for (i = 0; i < 4; i++) {
+        unsigned o = pos + (unsigned)i * STAR_ROW;
+        int y, x0, b;
+
+        if (o >= STAR_PLANE) return;
+        y = (int)(o / STAR_ROW);
+        x0 = (int)(o % STAR_ROW) * 8;
+        for (b = 0; b < 8; b++)
+            if (row[i] >> (7 - b) & 1)
+                scr.px[(long)y * SCR_W + x0 + b] |= 8;
+    }
+}
+
+static void stars_tick(void)
+{
+    int n;
+
+    for (n = 0; n < starWalk; n++) {
+        unsigned pos = starPos[starAt] + starStep[starAt];
+
+        if (pos >= STAR_PLANE) {
+            /* Off the bottom: back to the top row, at a fresh column.  The
+             * original's `mul 0xa0` on a 7-bit value lands in 0..79. */
+            unsigned short r = star_lcg();
+
+            starStep[starAt] = star_step_for((unsigned char)(r >> 8));
+            starPos[starAt] = (unsigned short)((r & 0x7f) * 0xa0 >> 8);
+        } else {
+            starPos[starAt] = (unsigned short)pos;
+        }
+        star_draw(starPos[starAt]);
+        if (++starAt >= starCount) starAt = 0;
+    }
+    /* The half that is not moving this frame still has to be drawn: the
+     * original leaves them standing in VRAM, and this port repaints the
+     * backdrop every frame. */
+    for (n = 0; n < starCount; n++) star_draw(starPos[n]);
+}
+
 int app_show_title(void)
 {
     const unsigned char *t = dat_at(PAL_TITLE_AT, 48);
@@ -300,15 +436,30 @@ int app_show_title(void)
         return 0;
     }
     gfx_set_palette(&scr, t);
-    /* Index 0 is transparent here.  The stored table has 0 = a blue that never
-     * shows: the game clears the screen first and lays DS7TTL over it, so what
-     * you see behind the logo is index 1, black.  Checked against ss0.jpg -
-     * index 1 and index 3 come out exactly right that way. */
-    gfx_clear(&bg, 1);
-    if (!gfx_load_screen_over(&bg, disk, "DS7TTL", 1)) {
+    /* The background is index 0, and it is black on screen even though the
+     * stored table gives index 0 as 06A, a blue.  Three measurements off
+     * ss0.jpg agree on that and leave no other reading:
+     *
+     *   - 74.5% of the picture above the panel is black, and index 0 is 72.4%
+     *     of those rows in DS7TTL.  Index 1 is 6,630 pixels, 3%.
+     *   - the stars measure #ddddff, which is index 8 exactly - and a star is
+     *     the E plane on its own (the interrupt at 0x098c writes 0xe000 and
+     *     nothing else), so what it lands on has to be index 0.  Over index 1
+     *     it would be index 9, which the table gives as black.
+     *   - the logo measures #008888, index 3, exactly.
+     *
+     * Where the game blanks index 0 has not been found: the palette loop at
+     * 0x7374 writes all sixteen entries out of DS:0x3e20, and the crossfade
+     * at 0xc630 ends by copying all forty-eight bytes of DS:0x24fb into it.
+     * So this is measured, not read, and it is the one thing on this screen
+     * that is. */
+    scr.pal[0][0] = scr.pal[0][1] = scr.pal[0][2] = 0;
+    gfx_clear(&bg, 0);
+    if (!gfx_load_screen(&bg, disk, "DS7TTL")) {
         snprintf(status, sizeof status, "DS7TTL: %s", disk_error());
         return 0;
     }
+    stars_init();
     snprintf(status, sizeof status, "title");
     return 1;
 }
@@ -1103,6 +1254,10 @@ static void outline_icon(int idx, int colour)
 void app_render(void)
 {
     memcpy(scr.px, bg.px, sizeof scr.px);
+    if (mode == APP_MODE_TITLE) {
+        stars_tick();
+        return;
+    }
     if (mode != APP_MODE_MAP) return;
     if (running) app_tick();
     /* Exactly as many squares as the window holds, and not one more: gfx_draw_map

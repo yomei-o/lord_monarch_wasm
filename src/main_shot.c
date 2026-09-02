@@ -109,12 +109,19 @@ int main(int argc, char **argv)
         for (i = 0; i < disk_count(d); i++)
             printf("%s\n", disk_name(d, i));
     } else if (!strcmp(cmd, "title")) {
-        palette_title();
-        gfx_clear(&scr, 0);
-        if (!gfx_load_screen(&scr, d, "DS7TTL")) {
-            fprintf(stderr, "DS7TTL: %s\n", disk_error());
+        /* Through the app, so this is the screen the game shows: the real
+         * palette out of PROG.DAT and the stars the retrace draws.  This used
+         * to load DS7TTL here against a palette eyeballed off ss0.jpg, which
+         * stopped being the truth once the table at DS:0x24fb was found.
+         * --frames runs the retrace on, so the stars fall. */
+        int frames = arg_int(argc, argv, "--frames", 1), k;
+
+        if (!app_init(argv[1])) {
+            fprintf(stderr, "app_init: %s\n", app_status());
             return 1;
         }
+        for (k = 0; k < frames; k++) app_render();
+        scr = *app_screen();          /* save() reads the palette off scr */
         save(argc > 3 ? argv[3] : "title.png", scr.px, SCR_W, SCR_H, SCR_W);
     } else if (!strcmp(cmd, "frame")) {
         const char *name = argc > 4 ? argv[4] : "WAKU";
