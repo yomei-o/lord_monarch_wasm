@@ -12,7 +12,17 @@ https://github.com/yomei-o/loadmonarch_wasm ）とはキャラクターも中身
 * [windepth_wasm](https://github.com/yomei-o/windepth_wasm) — WinDepth (Windows)
 * [super_depth_wasm](https://github.com/yomei-o/super_depth_wasm) — Super Depth (PC-98)
 
-**現状はまだ解析段階で、動くものはありません。**
+**動きます。** ブラウザで遊べて、**音も鳴ります**:
+
+<https://yomei-o.github.io/lord_monarch_wasm/>
+
+キーボードだけで完結します（矢印でカーソル、スペースで決定、Backspace で取消、
+`[` `]` でマップ選択、T でタイトル）。曲はディスクの `FM0nn.DAT` を
+`src/opn.c` の YM2203 で鳴らしています ―― 効果音の SSG だけでなく、
+**FM 3ch ＋ SSG 3ch** の本物の演奏です。
+
+ただし**まだ全部ではありません**。何が入っていて何が残っているかは
+`RESUME.md` の頭にあります。
 
 ## フロッピーの中身
 
