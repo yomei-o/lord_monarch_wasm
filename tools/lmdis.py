@@ -213,7 +213,19 @@ class Prog:
 #           so the low nibble of a unit's byte at +0x0a picks one of sixteen.
 JUMP_TABLES = (
     (0x3a47, 16),
+    # sub_2786 dispatches on [0x34ca], the mode the panel is in: eight
+    # handlers, one per command icon.
+    (0x2a8a, 8),
 )
+
+
+# The game panel's fourteen commands are called through a table that lives in
+# PROG.DAT, not in the code, so nothing in PROG.BIN points at them: they have to
+# be named here.  DS:0x202d, read with tools/lmz.py, holds
+#   1afa 1b5f 1c06 1c36 1c21 1c4d 1cb0 2368 1ee5 1e0f 1ff3 2081 206c 203e
+# which is icon 0..13 in the order sub_4db2 walks them (two columns, seven rows).
+PANEL_HANDLERS = (0x1afa, 0x1b5f, 0x1c06, 0x1c36, 0x1c21, 0x1c4d, 0x1cb0,
+                  0x2368, 0x1ee5, 0x1e0f, 0x1ff3, 0x2081, 0x206c, 0x203e)
 
 
 def seeds_from_tables(data):
@@ -231,7 +243,7 @@ def seeds_from_tables(data):
 def seeds_from_calls(data):
     """Every plausible near-call target, so the sweep starts everywhere the
     code actually calls into rather than only where flow happens to reach."""
-    out = {ENTRY} | seeds_from_tables(data)
+    out = {ENTRY} | seeds_from_tables(data) | set(PANEL_HANDLERS)
     for i in range(len(data) - 3):
         if data[i] == 0xe8:
             t = (i + 3 + struct.unpack_from('<h', data, i + 1)[0]) & 0xffff

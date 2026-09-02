@@ -5,18 +5,64 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* The map window inside WAKU.  Found by measurement rather than guessed: in the
- * assembled WAKU image the columns that are index 0 for essentially the whole
- * height run x = 160..479, and the rows likewise y = 8..391.  320 x 384 is
- * 20 x 24 cells at 16x16, so the view scrolls over the 48 x 48 map - which is
- * what a real-time strategy game wants.  A whole-map overview needs 384 px and
- * does not fit, so that must be its own screen (the MAP button on the panel). */
-#define VIEW_X 160
+/* The window WAKU leaves for the map, measured off the frame itself: the black
+ * rectangle runs x 96..479 and y 8..391, which is 24 by 24 squares of 16.  The
+ * dim copies of the panel icons sit inside it at x 96..168 - the game keeps the
+ * "not selected" artwork in the one place it knows will be painted over on the
+ * first frame, rather than spending memory on a second bank. */
+#define VIEW_X 96
 #define VIEW_Y 8
-#define VIEW_W 320
+#define VIEW_W 384
 #define VIEW_H 384
 
 #define MAP_COUNT 52
+
+/* The panel down the left of WAKU: two columns of 32x32 icons, seven rows.
+ *
+ * The original stores no rectangles at all.  sub_4db2 keeps a single index in
+ * [0x3bee] and moves it with index +- 2 for up and down and bit 0 for left and
+ * right, which is only correct for a 2 x 7 grid; the pixel positions are baked
+ * into the WAKU artwork.  So the geometry here is measured off WAKU (columns at
+ * x 8 and 40, rows at the y below) and the order is the game's own: the table
+ * of fourteen handlers at DS:0x202d, which sub_1aa6 calls as
+ * "call word ptr [bx + 0x202d]".
+ *
+ * The identifications come from the code each handler runs, not from the
+ * pictures:
+ *   GO     leaves the panel and lets the world run (it also loads the chosen
+ *          map through sub_6033 the first time)
+ *   VIEW   sub_1b5f prints DS:0x10f1, which is the string "ＶＩＥＷモード"
+ *   TAX    sub_4e9f reads [side + 0x12], the rate that game_develop taxes at
+ *   INFO   sub_4f76 lays out four rows, one per country
+ *   SPEED  writes [0x3c02], which the cell and unit ticks use as a shift count
+ *   ZOOM   writes [0x3c04] and then reloads the graphics: the tile size
+ *   ALLY   sub_1cb0; the messages are "@Sと@Sは盟約を交わしました｡"
+ *   EDIT   sub_2368, the map editor, whose own panel is WAKU2
+ * and the bottom block is the disk menu, whose artwork reads LOAD, MAP, SAVE,
+ * FORM, CRT/LCD, DRIVE. */
+#define ICON_SIZE 32
+enum {
+    ICON_GO, ICON_VIEW, ICON_TAX, ICON_INFO, ICON_SPEED, ICON_ZOOM,
+    ICON_ALLY, ICON_EDIT, ICON_LOAD, ICON_MAP, ICON_SAVE, ICON_FORM,
+    ICON_CRT, ICON_DRIVE, ICON_COUNT
+};
+static const short iconCol[2] = {8, 40};
+static const short iconRow[7] = {24, 56, 120, 184, 248, 280, 312};
+
+/* Which of the fourteen this port actually does something with.  The rest are
+ * drawn dim, the way the original draws a command you cannot use. */
+static const unsigned char iconLive[ICON_COUNT] = {
+    1, 1, 1, 1, 1, 1, 0, 0,        /* GO VIEW TAX INFO SPEED ZOOM ALLY EDIT */
+    0, 1, 0, 0, 0, 0               /* LOAD MAP SAVE FORM CRT DRIVE */
+};
+
+/* The "not selected" artwork for the eight game icons, which WAKU carries at
+ * x 96 and 128 on the same rows - inside the map window, so it survives exactly
+ * until the first map is drawn over it.  Snapshotting it in app_init is the
+ * port's version of the original reading it out of VRAM before it goes. */
+#define DIM_ICONS 8
+static unsigned char dimIcon[DIM_ICONS][ICON_SIZE * ICON_SIZE];
+static int haveDim;
 
 /* PROG.DAT, unpacked, as the game has it at DS:1000.  It holds the palette
  * tables, the message strings and the filename table, so the port reads them
@@ -35,6 +81,9 @@ static const unsigned char *dat_at(unsigned addr, unsigned need)
     return progDat + off;
 }
 
+static void snapshot_dim_icons(void);
+static int screen_to_icon(int x, int y);
+
 static Screen scr;
 /* The backdrop - the title image, or the frame - is decompressed once per mode
  * change rather than per frame: WAKU is three or four BZ streams of 32000 bytes
@@ -49,6 +98,8 @@ static int showCastles;
 static int running;
 static long ticks;
 static int hoverX = -1, hoverY = -1;      /* in cells */
+static int hoverIcon = -1;                /* a panel index, 0..13 */
+static int viewMode;                      /* the VIEW icon: scroll, do not pick */
 static int selected = -1;                 /* a unit slot */
 static int mode = APP_MODE_TITLE;
 static int mapNumber, tileSize = 16, scrollX, scrollY;
@@ -146,6 +197,7 @@ int app_show_map(int number, int size)
     gfx_clear(&bg, 0);
     if (!gfx_load_screen(&bg, disk, "WAKU"))
         snprintf(status, sizeof status, "WAKU: %s", disk_error());
+    snapshot_dim_icons();
     mode = APP_MODE_MAP;
     mapNumber = number;
     tileSize = size;
@@ -168,6 +220,32 @@ int app_show_map(int number, int size)
     return 1;
 }
 
+/* Take the dim artwork out of the map window before anything is drawn over it.
+ * WAKU keeps it at x 96 and 128 on the same four rows as the game icons. */
+static void snapshot_dim_icons(void)
+{
+    int i;
+    for (i = 0; i < DIM_ICONS; i++) {
+        int sx = 96 + (i % 2) * 32, sy = iconRow[i / 2], y;
+        for (y = 0; y < ICON_SIZE; y++)
+            memcpy(dimIcon[i] + (size_t)y * ICON_SIZE,
+                   bg.px + (size_t)(sy + y) * SCR_W + sx, ICON_SIZE);
+    }
+    haveDim = 1;
+}
+
+/* Which icon a screen point is on, or -1. */
+static int screen_to_icon(int x, int y)
+{
+    int c, r;
+    for (r = 0; r < 7; r++)
+        for (c = 0; c < 2; c++)
+            if (x >= iconCol[c] && x < iconCol[c] + ICON_SIZE &&
+                y >= iconRow[r] && y < iconRow[r] + ICON_SIZE)
+                return r * 2 + c;
+    return -1;
+}
+
 static void scroll_by(int dx, int dy)
 {
     int maxX = MAP_W - VIEW_W / bank.size;
@@ -181,6 +259,72 @@ static void scroll_by(int dx, int dy)
     if (scrollY < 0) scrollY = 0;
     if (scrollX > maxX) scrollX = maxX;
     if (scrollY > maxY) scrollY = maxY;
+}
+
+/* Press one of the panel's fourteen.  The ones this port cannot do say so
+ * rather than doing nothing, because a button that silently ignores you is
+ * indistinguishable from a broken hit test. */
+static void icon_press(int idx)
+{
+    if (mode != APP_MODE_MAP) return;
+    switch (idx) {
+    case ICON_GO:
+        /* The original's GO leaves the panel and the world starts moving. */
+        running = !running;
+        snprintf(status, sizeof status, "GO: %s",
+                 running ? "running" : "paused");
+        break;
+    case ICON_VIEW:
+        viewMode = !viewMode;
+        snprintf(status, sizeof status, "VIEW mode %s (%s)",
+                 viewMode ? "on" : "off",
+                 viewMode ? "the arrows scroll, clicks do not select"
+                          : "clicks select again");
+        break;
+    case ICON_TAX: {
+        /* [side + 0x12].  It drifts on its own towards 18 - funds/256 once the
+         * treasury is full, so a setting here is a nudge, not a lock. */
+        Side *me = &game.side[game.human < 0 ? 0 : game.human];
+        me->rate = (unsigned char)(me->rate >= 17 ? 1 : me->rate + 1);
+        snprintf(status, sizeof status, "tax rate %d/256 per square",
+                 me->rate);
+        break;
+    }
+    case ICON_INFO: {
+        /* The four rows sub_4f76 lays out. */
+        int i, n = 0;
+        n += snprintf(status + n, sizeof status - n, "INFO ");
+        for (i = 0; i < PLAYERS; i++) {
+            int plain, claimed;
+            game_land_count(&game, i, &plain, &claimed);
+            n += snprintf(status + n, sizeof status - n,
+                          " %d:%d/%lu%s", i, plain + claimed,
+                          game.side[i].funds, game.side[i].alive ? "" : "*");
+        }
+        break;
+    }
+    case ICON_SPEED:
+        game.speed = (game.speed + 1) % 3;
+        snprintf(status, sizeof status, "speed %s",
+                 game.speed == 0 ? "fast" :
+                 game.speed == 1 ? "normal" : "slow");
+        break;
+    case ICON_ZOOM:
+        app_show_map(mapNumber,
+                     tileSize == 8 ? 16 : tileSize == 16 ? 32 : 8);
+        break;
+    case ICON_MAP:
+        app_show_map(mapNumber + 1 >= MAP_COUNT ? 0 : mapNumber + 1, tileSize);
+        break;
+    default:
+        snprintf(status, sizeof status,
+                 "%s is in the original but not in this port yet",
+                 idx == ICON_ALLY  ? "ALLY"  : idx == ICON_EDIT ? "EDIT" :
+                 idx == ICON_LOAD  ? "LOAD"  : idx == ICON_SAVE ? "SAVE" :
+                 idx == ICON_FORM  ? "FORM"  : idx == ICON_CRT  ? "CRT/LCD" :
+                 "DRIVE");
+        break;
+    }
 }
 
 void app_key(int key)
@@ -275,15 +419,32 @@ void app_hover(int x, int y)
     } else {
         hoverX = hoverY = -1;
     }
+    hoverIcon = mode == APP_MODE_MAP ? screen_to_icon(x, y) : -1;
 }
 
 int app_selected(void) { return selected; }
 
 void app_click(int x, int y)
 {
-    int cx, cy, index;
+    int cx, cy, index, icon;
 
+    icon = mode == APP_MODE_MAP ? screen_to_icon(x, y) : -1;
+    if (icon >= 0) {
+        icon_press(icon);
+        return;
+    }
+    if (mode == APP_MODE_TITLE) {
+        app_show_map(0, tileSize);
+        return;
+    }
     if (!screen_to_cell(x, y, &cx, &cy)) return;
+    if (viewMode) {
+        /* VIEW mode: the click centres the window instead of selecting. */
+        scrollX = cx - VIEW_W / bank.size / 2;
+        scrollY = cy - VIEW_H / bank.size / 2;
+        scroll_by(0, 0);
+        return;
+    }
     index = game_cell_index(cx, cy);
 
     if (selected < 0) {
@@ -296,6 +457,29 @@ void app_click(int x, int y)
      * amount to.  If it cannot get there the selection just clears. */
     game_order_move(&game, selected, cx, cy);
     selected = -1;
+}
+
+/* Copy the dim artwork over an icon, and outline one. */
+static void draw_dim_icon(int idx)
+{
+    int x = iconCol[idx % 2], y = iconRow[idx / 2], row;
+    if (!haveDim || idx >= DIM_ICONS) return;
+    for (row = 0; row < ICON_SIZE; row++)
+        memcpy(scr.px + (size_t)(y + row) * SCR_W + x,
+               dimIcon[idx] + (size_t)row * ICON_SIZE, ICON_SIZE);
+}
+
+static void outline_icon(int idx, int colour)
+{
+    int x = iconCol[idx % 2], y = iconRow[idx / 2], i;
+    for (i = 0; i < ICON_SIZE; i++) {
+        scr.px[(size_t)y * SCR_W + x + i] = (unsigned char)colour;
+        scr.px[(size_t)(y + ICON_SIZE - 1) * SCR_W + x + i] =
+            (unsigned char)colour;
+        scr.px[(size_t)(y + i) * SCR_W + x] = (unsigned char)colour;
+        scr.px[(size_t)(y + i) * SCR_W + x + ICON_SIZE - 1] =
+            (unsigned char)colour;
+    }
 }
 
 void app_render(void)
@@ -328,5 +512,14 @@ void app_render(void)
         for (i = 0; i < PLAYERS; i++)
             if (game.side[i].alive)
                 outline_cell(game.side[i].pos & 0xff, game.side[i].pos >> 8, 7);
+    }
+    /* The panel last, so nothing can be drawn over it. */
+    {
+        int i;
+        for (i = 0; i < DIM_ICONS; i++)
+            if (!iconLive[i]) draw_dim_icon(i);
+        if (running) outline_icon(ICON_GO, 6);
+        if (viewMode) outline_icon(ICON_VIEW, 6);
+        if (hoverIcon >= 0) outline_icon(hoverIcon, iconLive[hoverIcon] ? 7 : 2);
     }
 }

@@ -47,6 +47,57 @@ LordMonarch().then((m) => {
   for (let i = 0; i < 14; i++) m._lm_key(KEY.NEXT_MAP);
   const map14 = dump(m, 'wasm_map014.raw');
 
+  // The panel.  Two columns at x 8 and 40, seven rows, 32x32 - the geometry in
+  // app.c.  Pressing one has to change what lm_status says, because that is the
+  // only thing a headless run can see; a hit test that misses would leave the
+  // status on the map line.
+  m._lm_key(KEY.TILE16);
+  const icon = (idx) => {
+    const col = [8, 40][idx % 2], row = [24, 56, 120, 184, 248, 280, 312][idx >> 1];
+    m._lm_click(col + 16, row + 16);
+    return m.UTF8ToString(m._lm_status());
+  };
+  let panelFailed = 0;
+  const want = [
+    [0, /^GO: /,            'GO'],
+    [1, /^VIEW mode/,       'VIEW'],
+    [2, /^tax rate/,        'TAX'],
+    [3, /^INFO/,            'INFO'],
+    [4, /^speed/,           'SPEED'],
+    [6, /ALLY is in the original/, 'ALLY (not ported)'],
+    [7, /EDIT is in the original/, 'EDIT (not ported)'],
+    [11, /FORM is in the original/, 'FORM (not ported)'],
+  ];
+  for (const [idx, re, what] of want) {
+    const got = icon(idx);
+    const ok = re.test(got);
+    if (!ok) panelFailed++;
+    console.log(`${ok ? 'ok  ' : 'FAIL'}  icon ${idx} ${what}: ${got}`);
+  }
+  // ZOOM and MAP reload the view, so they report a map line rather than their
+  // own message; check the thing they change instead.
+  const before = m.UTF8ToString(m._lm_status());
+  icon(5);
+  const zoomed = m.UTF8ToString(m._lm_status());
+  const zoomOk = /32x32/.test(zoomed) || /8x8/.test(zoomed);
+  if (!zoomOk) panelFailed++;
+  console.log(`${zoomOk ? 'ok  ' : 'FAIL'}  icon 5 ZOOM: ${zoomed}`);
+  icon(9);
+  const mapped = m.UTF8ToString(m._lm_status());
+  const mapOk = /^B_015[.]MAP/.test(mapped);
+  if (!mapOk) panelFailed++;
+  console.log(`${mapOk ? 'ok  ' : 'FAIL'}  icon 9 MAP: ${mapped}`);
+  // A point that is not on any icon must not press one.
+  m._lm_click(300, 200);
+  const off = m.UTF8ToString(m._lm_status());
+  const offOk = off === mapped;
+  if (!offOk) panelFailed++;
+  console.log(`${offOk ? 'ok  ' : 'FAIL'}  a click on the map presses nothing`);
+  if (panelFailed) {
+    console.error(`${panelFailed} panel failure(s)`);
+    process.exit(1);
+  }
+
   const distinct = (b) => new Set(
     Array.from({length: b.length / 4}, (_, i) => b.readUInt32LE(i * 4))).size;
   console.log(`distinct colours: title ${distinct(title)}, ` +
