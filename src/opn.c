@@ -34,19 +34,23 @@
 
 enum { OPN_ATT, OPN_DEC, OPN_SUS, OPN_REL, OPN_OFF };
 
-/* How deep a modulator goes.  An operator here puts out -1..1, and this is how
- * many turns of the next one's phase a full-scale modulator swings.  On the
- * chip it is a shift: NP2's opngen adds the modulator's level to the phase
- * counter shifted by (FREQ_BITS - (TL_BITS - 2)), and MAME's fm.c adds the raw
- * operator output shifted right by one into a phase index of 1024 a turn.
+/* How deep a modulator goes: an operator here puts out -1..1, and this is how
+ * many turns of the next one's phase a modulator at full scale swings.
  *
- * These two numbers decide the whole character of a voice, and they are the
- * part of this core that is fitted rather than read.  Too much and every voice
- * turns to noise, which is what the first cut did: feedback came out at two
- * whole turns on a voice asking for FB 7, and FM001's first voice asks for
- * exactly that. */
-#define MOD_TURNS 1.0           /* a full-scale modulator, one turn */
-#define FB_TURNS  0.5           /* the most feedback FB 7 can ask for */
+ * Four, and the number matters more than it looks.  A modulator's output on
+ * the chip reaches about 2^13 and the phase index is 1024 to a turn, with the
+ * modulation taken as output >> 1 - so a full-scale modulator swings four
+ * whole turns.  That sounds like far too much until you look at what a voice
+ * actually asks for: FM001's first has total levels of 25, 39 and 40 on its
+ * three modulators, which are gains of 0.115, 0.035 and 0.031.  At one turn
+ * those modulate by three to eleven hundredths of a turn, which is not FM at
+ * all - it is a sine with a wobble, and that is exactly what it sounded like.
+ * At four turns they land between 0.12 and 0.46, which is an FM timbre.
+ *
+ * The lesson for whoever changes this next: judge the depth against the total
+ * levels in a real voice, not against a full-scale operator, because nothing
+ * in these songs ever runs a modulator at full scale. */
+#define MOD_TURNS 4.0
 
 /* 1024 units of attenuation is 96 dB, which is the chip's envelope range. */
 #define ATT_MAX 1023.0
@@ -259,7 +263,7 @@ static double channel_sample(OpnCh *c, double inc[OPN_OPS])
     /* Operator 1 modulates itself with the average of its last two outputs.
      * The register is 0..7 and the chip turns it into a shift, so each step is
      * a halving: 7 is the most and 0 is none at all. */
-    fb = c->feedback ? (c->op[0].prev + c->op[0].out) / 2.0 * FB_TURNS /
+    fb = c->feedback ? (c->op[0].prev + c->op[0].out) / 2.0 * MOD_TURNS /
                        (double)(1 << (7 - c->feedback))
                      : 0.0;
 
