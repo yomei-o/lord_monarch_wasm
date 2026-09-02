@@ -30,8 +30,16 @@ int game_move(Game *g, int slot, int dir)
     }
     from = game_cell_index(x, y);
     to = game_cell_index(nx, ny);
-    if (g->cell[to].tile >= CELL_IMPASSABLE || g->occupant[to] >= 0) {
+    if (g->cell[to].tile >= CELL_IMPASSABLE) {      /* 0x37b6 */
         if (u->retry) u->retry--;       /* 0x37ec counts down and gives up */
+        return 0;
+    }
+    if (game_bump(g, slot, to)) return 0;           /* 0x37bd */
+    if (u->flags & 0x80) return 0;                  /* it died trading blows */
+    if (game_merge(g, slot, to)) return 0;          /* 0x37c3 */
+    if (u->flags & 0x80) return 0;
+    if (g->occupant[to] >= 0) {                     /* 0x37c9 */
+        if (u->retry) u->retry--;
         return 0;
     }
     g->occupant[to] = (short)slot;
@@ -143,6 +151,7 @@ void game_init(Game *g, const Map *m)
         if (g->cell[i].tile != CELL_NEUTRAL) continue;
         g->cell[i].tile = 0;
         g->cell[i].amount = CELL_START_AMOUNT;
+    g->stamp++;
         place(g, i, 4, UNIT_STATE_NEUTRAL, CELL_FULL_AMOUNT);
     }
     g->side[4].ally = 0x80;
@@ -190,11 +199,24 @@ int game_unit_count(const Game *g, int side)
 #define DIST_WALL 0xffffu
 #define DIST_OPEN 0u
 
+/* sub_4814 remembers the position it last flooded from in [0x32bb] and skips
+ * the work when it is asked again for the same one.  Without that cache every
+ * unit's decision costs a sweep of the whole board, which is most of the
+ * program's time. */
+static int fillFrom = -1;
+static long fillStamp = -1;
+
+void game_forget_distances(void) { fillFrom = -1; }
+
 static unsigned short *fill_distances(Game *g, int from)
 {
     static unsigned short dist[MAP_W * MAP_H];
     static int queue[MAP_W * MAP_H];
     int head = 0, tail = 0, i;
+
+    if (from == fillFrom && fillStamp == g->stamp) return dist;
+    fillFrom = from;
+    fillStamp = g->stamp;
 
     for (i = 0; i < MAP_W * MAP_H; i++)
         dist[i] = g->cell[i].tile >= CELL_IMPASSABLE ? DIST_WALL : DIST_OPEN;
@@ -373,6 +395,18 @@ static void tick_land(Game *g, int index, int side)
 {
     int same, empty, last, gain, v, n;
 
+    /* 0x34b0: if one of that side's own units is standing here it takes what
+     * the square holds, leaving 1 - which is how a unit builds up the thousand
+     * it needs before it will march on a lord. */
+    {
+        int who = g->occupant[index];
+        if (who >= 0 && g->unit[who].side == side &&
+            !(g->unit[who].flags & 0x82)) {
+            game_pick_up(g, who);
+            return;                             /* 0x34cc, nothing else */
+        }
+    }
+
     game_neighbours(g, index, (unsigned char)(CELL_TERRITORY0 + side),
                     &same, &empty, &last);
     gain = same + 1;                        /* `inc dh`, then it is used twice */
@@ -388,16 +422,45 @@ static void tick_land(Game *g, int index, int side)
     }
     if (empty > 0 && last >= 0) {                       /* 0x3454 */
         g->cell[last].tile = (unsigned char)(CELL_TERRITORY0 + 4 + side);
+    g->stamp++;
         g->cell[last].amount = CELL_START_AMOUNT;
     }
     if (g->cell[index].amount >= CELL_FULL_AMOUNT)       /* 0x3460 */
         land_produces(g, index, side);
 }
 
+/* The first half of sub_3332, over the four sides.  A side's collection rate
+ * drifts one step a turn towards `18 - funds / 256`, never below 1 - so a rich
+ * side taxes its ground gently and a poor one hard.  The human's side is left
+ * alone (0x3352 compares against [0x3c00]).
+ */
+static void tick_sides(Game *g)
+{
+    int side;
+
+    for (side = 0; side < PLAYERS; side++) {
+        Side *s = &g->side[side];
+        int want;
+
+        if (s->flag & 8) continue;              /* 0x334c, out of play */
+        if (side == g->human) continue;         /* 0x3352 */
+        if (s->funds > 0xffff) {                /* 0x3356, the high word */
+            want = 1;
+        } else {
+            want = 0x12 - (int)((s->funds >> 8) & 0xff);
+            if (want < 1) want = 1;             /* 0x3365 */
+        }
+        if (s->rate > want) s->rate--;          /* 0x336e */
+        else if (s->rate < want) s->rate++;     /* 0x3373 */
+    }
+}
+
 void game_tick_cells(Game *g)
 {
     int todo = (0x90 >> (g->speed & 7)) - 1;
     int at = g->cellCursor;
+
+    tick_sides(g);
 
     if (todo < 1) todo = 1;
     while (todo--) {
@@ -464,9 +527,16 @@ int game_collect(Game *g, int side)
 
 /* ------------------------------------------------------------ what units do */
 
-/* sub_ae9e: is one of the eight neighbours this side's productive land, or its
- * ally's?  Developing needs the ground to stay joined up. */
-static int joined_up(const Game *g, int index, int side)
+/* sub_ae9e says whether any of the eight neighbours is this side's productive
+ * land or its ally's - and it sets the carry when one **is**, which the callers
+ * treat as a refusal (`jb` to the failure exit in sub_3ec7, `jae` to accept in
+ * sub_b876).  So a square can only be developed when none of its neighbours is
+ * already the side's own productive land: the ground spreads out with gaps
+ * rather than filling in solidly.  That is exactly the `08 0c 08` pattern the
+ * maps start with, and it is why the twenty-four maps holding no 0x08 at all
+ * still work.
+ */
+static int neighbour_is_ours(const Game *g, int index, int side)
 {
     static const int dx[8] = { 0,  1, 1, 1, 0, -1, -1, -1 };
     static const int dy[8] = {-1, -1, 0, 1, 1,  1,  0, -1 };
@@ -486,6 +556,13 @@ static int joined_up(const Game *g, int index, int side)
     return 0;
 }
 
+/* The test the callers actually make: a square is open to development only
+ * while none of its neighbours is the side's own ground. */
+static int can_develop_here(const Game *g, int index, int side)
+{
+    return !neighbour_is_ours(g, index, side);
+}
+
 /* sub_abc7: take from the side's purse, or fail. */
 static int spend(Game *g, int side, unsigned long cost)
 {
@@ -497,6 +574,8 @@ static int spend(Game *g, int side, unsigned long cost)
 /* sub_a9ca, for an ordinary unit: it is finished with.  The lord's death does a
  * great deal more - it hands the side's land to whoever killed it - and is not
  * ported yet. */
+static void unit_spent(Game *g, int slot);
+
 static void unit_spent(Game *g, int slot)
 {
     Unit *u = &g->unit[slot];
@@ -521,12 +600,13 @@ int game_develop(Game *g, int slot)
         int c = tile - (CELL_TERRITORY0 + 4);
         if (c < 0 || c >= PLAYERS) return 0;
     }
-    if (!joined_up(g, index, u->side)) return 0;
+    if (!can_develop_here(g, index, u->side)) return 0;   /* sub_ae9e */
     if (!spend(g, u->side, DEVELOP_COST)) return 0;
 
     take = u->carrying;
     if (take > CELL_FULL_AMOUNT) take = CELL_FULL_AMOUNT;   /* 0x3ef7 */
     g->cell[index].tile = (unsigned char)(CELL_TERRITORY0 + u->side);
+    g->stamp++;
     g->cell[index].amount = (unsigned char)((take >> 1) + 1);
     u->carrying = (unsigned short)(u->carrying - take);
     if (u->carrying == 0) unit_spent(g, slot);
@@ -577,89 +657,349 @@ static int direction_towards(const Game *g, int index, unsigned char tile)
  * What is decoded is everything the worker then does with the answer, so this
  * stands in for the choice and nothing else.
  */
-static int worker_target(const Game *g, int slot)
-{
-    const Unit *u = &g->unit[slot];
-    int here = game_cell_index(u->pos & 0xff, u->pos >> 8);
-    int hx = here % MAP_W, hy = here / MAP_W;
-    int best = -1, bestD = 0, i;
+/* Is this square one this side could develop?  Plain ground or anybody's
+ * claimed land, and joined on to our own - which is what sub_3ec7 and sub_ae9e
+ * between them require. */
+static int allied(const Game *g, int a, int b);
+static int pick_job(Game *g, int slot);
+static void tick_dying(Game *g, int slot);
+static void unit_lord(Game *g, int slot);
 
-    for (i = 0; i < MAP_W * MAP_H; i++) {
-        int x = i % MAP_W, y = i / MAP_W, d, c;
-        unsigned char t = g->cell[i].tile;
-        if (x < MAP_MIN || x > MAP_MAX || y < MAP_MIN || y > MAP_MAX) continue;
-        if (g->occupant[i] >= 0) continue;
-        if (t != 0) {
-            c = t - (CELL_TERRITORY0 + 4);
-            if (c < 0 || c >= PLAYERS) continue;
-        }
-        if (!joined_up(g, i, u->side)) continue;
-        d = (x - hx) * (x - hx) + (y - hy) * (y - hy);
-        if (best < 0 || d < bestD) {
-            best = i;
-            bestD = d;
-        }
-    }
-    return best;
-}
-
-/* State 1, at 0x3998: develop the square you stand on.  Failing that the
- * original spends its action budget on sub_4881, which picks a target, checks
- * the unit carries at least twice the distance, paths to it and moves the unit
- * to state 2; when the budget is gone it just steps towards its own land with
- * sub_af42.  Both of those are here, with the target choice standing in for
- * sub_4814 / sub_bc56.
- */
-static void unit_worker(Game *g, int slot)
+/* sub_41b5: a unit standing on somebody else's claimed land wipes it back to
+ * plain ground.  Its own and its ally's are left alone. */
+static void wipe_foreign_land(Game *g, int slot)
 {
     Unit *u = &g->unit[slot];
-    int index, dir, target;
+    int index = game_cell_index(u->pos & 0xff, u->pos >> 8);
+    int c = g->cell[index].tile - (CELL_TERRITORY0 + 4);
+
+    if (c < 0 || c >= PLAYERS) return;              /* not claimed land */
+    if (c == u->side) return;
+    if (g->side[u->side].ally == c) return;
+    g->cell[index].tile = 0;
+    g->cell[index].amount = CELL_START_AMOUNT;      /* 0x6400 */
+}
+
+/* Is this square a job for this side?  sub_b876 accepts, in its own order:
+ *
+ *   tile 0, or 0x0c..0x0f (anybody's claimed land), provided one of the eight
+ *   neighbours is already this side's or its ally's productive land - that is
+ *   sub_ae9e, the same test developing itself makes
+ *   tile 1..4 - the auto-tiled ground
+ *   tile 0x08..0x0b belonging to somebody else - which is how a side comes to
+ *   walk into its neighbours; there is no separate decision to attack
+ *
+ * Its own and its ally's productive land are skipped: there is nothing to do
+ * there.
+ */
+static int job_here(const Game *g, int index, int side)
+{
+    unsigned char t = g->cell[index].tile;
+    unsigned char ally = g->side[side].ally;
+    int x = index % MAP_W, y = index / MAP_W;
+
+    if (x < MAP_MIN || x > MAP_MAX || y < MAP_MIN || y > MAP_MAX) return 0;
+    if (t == CELL_TERRITORY0 + side) return 0;                  /* 0xb8bc */
+    if (ally < PLAYERS && t == CELL_TERRITORY0 + ally) return 0;/* 0xb8c0 */
+    if (t == 0 || (t >= CELL_TERRITORY0 + 4 && t < CELL_TERRITORY0 + 8))
+        return can_develop_here(g, index, side);                /* 0xb8d3 */
+    if (t >= 1 && t < 5) return 1;                              /* 0xb8da */
+    if (t >= CELL_TERRITORY0 && t < CELL_TERRITORY0 + PLAYERS) return 1;
+    return 0;
+}
+
+/* The state a job asks for, from the tile, at 0x443d.  0 if the tile is not a
+ * job at all. */
+static int job_state(unsigned char tile)
+{
+    if (tile == 0) return 5;
+    if (tile >= CELL_TERRITORY0 + 4 && tile < CELL_TERRITORY0 + 8) return 5;
+    if (tile >= CELL_TERRITORY0 && tile < CELL_TERRITORY0 + 4) return 4;
+    if (tile >= 1 && tile < 5) return 8;
+    if (tile == 5) return 11;
+    return 0;
+}
+
+/* sub_4420 with sub_b876 inside it: flood the distances out from the unit, then
+ * take the nearest job - the original scores each candidate as its distance
+ * plus eight and keeps the smallest under 512.  The unit must be carrying at
+ * least twice the distance for the trip to be worth making (0x4438).
+ *
+ * Returns 1 if the unit came away with a job and a path.
+ */
+static int pick_job(Game *g, int slot)
+{
+    Unit *u = &g->unit[slot];
+    int here = game_cell_index(u->pos & 0xff, u->pos >> 8);
+    unsigned short *dist = fill_distances(g, here);
+    int best = -1, bestCost = 0x200, i, state, len;
+
+    for (i = 0; i < MAP_W * MAP_H; i++) {
+        int cost;
+        if (dist[i] == DIST_WALL || dist[i] == DIST_OPEN) continue;
+        cost = dist[i] + 8;                         /* 0xb8af */
+        if (cost >= bestCost) continue;             /* 0xb8b4 */
+        if (!job_here(g, i, u->side)) continue;
+        best = i;
+        bestCost = cost;
+    }
+    if (best < 0) return 0;
+    if (dist[best] - 1 >= PATH_STEPS) return 0;     /* 0x4431 */
+    if (u->carrying < (unsigned short)((dist[best] - 1) * 2)) return 0;
+    state = job_state(g->cell[best].tile);
+    if (!state) return 0;
+
+    len = game_path_to(g, slot, best % MAP_W, best / MAP_W);
+    u->state = (unsigned char)((u->state & 0xd0) | state);      /* 0x446f */
+    u->home = (unsigned short)(((best / MAP_W) << 8) | (best % MAP_W));
+    u->retry = 4;                                               /* 0x4475 */
+    if (len <= 0) u->link = 0xff;
+    return 1;
+}
+
+/* State 8, sub_3f2a: rough ground (tiles 1..4) is chipped away with half of
+ * what the unit carries - which it does not spend - and becomes plain ground
+ * holding 100 once its own amount runs out.  A unit carrying 512 or more
+ * clears it in one go, because the original tests the high byte of carried / 2.
+ *
+ * Returns 1 while there is still work in the square.
+ */
+int game_clear(Game *g, int slot)
+{
+    Unit *u = &g->unit[slot];
+    int index = game_cell_index(u->pos & 0xff, u->pos >> 8);
+    unsigned char t = g->cell[index].tile;
+    int power = u->carrying >> 1;
+
+    if (t < 1 || t >= 5) return 0;                  /* 0x3f30 */
+    if (power < 256 && g->cell[index].amount > (power & 0xff)) {
+        g->cell[index].amount =
+            (unsigned char)(g->cell[index].amount - (power & 0xff));
+        return 1;                                   /* 0x3f57 */
+    }
+    g->cell[index].tile = 0;                        /* 0x3f45 */
+    g->stamp++;
+    g->cell[index].amount = CELL_START_AMOUNT;
+    return 0;
+}
+
+/* State 4, 0x38eb by way of sub_b037: look up, down, left and right for a
+ * square that is passable and is **not** this side's or its ally's ground, and
+ * step that way.  It is what pushes a unit off its own land and into whatever
+ * is next to it - and since walking into somebody is a fight, it is also how
+ * two sides come to blows.  There is no decision to attack anywhere in the
+ * game; this is it.
+ *
+ * Returns 1 if it found somewhere to go.
+ */
+static int state_outward(Game *g, int slot)
+{
+    static const int dir[4] = {DIR_UP, DIR_DOWN, DIR_LEFT, DIR_RIGHT};
+    Unit *u = &g->unit[slot];
+    int index = game_cell_index(u->pos & 0xff, u->pos >> 8);
+    int x = index % MAP_W, y = index / MAP_W, k;
+    unsigned char mine = (unsigned char)(CELL_TERRITORY0 + u->side);
+    unsigned char ally = g->side[u->side].ally;
+
+    for (k = 0; k < 4; k++) {
+        int nx = x + GAME_DX[dir[k]], ny = y + GAME_DY[dir[k]], n;
+        unsigned char t;
+        if (nx < MAP_MIN || nx > MAP_MAX || ny < MAP_MIN || ny > MAP_MAX)
+            continue;
+        n = ny * MAP_W + nx;
+        t = g->cell[n].tile;
+        if (t >= CELL_IMPASSABLE) continue;         /* 0xb03e */
+        if (t == mine) continue;                    /* 0xb042 */
+        if (ally < PLAYERS && t == CELL_TERRITORY0 + ally) continue;
+        game_move(g, slot, dir[k]);
+        return 1;
+    }
+    return 0;
+}
+
+/* A very small pseudo-random source, standing in for sub_9a36 / sub_9a24.  The
+ * original seeds itself from the clock at startup and stirs the state once per
+ * tick; the sequence itself is not what matters here, only that the choices in
+ * sub_4881 come up in roughly the documented proportions.
+ */
+static unsigned long rngState = 1;
+
+static int roll(int range)
+{
+    rngState = rngState * 1103515245u + 12345u;
+    return (int)((rngState >> 16) % (unsigned)range);
+}
+
+/* sub_46d3: a unit carrying a thousand or more goes for the nearest enemy
+ * lord.  This is checked before the random choice below, so a rich unit always
+ * marches - there is no decision to attack anywhere, just this rule.
+ *
+ *   the lord has to be within 496 squares and the unit must carry twice that
+ *   on its castle, the unit needs more than three times what the lord carries
+ *   off it, more than the lord carries
+ */
+static int pick_assault(Game *g, int slot)
+{
+    Unit *u = &g->unit[slot];
+    unsigned short *dist;
+    int here = game_cell_index(u->pos & 0xff, u->pos >> 8);
+    int best = -1, bestD = 0x1f0, i;
+
+    if (u->carrying < 0x3e8) return 0;              /* 0x4889 */
+    dist = fill_distances(g, here);
+    for (i = 0; i < UNIT_SLOTS; i++) {
+        Unit *v = &g->unit[i];
+        int cell, d;
+        if (v->flags & 0x80) continue;
+        if (!(v->state & 0x20)) continue;           /* 0x46ef, lords only */
+        if (allied(g, u->side, v->side)) continue;
+        cell = game_cell_index(v->pos & 0xff, v->pos >> 8);
+        if (dist[cell] == DIST_WALL || dist[cell] == DIST_OPEN) continue;
+        d = dist[cell] - 1;
+        if (d >= bestD) continue;
+        best = i;
+        bestD = d;
+    }
+    if (best < 0) return 0;
+    if (u->carrying < (unsigned short)(bestD * 2)) return 0;    /* 0x4720 */
+    {
+        Unit *v = &g->unit[best];
+        int cell = game_cell_index(v->pos & 0xff, v->pos >> 8);
+        int onCastle = g->cell[cell].tile == CELL_CASTLE0 + v->side;
+        unsigned long need = onCastle ? (unsigned long)v->carrying * 3
+                                      : (unsigned long)v->carrying;
+        if (u->carrying <= need) return 0;          /* 0x474d, 0x4769 */
+        if (game_path_to(g, slot, v->pos & 0xff, v->pos >> 8) <= 0) return 0;
+        u->home = v->pos;
+        u->state = (unsigned char)((u->state & 0xd0) | 2);
+        u->retry = 4;
+        return 1;
+    }
+}
+
+/* sub_4658: ten per cent of the time a unit picks a square at random, and goes
+ * to develop it if it is empty and it can afford the trip.  This is what takes
+ * a side's ground away from where it already is. */
+static int pick_random_target(Game *g, int slot)
+{
+    Unit *u = &g->unit[slot];
+    int x, y, index, len;
+
+    if (g->side[u->side].funds < DEVELOP_COST) return 0;    /* sub_b4d8(100) */
+    x = MAP_MIN + roll(MAP_MAX - MAP_MIN + 1);
+    y = MAP_MIN + roll(MAP_MAX - MAP_MIN + 1);
+    index = game_cell_index(x, y);
+    if (g->cell[index].tile != 0) return 0;                 /* 0x4682 */
+    if (g->occupant[index] >= 0) return 0;
+    len = game_path_to(g, slot, x, y);
+    if (len <= 0) return 0;
+    if (u->carrying < (unsigned short)(len * 2)) return 0;  /* 0x468e */
+    u->home = (unsigned short)((y << 8) | x);
+    u->state = (unsigned char)((u->state & 0xd0) | 5);
+    u->retry = 4;
+    return 1;
+}
+
+/* sub_4881: what a unit does when it has nothing in hand.  A rich one marches
+ * on a lord; otherwise the roll is 80% the nearest job, 10% a random square,
+ * 10% the nearest job again (the original also weighs a rock in that branch).
+ */
+static int decide(Game *g, int slot)
+{
+    int r;
+
+    if (pick_assault(g, slot)) return 1;
+    r = roll(100);                                  /* 0x4897, sub_9a24(100) */
+    if (r >= 90) return pick_job(g, slot);          /* 0x48a9 */
+    if (r >= 80) {                                  /* 0x48a2 */
+        if (pick_random_target(g, slot)) return 1;
+        return pick_job(g, slot);
+    }
+    return pick_job(g, slot);                       /* 0x48cf */
+}
+
+/* Following a path, at 0x39c2 by way of sub_c291: take the next step, and when
+ * the walk is done drop the path so the state handler gets a turn. */
+static void follow_path(Game *g, int slot)
+{
+    int dir = game_path_dir(g, slot);
+
+    if (dir < 0) {
+        g->unit[slot].link = 0xff;
+        return;
+    }
+    if (game_move(g, slot, dir)) game_path_advance(g, slot);
+}
+
+/* States 1, 3 and 5 all end up here: develop where you stand, and if you
+ * cannot, look for something else to do.  0x3998 and 0x38c1. */
+static void state_develop(Game *g, int slot)
+{
+    Unit *u = &g->unit[slot];
+    int index, dir;
 
     if (game_develop(g, slot)) return;
     if (u->flags & 0x80) return;                /* it spent itself developing */
+    if (decide(g, slot)) return;
+
+    /* Nothing to be had: step towards your own land, as 0x39a6 does when the
+     * action budget has run out. */
     index = game_cell_index(u->pos & 0xff, u->pos >> 8);
-
-    /* Already walking somewhere: keep going. */
-    dir = game_path_dir(g, slot);
-    if (dir >= 0) {
-        if (game_move(g, slot, dir)) game_path_advance(g, slot);
-        return;
-    }
-
-    target = worker_target(g, slot);
-    if (target >= 0) {
-        int len = game_path_to(g, slot, target % MAP_W, target / MAP_W);
-        /* 0x45af: it has to carry at least twice the distance to be worth it. */
-        if (len > 0 && u->carrying >= (unsigned short)(len * 2)) {
-            u->state = 2;
-            return;
-        }
-        u->link = 0xff;
-    }
-    /* The budget-exhausted path: step towards your own land. */
     dir = direction_towards(g, index,
                             (unsigned char)(CELL_TERRITORY0 + u->side));
     if (dir >= 0) game_move(g, slot, dir);
+    else u->state = (unsigned char)((u->state & 0xd0) | 1);
 }
 
-static void unit_lord(Game *g, int slot);
-
+/* The default handler at 0x383e: wipe any foreign ground underfoot, then either
+ * carry on along the path or, when there is none left, let the state handler
+ * have its turn. */
 void game_unit_step(Game *g, int slot)
 {
     Unit *u = &g->unit[slot];
 
     if (u->flags & 0x80) return;
-    if (u->side >= PLAYERS) return;             /* the neutral ones idle */
+    if (u->flags & 2) {                         /* 0x32f4 -> 0x493a */
+        tick_dying(g, slot);
+        return;
+    }
     if (u->state & 0x20) {                      /* the lord, 0x3a67 */
         unit_lord(g, slot);
         return;
     }
+    if (u->side >= PLAYERS) return;             /* the wild ones, 0x3b86 */
+
+    wipe_foreign_land(g, slot);                 /* 0x3847 */
+
+    if (u->link != 0xff) {                      /* 0x384a */
+        follow_path(g, slot);
+        return;
+    }
+
     switch (u->state & 0x0f) {
-    case 1: case 3:                 /* the worker, 0x3998 */
-    case 2:                         /* walking to a target, 0x386c */
-        unit_worker(g, slot);
+    case 1: case 3: case 5:
+        state_develop(g, slot);
+        break;
+    case 8:
+        if (game_clear(g, slot)) break;         /* still chipping away */
+        if (!decide(g, slot))
+            u->state = (unsigned char)((u->state & 0xd0) | 1);
+        break;
+    case 4:
+        if (!state_outward(g, slot))
+            u->state = (unsigned char)((u->state & 0xd0) | 1);
+        break;
+    case 2: case 11:
+        /* Jobs at the target square: walking your own ground, chipping rock,
+         * clearing a nest.  Only developing is ported, so these fall back to
+         * looking for a fresh job. */
+        if (!game_develop(g, slot) && !(u->flags & 0x80))
+            if (!decide(g, slot))
+                u->state = (unsigned char)((u->state & 0xd0) | 1);
         break;
     default:
+        if (!decide(g, slot))
+            u->state = (unsigned char)((u->state & 0xd0) | 1);
         break;
     }
 }
@@ -735,4 +1075,137 @@ static void unit_lord(Game *g, int slot)
         unsigned long v = u->carrying + (room >> 2) + 1;
         u->carrying = (unsigned short)(v > 0xffff ? 0xffff : v);
     }
+}
+
+/* ---------------------------------------------------------------- fighting */
+
+void game_kill(Game *g, int slot, int killerSide)
+{
+    Unit *u = &g->unit[slot];
+
+    if (!(u->flags & 2)) {              /* sub_4924 */
+        u->flags |= 2;
+        u->retry = (unsigned char)killerSide;   /* +0x0f */
+        u->want = 0;                            /* +0x0e, the death counter */
+    }
+    u->carrying = 0;
+}
+
+/* 0x493a: four ticks of dying, then off the board. */
+static void tick_dying(Game *g, int slot)
+{
+    Unit *u = &g->unit[slot];
+
+    u->want++;
+    if (u->want < 4) return;
+    unit_spent(g, slot);
+}
+
+static int allied(const Game *g, int a, int b)
+{
+    if (a == b) return 1;
+    if (a < SIDES && g->side[a].ally == b) return 1;
+    return 0;
+}
+
+int game_bump(Game *g, int slot, int toIndex)
+{
+    Unit *u = &g->unit[slot];
+    int other = g->occupant[toIndex];
+    Unit *v;
+    int here, onCastle, targetCastle, hit, back;
+
+    if (other < 0) return 0;                    /* 0x3d75 */
+    v = &g->unit[other];
+    if (allied(g, u->side, v->side)) return 0;  /* 0x3d81, 0x3d88 */
+
+    /* The defender turns to face the blow if it has nothing else to do. */
+    if (v->link == 0xff)                        /* 0x3d8f */
+        v->facing = (unsigned char)((u->facing + 4) & 6);
+
+    here = game_cell_index(u->pos & 0xff, u->pos >> 8);
+    onCastle = g->cell[here].tile >= CELL_CASTLE0 &&
+               g->cell[here].tile < CELL_CASTLE0 + PLAYERS;
+    targetCastle = g->cell[toIndex].tile >= CELL_CASTLE0 &&
+                   g->cell[toIndex].tile < CELL_CASTLE0 + PLAYERS;
+
+    if (onCastle) {                             /* 0x3ddc */
+        hit = (u->carrying >> 2) + 1;
+        if (v->carrying > hit) v->carrying = (unsigned short)(v->carrying - hit);
+        else game_kill(g, other, u->side);
+        return 1;
+    }
+    if (targetCastle) {                         /* 0x3df3 */
+        hit = (u->carrying >> 3) + 1;
+        back = (v->carrying >> 3) + 1;
+        if (v->carrying > hit) v->carrying = (unsigned short)(v->carrying - hit);
+        else game_kill(g, other, u->side);
+        if (u->carrying > back) u->carrying = (unsigned short)(u->carrying - back);
+        else game_kill(g, slot, v->side);
+        return 1;
+    }
+    hit = (u->carrying >> 3) + 1;               /* 0x3daf */
+    if (v->carrying > hit) {
+        v->carrying = (unsigned short)(v->carrying - hit);
+        back = (v->carrying >> 4) + 1;          /* 0x3dc5, four shifts */
+        if (u->carrying > back)
+            u->carrying = (unsigned short)(u->carrying - back);
+        else
+            game_kill(g, slot, v->side);
+    } else {
+        game_kill(g, other, u->side);
+    }
+    return 1;
+}
+
+/* sub_3e21.  Two units of the same side, neither dying, whose loads add up
+ * without overflowing, combine.  Which of the two takes the load is decided in
+ * this order (0x3e41-0x3e7b):
+ *
+ *   the mover is the lord (0x20)              the mover takes it
+ *   the other is the lord                     the other takes it
+ *   exactly one has the 0x10 bit              that one takes it
+ *   both are in state 3                       whichever carries more
+ *   the mover is in state 3                   the other takes it
+ *   the other is in state 3                   the mover takes it
+ *   otherwise                                 whichever carries more
+ *
+ * Returns 1 only when the *other* took it, because then the mover is finished
+ * and its turn is over.  When the mover took it the original sets CF and the
+ * caller walks on to the square it just cleared, so this returns 0.
+ */
+int game_merge(Game *g, int slot, int toIndex)
+{
+    Unit *u = &g->unit[slot];
+    int other = g->occupant[toIndex];
+    Unit *v;
+    unsigned long sum;
+    int moverTakes;
+
+    if (other < 0) return 0;                    /* 0x3e2a */
+    v = &g->unit[other];
+    if (v->side != u->side) return 0;           /* 0x3e2f */
+    if (v->flags & 2) return 0;                 /* 0x3e34, already dying */
+    sum = (unsigned long)u->carrying + v->carrying;
+    if (sum > 0xffff) return 0;                 /* 0x3e3f */
+
+    if (u->state & 0x20)            moverTakes = 1;
+    else if (v->state & 0x20)       moverTakes = 0;
+    else if (((u->state | v->state) & 0x10) &&
+             !((u->state & v->state) & 0x10))
+        moverTakes = (u->state & 0x10) ? 1 : 0;
+    else if ((u->state & 0x0f) == 3 && (v->state & 0x0f) == 3)
+        moverTakes = u->carrying >= v->carrying;
+    else if ((u->state & 0x0f) == 3) moverTakes = 0;
+    else if ((v->state & 0x0f) == 3) moverTakes = 1;
+    else moverTakes = u->carrying >= v->carrying;
+
+    if (moverTakes) {
+        u->carrying = (unsigned short)sum;
+        unit_spent(g, other);
+        return 0;
+    }
+    v->carrying = (unsigned short)sum;
+    unit_spent(g, slot);
+    return 1;
 }

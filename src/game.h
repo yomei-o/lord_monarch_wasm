@@ -75,8 +75,12 @@ typedef struct {
     unsigned char state;        /* +0x0a */
     unsigned char link;         /* +0x0b, a unit slot, 0xff for none */
     unsigned char side;         /* +0x0c, 0..4 */
-    unsigned char want;         /* +0x0e, the direction it turned towards */
-    unsigned char retry;        /* +0x0f, counts down while blocked */
+    /* +0x0e does double duty: the direction a unit turned towards, and once it
+     * is dying (flags bit 1) the count of ticks it has left.  +0x0f likewise
+     * counts down while a unit is blocked and holds the killer's side once it
+     * has been killed. */
+    unsigned char want;
+    unsigned char retry;
 } Unit;
 
 /* A unit's path.  The original keeps these in their own segment: 2000:0000 is a
@@ -130,6 +134,7 @@ typedef struct {
     int cellCursor;                     /* DS:3BEA, the rolling cell cursor */
     int speed;                          /* DS:3C02, 0 = fastest */
     int human;                          /* DS:3C00, the side the player has */
+    long stamp;                         /* bumped whenever the ground changes */
     int aiBonus;                        /* DS:347E, doubles AI land growth */
 } Game;
 
@@ -189,6 +194,16 @@ int game_develop(Game *g, int slot);
  * over its 0x08 + side squares.  Tile 5, the nests, count towards side 4. */
 void game_land_totals(Game *g);
 
+/* Throws away the cached flood fill.  Anything that changes a tile has to say
+ * so, which is what Game::stamp is for. */
+void game_forget_distances(void);
+
+/* Rough ground - tiles 1 to 4 - is chipped away by a unit standing on it with
+ * half of what it carries, at sub_3f2a; the unit spends nothing.  When the
+ * square's own amount runs out it becomes plain ground holding 100.  Returns 1
+ * while there is still work to do there. */
+int game_clear(Game *g, int slot);
+
 /* A unit standing on its own productive land picks up what the square holds and
  * leaves 1 behind, at 0x34bb. */
 int game_pick_up(Game *g, int slot);
@@ -214,6 +229,28 @@ void game_neighbours(const Game *g, int index, unsigned char tile,
  * Returns 1 if the unit moved, 0 if it turned or was blocked.
  */
 int game_move(Game *g, int slot, int dir);
+
+/* Walking into somebody, at sub_3d5e.  Nothing happens between units of the
+ * same side or allies; otherwise the two trade blows against what they carry,
+ * which is what stands in for hit points:
+ *
+ *   the attacker is standing on a castle   attacker/4 + 1, and no reply
+ *   the defender is standing on a castle   attacker/8 + 1 and defender/8 + 1
+ *   out in the open                        attacker/8 + 1, and if the defender
+ *                                          lives, defender/16 + 1 back
+ *
+ * A unit whose carried reaches zero is killed.  Returns 1 when blows were
+ * traded, which ends the attacker's turn.
+ */
+int game_bump(Game *g, int slot, int toIndex);
+
+/* Two units of the same side on the same square merge, at sub_3e21: one takes
+ * the pair's carried and the other is finished with.  Returns 1 if they did. */
+int game_merge(Game *g, int slot, int toIndex);
+
+/* sub_4924: mark a unit as dying and remember who did it.  It lingers for four
+ * ticks (0x493a) before it is taken off the board. */
+void game_kill(Game *g, int slot, int killerSide);
 
 /* Fills the unit's path buffer with a route from where it stands to (x, y),
  * following sub_c0bd: flood the distances out from the unit four-connected over

@@ -170,12 +170,10 @@ int main(int argc, char **argv)
         check(g->cell[game_cell_index(6, 7)].tile >= CELL_IMPASSABLE,
               "the castle's own tiles are impassable");
         check(g->unit[lord].facing == DIR_RIGHT, "new units face right");
-        check(!game_move(g, lord, DIR_RIGHT),
-              "a step into an occupied cell is refused");
         check(!game_move(g, lord, DIR_UP), "turning takes the step");
         check(g->unit[lord].facing == DIR_UP, "and leaves it facing that way");
         check(!game_move(g, lord, DIR_UP),
-              "and the castle wall still refuses it");
+              "and the castle wall refuses it");
 
         /* The unit on 7,8 can leave: 8,8 is ordinary ground. */
         check(g->cell[game_cell_index(8, 8)].tile < CELL_IMPASSABLE,
@@ -191,6 +189,57 @@ int main(int argc, char **argv)
         check(!game_move(g, lord, DIR_RIGHT), "the lord turns back to the right");
         check(game_move(g, lord, DIR_RIGHT), "and then follows");
         check((g->unit[lord].pos & 0xff) == 7, "the lord is on 7,8");
+
+        /* Walking into one of your own merges the two, and the lord always
+         * takes the load - so it can step on through. */
+        game_init(g, &m);
+        lord = g->side[0].lord;
+        mate = g->occupant[game_cell_index(7, 8)];
+        {
+            int had = g->unit[lord].carrying + g->unit[mate].carrying;
+            check(game_move(g, lord, DIR_RIGHT),
+                  "the lord absorbs its own worker and steps on");
+            checkf(g->unit[lord].carrying == had,
+                   "it now carries %d, expected %d",
+                   g->unit[lord].carrying, had, 0);
+            check(g->unit[mate].flags & 0x80, "and the worker is gone");
+            check((g->unit[lord].pos & 0xff) == 7, "the lord is on 7,8");
+        }
+
+        /* Walking into an enemy trades blows.  Put one of side 1's units next
+         * to side 0's lord and let them fight. */
+        game_init(g, &m);
+        lord = g->side[0].lord;
+        {
+            int foe = -1, k, hp;
+            for (k = 0; k < UNIT_SLOTS; k++)
+                if (!(g->unit[k].flags & 0x80) && g->unit[k].side == 1) {
+                    foe = k;
+                    break;
+                }
+            check(foe >= 0, "side 1 has a unit to borrow");
+            /* Move it next to the lord by hand. */
+            g->occupant[game_cell_index(g->unit[foe].pos & 0xff,
+                                        g->unit[foe].pos >> 8)] = -1;
+            g->occupant[game_cell_index(7, 8)] = -1;
+            g->unit[g->side[0].lord].facing = DIR_RIGHT;
+            g->unit[foe].pos = (unsigned short)((8 << 8) | 7);
+            g->unit[foe].at = (unsigned short)(game_cell_index(7, 8) * 2);
+            g->occupant[game_cell_index(7, 8)] = (short)foe;
+
+            hp = g->unit[foe].carrying;
+            check(!game_move(g, lord, DIR_RIGHT),
+                  "a step into an enemy is a blow, not a move");
+            /* The lord is on its castle, so it hits for carried/4 + 1 and
+             * takes nothing back. */
+            checkf(g->unit[foe].carrying == hp - ((1000 >> 2) + 1) ||
+                   (g->unit[foe].flags & 2),
+                   "the enemy went from %d to %d", hp,
+                   g->unit[foe].carrying, 0);
+            checkf(g->unit[lord].carrying == 1000,
+                   "the lord took %d damage defending its castle",
+                   1000 - g->unit[lord].carrying, 0, 0);
+        }
 
         /* The outermost ring is off limits whatever the tile says. */
         dy = 0;
@@ -421,20 +470,35 @@ int main(int argc, char **argv)
         /* It stands on the castle's 0x1d square, which is not developable. */
         check(!game_develop(g, mate), "the castle gate cannot be developed");
 
-        /* 9,8 is claimed land (0x0c) with our own 0x08 either side of it. */
-        target = game_cell_index(9, 8);
-        checkf(g->cell[target].tile == CELL_TERRITORY0 + 4 + 0,
-               "9,8 holds tile %02x, expected 0x0c",
-               g->cell[target].tile, 0, 0);
+        /* A square this side may develop: plain ground or claimed land with no
+         * productive land of its own next to it - sub_ae9e refuses when there
+         * is, so the ground spreads out with gaps.  Find the nearest one. */
+        target = -1;
+        for (i = 0; i < MAP_W * MAP_H; i++) {
+            int x = i % MAP_W, y = i / MAP_W;
+            if (x < MAP_MIN || x > MAP_MAX || y < MAP_MIN || y > MAP_MAX)
+                continue;
+            if (g->cell[i].tile != 0) continue;
+            if (g->occupant[i] >= 0) continue;
+            if (game_path_to(g, mate, x, y) <= 0) continue;
+            target = i;
+            break;
+        }
+        checkf(target >= 0, "B_000 has a square side 0 can develop (%d)",
+               target, 0, 0);
 
         /* Walk there and develop it. */
-        i = game_path_to(g, mate, 9, 8);
-        checkf(i > 0, "no path to 9,8 (%d)", i, 0, 0);
+        i = game_path_to(g, mate, target % MAP_W, target / MAP_W);
+        checkf(i > 0, "no path to the target (%d)", i, 0, 0);
         while (game_path_dir(g, mate) >= 0) {
             int dir = game_path_dir(g, mate);
             if (game_move(g, mate, dir)) game_path_advance(g, mate);
         }
-        check((g->unit[mate].pos & 0xff) == 9, "the worker reached 9,8");
+        checkf(game_cell_index(g->unit[mate].pos & 0xff,
+                               g->unit[mate].pos >> 8) == target,
+               "the worker reached %d (it is on %d)", target,
+               game_cell_index(g->unit[mate].pos & 0xff,
+                               g->unit[mate].pos >> 8), 0);
 
         funds = g->side[0].funds;
         check(game_develop(g, mate), "and developed it");

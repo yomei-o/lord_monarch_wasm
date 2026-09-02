@@ -15,7 +15,7 @@ IMAGE   ?= $(firstword $(wildcard orig/*.FIM))
 CORE = src/disk.c src/gfx.c src/bz.c src/lmz.c
 APP  = src/app.c src/game.c $(CORE)
 
-all: $(OUT)/monarch.exe $(OUT)/monarch_shot.exe $(OUT)/game_check.exe
+all: $(OUT)/monarch.exe $(OUT)/monarch_shot.exe $(OUT)/game_check.exe $(OUT)/sim.exe
 
 $(OUT)/monarch.exe: src/main_win32.c $(APP) | $(OUT)
 	$(CC) $(CFLAGS) -mwindows -municode -o $@ $^ -lgdi32
@@ -24,6 +24,9 @@ $(OUT)/monarch_shot.exe: src/main_shot.c src/png.c $(APP) | $(OUT)
 	$(CC) $(CFLAGS) -o $@ $^
 
 $(OUT)/game_check.exe: tests/game_check.c src/game.c $(CORE) | $(OUT)
+	$(CC) $(CFLAGS) -Isrc -o $@ $^
+
+$(OUT)/sim.exe: tests/sim.c src/game.c $(CORE) | $(OUT)
 	$(CC) $(CFLAGS) -Isrc -o $@ $^
 
 # The rules, checked against what the disk and the disassembly say.
