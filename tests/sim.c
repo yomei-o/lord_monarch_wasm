@@ -31,6 +31,7 @@ int main(int argc, char **argv)
     Map m;
     long t;
     int i;
+    int gone[PLAYERS];
 
     if (!d) {
         fprintf(stderr, "%s\n", disk_error());
@@ -43,6 +44,7 @@ int main(int argc, char **argv)
     }
     game_init(&g, &m);
     game_land_totals(&g);
+    memset(gone, 0, sizeof gone);
     g.human = -1;              /* nobody is the player, so every side is AI */
 
     printf("%s, terrain %d\n", name, m.terrain);
@@ -51,6 +53,16 @@ int main(int argc, char **argv)
     printf("\n");
 
     for (t = 0; t <= ticks; t++) {
+        /* Say so the moment a country goes, which is the thing worth watching
+         * for: it is what tells you the whole chain works - a lord killed, the
+         * killer recorded as the heir, the estate handed over, the castle
+         * levelled and every unit changed over. */
+        for (i = 0; i < PLAYERS; i++)
+            if (!g.side[i].alive && !gone[i]) {
+                gone[i] = 1;
+                printf("%8ld  side %d has fallen; the heir is side %d\n",
+                       t, i, g.side[i].heir);
+            }
         if (t % every == 0) {
             printf("%8ld %5d", t, units_of(&g, -1));
             for (i = 0; i < PLAYERS; i++) {

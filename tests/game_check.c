@@ -780,6 +780,90 @@ int main(int argc, char **argv)
         }
     }
 
+    /* A country falling.  Two ways of showing it: by hand, so the chain is
+     * pinned down, and by letting a map run, so it is reachable. */
+    {
+        Map m;
+        int lord, i, alive;
+
+        gfx_load_map(&m, d, "B_000.MAP");
+        game_init(g, &m);
+        lord = g->side[0].lord;
+        check(g->side[0].alive, "side 0 starts alive");
+
+        /* sub_a9ca: the killer goes in [unit + 0x0f] and becomes the heir. */
+        game_kill(g, lord, 2);
+        check(g->unit[lord].flags & 2, "the lord is dying");
+        checkf(g->unit[lord].retry == 2,
+               "the killer recorded as side %d", g->unit[lord].retry, 0, 0);
+        check(g->side[0].alive, "and the country stands until the count is up");
+
+        /* Three more ticks of dying and the country goes with it. */
+        {
+            unsigned long before = g->side[2].funds;
+            unsigned long had = g->side[0].funds;
+            for (i = 0; i < 6 && g->side[0].alive; i++)
+                game_unit_step(g, lord);
+            check(!g->side[0].alive, "the country has fallen");
+            checkf(g->side[0].heir == 2, "the heir is side %d",
+                   g->side[0].heir, 0, 0);
+            checkf(g->side[2].funds == before + had,
+                   "the treasury of %lu went over (side 2 has %lu)",
+                   (int)had, (int)g->side[2].funds, 0);
+            check(g->side[0].funds == 0, "and the fallen side has nothing");
+            check(g->side[0].ally == 0x80, "its alliance is broken");
+        }
+
+        /* The castle is levelled - all nine squares plain ground at 100. */
+        {
+            int cx = g->side[0].pos & 0xff, cy = g->side[0].pos >> 8;
+            int dx, dy, wrong = 0;
+            for (dy = -1; dy <= 1; dy++)
+                for (dx = -1; dx <= 1; dx++) {
+                    const Cell *c = &g->cell[game_cell_index(cx + dx, cy + dy)];
+                    if (c->tile != 0 || c->amount != CELL_START_AMOUNT) wrong++;
+                }
+            checkf(wrong == 0, "%d of the castle's nine squares survived",
+                   wrong, 0, 0);
+        }
+
+        /* Every unit it had is in state 12, the handler that changes a unit
+         * over to the heir. */
+        for (i = 0; i < UNIT_SLOTS; i++) {
+            const Unit *u = &g->unit[i];
+            if (u->flags & 0x80) continue;
+            if (u->side != 0) continue;
+            checkf((u->state & 0x0f) == 12,
+                   "unit %d of the fallen side is in state %02x", i, u->state,
+                   0);
+        }
+        /* And a step later they belong to the heir. */
+        for (i = 0; i < UNIT_SLOTS; i++) {
+            if (g->unit[i].flags & 0x80) continue;
+            if (g->unit[i].side == 0) game_unit_step(g, i);
+        }
+        for (i = 0; i < UNIT_SLOTS; i++)
+            checkf((g->unit[i].flags & 0x80) || g->unit[i].side != 0,
+                   "unit %d (flags %02x state %02x) still belongs to the "
+                   "fallen side", i, g->unit[i].flags, g->unit[i].state);
+
+        /* B_051 plays itself out: three countries go and one is left.  Nobody
+         * is the player here, so this is the fixed algorithm alone. */
+        gfx_load_map(&m, d, "B_051.MAP");
+        game_init(g, &m);
+        game_land_totals(g);
+        g->human = -1;
+        for (i = 0; i < 12000; i++) {
+            game_tick_cells(g);
+            game_step(g);
+        }
+        alive = 0;
+        for (i = 0; i < PLAYERS; i++) if (g->side[i].alive) alive++;
+        checkf(alive == 1, "B_051 after 12000 ticks leaves %d countries",
+               alive, 0, 0);
+        printf("B_051 after 12000 ticks: %d of 4 countries left\n", alive);
+    }
+
     disk_close(d);
     free(g);
     if (failures) {

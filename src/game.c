@@ -685,6 +685,7 @@ static int direction_towards(const Game *g, int index, unsigned char tile)
  * between them require. */
 static int allied(const Game *g, int a, int b);
 static int pick_job(Game *g, int slot);
+int game_order_job(Game *g, int slot, int x, int y);
 static void tick_dying(Game *g, int slot);
 static void unit_lord(Game *g, int slot);
 
@@ -743,10 +744,49 @@ static int job_state(unsigned char tile)
     return 0;
 }
 
-/* sub_4420 with sub_b876 inside it: flood the distances out from the unit, then
- * take the nearest job - the original scores each candidate as its distance
- * plus eight and keeps the smallest under 512.  The unit must be carrying at
- * least twice the distance for the trip to be worth making (0x4438).
+/* sub_baaf and sub_bb70: the nearest square of one particular tile, scored not
+ * by its own distance - it may not be reachable at all - but by the smallest
+ * distance among its four neighbours.  sub_baaf looks for woodland, 0x7b, and
+ * sub_bb70 for a rock, 0x7a.
+ *
+ * The pair is worth pointing out, because between them they say what the
+ * countries will and will not do for themselves: order 7 fills a square in, and
+ * the only square the automatic side ever picks for it is a ROCK.  Water is
+ * never a candidate.  So on a map where the sides are separated by water they
+ * never meet, however long it runs - not because anything here is missing but
+ * because the original leaves bridging water to the player.
+ */
+static int nearest_tile(const Game *g, const unsigned short *dist,
+                        unsigned char tile, int *cost)
+{
+    static const int off[4] = {-MAP_W, -1, 1, MAP_W};
+    int best = -1, bestCost = 0x1f1, i, k;
+
+    for (i = 0; i < MAP_W * MAP_H; i++) {
+        if (g->cell[i].tile != tile) continue;
+        for (k = 0; k < 4; k++) {
+            int n = i + off[k];
+            if (n < 0 || n >= MAP_W * MAP_H) continue;
+            if (dist[n] == DIST_WALL || dist[n] == DIST_OPEN) continue;
+            if (dist[n] >= (unsigned short)bestCost) continue;
+            bestCost = dist[n];
+            best = i;
+        }
+    }
+    *cost = bestCost;
+    return best;
+}
+
+/* sub_4420 with sub_b876 inside it, and the two extra searches sub_4374 weighs
+ * against it: flood the distances out from the unit, then take the nearest of
+ *
+ *   the nearest job proper (develop, attack, clear, a nest)  sub_b876
+ *   the nearest woodland                       -> order 9    sub_baaf
+ *   the nearest rock                           -> order 7    sub_bb70
+ *
+ * scored as the distance plus eight and kept under 512.  The unit must be
+ * carrying at least twice the distance for the trip to be worth making
+ * (0x4438).
  *
  * Returns 1 if the unit came away with a job and a path.
  */
@@ -755,7 +795,7 @@ static int pick_job(Game *g, int slot)
     Unit *u = &g->unit[slot];
     int here = game_cell_index(u->pos & 0xff, u->pos >> 8);
     unsigned short *dist = fill_distances(g, here);
-    int best = -1, bestCost = 0x200, i, state, len;
+    int best = -1, bestCost = 0x200, i, state = 0, len, walk;
 
     for (i = 0; i < MAP_W * MAP_H; i++) {
         int cost;
@@ -765,12 +805,36 @@ static int pick_job(Game *g, int slot)
         if (!job_here(g, i, u->side)) continue;
         best = i;
         bestCost = cost;
+        state = job_state(g->cell[i].tile);
     }
-    if (best < 0) return 0;
-    if (dist[best] - 1 >= PATH_STEPS) return 0;     /* 0x4431 */
-    if (u->carrying < (unsigned short)((dist[best] - 1) * 2)) return 0;
-    state = job_state(g->cell[best].tile);
-    if (!state) return 0;
+
+    /* The two that are scored off a neighbour, because the square itself is
+     * something you stand next to rather than on. */
+    {
+        static const struct { unsigned char tile; int order; } extra[2] = {
+            {CELL_WOOD, UNIT_STATE_FELL},
+            {CELL_ROCK, UNIT_STATE_BRIDGE},
+        };
+        int e;
+        for (e = 0; e < 2; e++) {
+            int cost, at = nearest_tile(g, dist, extra[e].tile, &cost);
+            if (at < 0 || cost + 8 >= bestCost) continue;
+            best = at;
+            bestCost = cost + 8;
+            state = extra[e].order;
+        }
+    }
+
+    if (best < 0 || !state) return 0;
+    /* The distance that matters is the one walked, which for the two above is
+     * to a neighbour rather than to the square itself. */
+    walk = bestCost - 8;
+    if (walk - 1 >= PATH_STEPS) return 0;           /* 0x4431 */
+    if (u->carrying < (unsigned short)((walk - 1) * 2)) return 0;
+
+    if (state == UNIT_STATE_FELL || state == UNIT_STATE_BRIDGE ||
+        state == UNIT_STATE_NEST)
+        return game_order_job(g, slot, best % MAP_W, best / MAP_W) > 0;
 
     len = game_path_to(g, slot, best % MAP_W, best / MAP_W);
     u->state = (unsigned char)((u->state & 0xd0) | state);      /* 0x446f */
@@ -806,36 +870,56 @@ int game_clear(Game *g, int slot)
     return 0;
 }
 
-/* State 4, 0x38eb by way of sub_b037: look up, down, left and right for a
- * square that is passable and is **not** this side's or its ally's ground, and
- * step that way.  It is what pushes a unit off its own land and into whatever
- * is next to it - and since walking into somebody is a fight, it is also how
- * two sides come to blows.  There is no decision to attack anywhere in the
- * game; this is it.
+/* State 4, at 0x38eb by way of sub_b037: step onto somebody else's productive
+ * ground.  This is the whole of a country's aggression - there is no decision
+ * to attack anywhere, only this.
  *
- * Returns 1 if it found somewhere to go.
+ * sub_b037 tries eight squares in a fixed order - one and two to the left, one
+ * and two to the right, one and two up, one and two down - and takes the first
+ * that holds tile 0x08..0x0b belonging to neither this side nor its ally.  If
+ * the square one along is impassable that whole direction is abandoned, the
+ * square two along included; but a passable square that simply is not enemy
+ * ground does not stop the two-along test.  With nothing to be had it returns
+ * the carry set and the unit drops to state 1 and goes back to developing.
+ *
+ * Getting this wrong is expensive in a way that is hard to see: an earlier cut
+ * stepped onto any square that was not this side's own, so units wandered over
+ * empty ground for ever instead of falling back to developing.  Two million
+ * ticks of B_022 froze with 59 of the 64 units in state 4 and not one square
+ * changing hands.
  */
 static int state_outward(Game *g, int slot)
 {
-    static const int dir[4] = {DIR_UP, DIR_DOWN, DIR_LEFT, DIR_RIGHT};
+    static const signed char step[4][2] = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}};
     Unit *u = &g->unit[slot];
-    int index = game_cell_index(u->pos & 0xff, u->pos >> 8);
-    int x = index % MAP_W, y = index / MAP_W, k;
+    int x = u->pos & 0xff, y = u->pos >> 8, k;
     unsigned char mine = (unsigned char)(CELL_TERRITORY0 + u->side);
     unsigned char ally = g->side[u->side].ally;
+    unsigned char allyTile = (unsigned char)(ally < PLAYERS
+                                             ? CELL_TERRITORY0 + ally : 0xff);
 
     for (k = 0; k < 4; k++) {
-        int nx = x + GAME_DX[dir[k]], ny = y + GAME_DY[dir[k]], n;
-        unsigned char t;
-        if (nx < MAP_MIN || nx > MAP_MAX || ny < MAP_MIN || ny > MAP_MAX)
-            continue;
-        n = ny * MAP_W + nx;
-        t = g->cell[n].tile;
-        if (t >= CELL_IMPASSABLE) continue;         /* 0xb03e */
-        if (t == mine) continue;                    /* 0xb042 */
-        if (ally < PLAYERS && t == CELL_TERRITORY0 + ally) continue;
-        game_move(g, slot, dir[k]);
-        return 1;
+        int far;
+        for (far = 1; far <= 2; far++) {
+            int nx = x + step[k][0] * far, ny = y + step[k][1] * far;
+            unsigned char t;
+            if (nx < MAP_MIN || nx > MAP_MAX || ny < MAP_MIN || ny > MAP_MAX)
+                break;
+            t = g->cell[ny * MAP_W + nx].tile;
+            /* Only the square one along is tested for being passable, and a
+             * wall there ends the direction (0xb040 jumps past both tests). */
+            if (far == 1 && t >= CELL_IMPASSABLE) break;
+            if (t == mine || t == allyTile) continue;
+            if (t < CELL_TERRITORY0 || t >= CELL_TERRITORY0 + PLAYERS)
+                continue;
+            /* Enemy ground.  Walk to it and stay in state 4, so the unit keeps
+             * pushing as long as there is a border to push at. */
+            if (game_path_to(g, slot, nx, ny) > 0) {
+                u->home = (unsigned short)((ny << 8) | nx);
+                u->retry = 4;
+                return 1;
+            }
+        }
     }
     return 0;
 }
@@ -1135,12 +1219,84 @@ void game_kill(Game *g, int slot, int killerSide)
 }
 
 /* 0x493a: four ticks of dying, then off the board. */
+/* sub_b102 and the tail it falls into at sub_b197: a side whose flag word has
+ * bit 0 or bit 2 set is finished.
+ *
+ *   bit 0  its king is dead      (sub_a9ca sets it: "or word ptr [bx], 1")
+ *   bit 2  its castle was taken
+ *   bit 3  it has already been dealt with, so this only happens once
+ *
+ * The estate goes to `heir`, which sub_a9ca fills in from the dead lord's
+ * [unit + 0x0f] - the side that killed it.  So whoever lands the blow inherits
+ * the treasury, the ground and the alliance is broken both ways.
+ */
+static void side_falls(Game *g, int side)
+{
+    Side *s = &g->side[side];
+    int heir = s->heir, i, cx, cy, dx, dy;
+
+    if (!s->alive) return;
+    s->alive = 0;                       /* the flag word's bit 3 */
+    s->flag |= 1;
+
+    if (heir < PLAYERS && heir != side) {
+        unsigned long sum = g->side[heir].funds + s->funds;
+        g->side[heir].funds = sum < g->side[heir].funds ? 0xffffffffUL : sum;
+    }
+    s->funds = 0;
+    s->rate = 0;
+
+    /* The alliance goes, from both ends. */
+    if (s->ally < PLAYERS) g->side[s->ally].ally = 0x80;
+    s->ally = 0x80;
+
+    /* Every unit it still has drops to state 12, which is the handler that
+     * changes a unit over to the heir (0x3985). */
+    for (i = 0; i < UNIT_SLOTS; i++) {
+        Unit *u = &g->unit[i];
+        if (u->flags & 0x80) continue;
+        if (u->side != side) continue;
+        u->state = (unsigned char)((u->state & 0x20) | 12);
+        u->flags |= 1;
+        u->link = 0xff;
+    }
+
+    /* And the castle itself becomes plain ground holding 100, all nine
+     * squares of it (0x b1ab writes 0x6400 nine times). */
+    cx = s->pos & 0xff;
+    cy = s->pos >> 8;
+    for (dy = -1; dy <= 1; dy++)
+        for (dx = -1; dx <= 1; dx++) {
+            int x = cx + dx, y = cy + dy;
+            if (x < 0 || x >= MAP_W || y < 0 || y >= MAP_H) continue;
+            g->cell[y * MAP_W + x].tile = 0;
+            g->cell[y * MAP_W + x].amount = CELL_START_AMOUNT;
+        }
+}
+
+/* sub_a9ca, the finaliser a unit reaches when its three ticks of dying are up.
+ * An ordinary unit just goes; a lord takes its country with it. */
 static void tick_dying(Game *g, int slot)
 {
     Unit *u = &g->unit[slot];
 
     u->want++;
     if (u->want < 4) return;
+    if ((u->state & 0x20) && u->side < PLAYERS && g->side[u->side].alive) {
+        /* [unit + 0x0f] is the killer, and it becomes the heir. */
+        int index = game_cell_index(u->pos & 0xff, u->pos >> 8);
+        g->side[u->side].heir = u->retry;
+        side_falls(g, u->side);
+        /* sub_a9ca runs straight on into 0xaa78 for a lord as well, so the
+         * slot goes now.  unit_spent will not free a lord - it is the one that
+         * a unit reaches by developing itself away, where the lord has to
+         * stay - so the freeing is spelled out here. */
+        u->carrying = 0;
+        u->link = 0xff;
+        if (g->occupant[index] == slot) g->occupant[index] = -1;
+        u->flags = 0x80;
+        return;
+    }
     unit_spent(g, slot);
 }
 
@@ -1416,9 +1572,28 @@ static int job_nest(Game *g, int slot)          /* order 11, a nest */
     return 0;
 }
 
+/* sub_aa93 is a Manhattan distance, and every one of these handlers works only
+ * at a distance of exactly 1 - standing next to the square, never on it.  That
+ * is also why sub_4374 calls sub_c2e7 for order 11 alone: a nest can be walked
+ * onto, so its path has to be shortened, while water and rock stop the walk at
+ * the shore by themselves. */
+static int job_adjacent(const Game *g, int slot)
+{
+    const Unit *u = &g->unit[slot];
+    int dx = (u->pos & 0xff) - (u->home & 0xff);
+    int dy = (u->pos >> 8) - (u->home >> 8);
+    if (dx < 0) dx = -dx;
+    if (dy < 0) dy = -dy;
+    return dx + dy == 1;
+}
+
 int game_job(Game *g, int slot)
 {
     if (game_unit_free(g, slot)) return 0;
+    /* Not next to it: 0x414d returns with the carry set, and the handler at
+     * 0x3946 sends the unit off to look for other work.  It only gets here at
+     * all when its path has run out, so there is nothing to wait for. */
+    if (!job_adjacent(g, slot)) return 0;
     switch (g->unit[slot].state & 0x0f) {
     case UNIT_STATE_BRIDGE: return game_bridge(g, slot);
     case UNIT_STATE_FELL:   return job_fell(g, slot);
