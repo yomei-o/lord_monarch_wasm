@@ -117,6 +117,7 @@ void game_init(Game *g, const Map *m)
     g->terrain = m->terrain;
     g->speed = 1;                       /* PROG.DAT DS:3c02 */
     g->daysLeft = GAME_DAYS;            /* 0x63ca */
+    g->fellSide = -1;
     g->human = 0;                       /* PROG.DAT DS:3c00 */
     g->stamp = 1;
     game_forget_distances();
@@ -188,6 +189,27 @@ void game_day(Game *g)
     g->day = (g->day + 1) & 0xffff;
     if (!g->day) g->day = 0xffff;       /* 0xa749: it saturates */
     if (g->daysLeft > 0) g->daysLeft--;
+}
+
+void game_endgame(Game *g)
+{
+    int i, alive = 0, human = g->human;
+    unsigned long theirs = 0, mine;
+
+    for (i = 0; i < PLAYERS; i++) if (g->side[i].alive) alive++;
+    if (human >= 0 && human < PLAYERS) {
+        if (!g->side[human].alive) g->over = 2;      /* sub_b28d */
+        else if (alive == 1) g->over = 1;            /* sub_b2f2, three gone */
+    }
+
+    /* sub_a75d.  Note what it counts: the four player records only, the
+     * human's own skipped - the wild side's does not go into the total. */
+    if (human < 0 || human >= PLAYERS) return;
+    for (i = 0; i < PLAYERS; i++)
+        if (i != human) theirs += g->side[i].landTotal;
+    mine = g->side[human].landTotal;
+    if (theirs > mine) g->songHot = 0;               /* 0xa78b */
+    else if (theirs < mine && mine > theirs * 8) g->songHot = 1;  /* 0xa798 */
 }
 
 void game_step(Game *g)
@@ -1365,6 +1387,7 @@ static void side_falls(Game *g, int side)
     if (!s->alive) return;
     s->alive = 0;                       /* the flag word's bit 3 */
     s->flag |= 1;
+    g->fellSide = side;                 /* 0xb197 has something to say */
 
     if (heir < PLAYERS && heir != side) {
         unsigned long sum = g->side[heir].funds + s->funds;

@@ -900,9 +900,14 @@ int main(int argc, char **argv)
             g->turn = (g->turn + 1) & 0xff;
             game_tick_cells(g);
             game_step(g);
+            game_endgame(g);
         }
         for (i = 0; i < PLAYERS; i++) if (g->side[i].alive) alive++;
         game_land_count(g, 0, &mine, &claimed);
+        checkf(g->over == 1, "the game did not end as a win: over = %d",
+               g->over, 0, 0);
+        checkf(g->songHot == 1,
+               "holding %d squares did not switch the music", mine, 0, 0);
         checkf(alive == 1, "B_000 with no tax and a full purse left %d "
                "countries, not 1 (side 0 holds %d)", alive, mine, 0);
         checkf(mine > 200, "side 0 only holds %d squares", mine, 0, 0);

@@ -175,7 +175,8 @@ static FontRom fontRom;
 #define DLG_LINES 14
 #define DLG_TEXT 34
 enum {
-    DLG_NONE, DLG_INFO, DLG_TAX, DLG_SPEED, DLG_ZOOM, DLG_ALLY, DLG_ORDER
+    DLG_NONE, DLG_INFO, DLG_TAX, DLG_SPEED, DLG_ZOOM, DLG_ALLY, DLG_ORDER,
+    DLG_FELL, DLG_OVER
 };
 static struct {
     int what;                       /* DLG_* , DLG_NONE when closed */
@@ -235,6 +236,9 @@ static int viewMode;                      /* the VIEW icon: scroll, do not pick 
 static int selected = -1;                 /* a unit slot */
 static int mode = APP_MODE_TITLE;
 static int mapNumber, tileSize = 16, scrollX, scrollY;
+
+/* So the end is announced once rather than every turn. */
+static int overSaid;
 
 /* 0 = the LOGiN three, 1 = the game's own fifty-two.  mapNumber is the index
  * within whichever is in force, not the file's number. */
@@ -710,6 +714,7 @@ int app_show_map(int number, int size)
     }
     if (!palette_from_terrain(map.terrain)) return 0;
     gfx_load_map_names(disk, mapNames);
+    overSaid = 0;
     nameShow = 120;
     namesOk = gfx_load_names(disk, map.terrain, names);
     composeOk = gfx_load_compose(disk, map.terrain, compose);
@@ -846,6 +851,75 @@ static const char *icon_name(int idx)
         "LOAD", "MAP", "SAVE", "FORM", "CRT/LCD", "DRIVE"
     };
     return idx >= 0 && idx < ICON_COUNT ? name[idx] : "?";
+}
+
+/* A country's name out of the tileset's tail, without the colour controls it
+ * is wrapped in: the records read <colour>ＧＲＥＥＮ国<colour>, and sub_759b
+ * acts on those bytes rather than drawing them.  Falls back to a number. */
+static const char *country_name(int side, char *buf, int n)
+{
+    int k = 0, i;
+
+    if (namesOk && side >= 0 && side < 5) {
+        for (i = 0; i < 16 && names[1 + side][i] && k < n - 1; i++)
+            if (names[1 + side][i] >= 0x20)
+                buf[k++] = (char)names[1 + side][i];
+    }
+    /* And the wide spaces they are padded with. */
+    while (k >= 2 && (unsigned char)buf[k - 2] == 0x81 &&
+           (unsigned char)buf[k - 1] == 0x40)
+        k -= 2;
+    buf[k] = 0;
+    if (!k) snprintf(buf, (size_t)n, JP_COUNTRY, side);
+    return buf;
+}
+
+/* 0xb197, when a country goes: a window and the 0x302 sound. */
+static void dlg_open_fell(int side)
+{
+    char buf[64], who[24];
+
+    dlg_close();
+    dlg.what = DLG_FELL;
+    snprintf(buf, sizeof buf, JP_DESTROYED, country_name(side, who, sizeof who));
+    dlg_say(buf);
+    dlg_say("");
+    dlg_choice(JP_CLOSE, 0);
+}
+
+/* sub_b2f2 and sub_b28d, and the table DS:0x1105 puts under the first. */
+static void dlg_open_over(int won)
+{
+    char buf[64];
+    int p, c, total = 0, i;
+
+    dlg_close();
+    dlg.what = DLG_OVER;
+    if (won) {
+        char who[24];
+
+        snprintf(buf, sizeof buf, JP_WON,
+                 country_name(game.human, who, sizeof who));
+        dlg_say(buf);
+    } else {
+        dlg_say(JP_LOST1);
+        dlg_say(JP_LOST2);
+    }
+    dlg_say("");
+    snprintf(buf, sizeof buf, JP_DAYS_GONE, game.day);
+    dlg_say(buf);
+    snprintf(buf, sizeof buf, JP_DAYS_LEFT, game.daysLeft);
+    dlg_say(buf);
+    game_land_count(&game, game.human & 3, &p, &c);
+    for (i = 0; i < MAP_W * MAP_H; i++)
+        if (live.cell[i] < CELL_IMPASSABLE) total++;
+    snprintf(buf, sizeof buf, JP_HELD_AREA, p + c, total);
+    dlg_say(buf);
+    snprintf(buf, sizeof buf, JP_HELD_RATE,
+             total ? (p + c) * 100 / total : 0);
+    dlg_say(buf);
+    dlg_say("");
+    dlg_choice(JP_CLOSE, 0);
 }
 
 static void dlg_open_info(void)
@@ -1349,6 +1423,23 @@ void app_tick(void)
         game_day(&game);
         game.purseMoved = game.human >= 0 && game.human < PLAYERS &&
                           game.side[game.human].funds != was;
+        game_endgame(&game);
+    }
+
+    /* What the world did that the screen has to say.  Both of these stop the
+     * clock the way the original does: 0xb1a8 and 0xb2d0 wait for a key. */
+    if (game.fellSide >= 0) {
+        int who = game.fellSide;
+
+        game.fellSide = -1;
+        app_sound(APP_SND_FALLEN);              /* 0xb19e */
+        running = 0;
+        dlg_open_fell(who);
+    } else if (game.over && !overSaid) {
+        overSaid = game.over;
+        app_sound(game.over == 1 ? APP_SND_OK : APP_SND_FALLEN);
+        running = 0;
+        dlg_open_over(game.over == 1);
     }
     for (i = 0; i < MAP_W * MAP_H; i++) live.cell[i] = game.cell[i].tile;
     ticks++;
@@ -1436,8 +1527,14 @@ int app_song_wanted(void)
     if (mode == APP_MODE_MAP) {                 /* 0x1945 */
         int set = map.terrain / 10;
 
+        /* sub_b2f2 puts 1 in [0x3bc6] when the game is won and sub_b28d puts
+         * 2 there when it is lost, before loading and starting it. */
+        if (game.over == 1) return 1;
+        if (game.over == 2) return 2;
         if (set < 1) return 0;
-        return 16 + 2 * (set - 1);
+        /* 0x1979: the low bit picks the second of the terrain's pair, and
+         * sub_a75d is what sets it - see Game.songHot. */
+        return (16 + 2 * (set - 1)) | (game.songHot ? 1 : 0);
     }
     return 0;
 }

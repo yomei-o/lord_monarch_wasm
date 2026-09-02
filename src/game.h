@@ -185,6 +185,22 @@ typedef struct {
      * purse across the turn instead of touching every place that spends: the
      * two differ only if something credits exactly nought. */
     int purseMoved;
+
+    /* How a game ends, and what the screen has to say while it does.
+     *
+     *   fellSide  a country went this turn, and which - 0xb182 puts up
+     *             DS:0x1137 ("＠Sは滅亡しました。") and plays 0x302 for it
+     *   over      0 while it is still going, 1 won, 2 lost.  sub_b2f2 calls it
+     *             won when three of the four players are out and sub_b28d
+     *             calls it lost when the human's own flag says its country is
+     *             gone; both then change the music - song 1 for the one, song
+     *             2 for the other.
+     *   songHot   sub_a75d, which is not about ending at all: it adds up the
+     *             other three players' land and switches to the odd half of
+     *             the terrain's pair when the human holds more than eight
+     *             times that, and back when their total passes the human's.
+     */
+    int fellSide, over, songHot;
     int day;                            /* DS:3BCC, days gone */
     int daysLeft;                       /* DS:3BCA */
     int human;                          /* DS:3C00, the side the player has */
@@ -225,6 +241,9 @@ void game_step(Game *g);
 /* sub_a731: one turn's worth of calendar.  Called after the sweeps, the way
  * 0x1a56 is. */
 void game_day(Game *g);
+
+/* Once a turn, after the sweeps: works out `over` and `songHot`.  See Game. */
+void game_endgame(Game *g);
 
 /* One pass of the world tick, following sub_3332.  It walks `(144 >> speed) - 1`
  * cells, stepping the cursor 23 cells at a time (46 bytes) and wrapping at 2304,
