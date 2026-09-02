@@ -576,7 +576,10 @@ void app_click(int x, int y)
 
     icon = mode == APP_MODE_MAP ? screen_to_icon(x, y) : -1;
     if (icon >= 0) {
-        panelIcon = icon;
+        /* Press it, but leave the keyboard where it was: a mouse click is not
+         * the same as walking the cursor into the panel, and moving the focus
+         * here meant the arrows silently stopped moving the map cursor and
+         * cancel closed the panel instead of opening it. */
         icon_press(icon);
         return;
     }
@@ -659,8 +662,14 @@ void app_render(void)
     memcpy(scr.px, bg.px, sizeof scr.px);
     if (mode != APP_MODE_MAP) return;
     if (running) app_tick();
+    /* Exactly as many squares as the window holds, and not one more: gfx_draw_map
+     * does not clip, and the extra row and column this used to ask for spilled a
+     * whole tile over the right and bottom edges of WAKU's frame - which reads
+     * as the frame being in the wrong place rather than as the map being too
+     * big.  Scrolling is by whole squares, so there is never a part-tile edge
+     * to cover. */
     gfx_draw_map(&scr, &live, &bank, VIEW_X, VIEW_Y, scrollX, scrollY,
-                 VIEW_W / bank.size + 1, VIEW_H / bank.size + 1);
+                 VIEW_W / bank.size, VIEW_H / bank.size);
     /* No marker under the pointer.  The original has no mouse at all - there is
      * not one mouse port in the whole binary - so a box following the cursor is
      * an invention of this port, and drawing over the terrain to show where the
