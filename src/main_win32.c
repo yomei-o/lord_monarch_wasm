@@ -6,6 +6,7 @@
  *   LEFT / RIGHT     previous / next map
  *   arrows + SHIFT   scroll the view
  *   1 2 3            8x8 / 16x16 / 32x32 tiles
+ *   C                mark the four castles
  *   BACKSPACE        back to the title
  *   ESC              quit
  *
@@ -66,6 +67,7 @@ static int translate(WPARAM wp, int shift)
     case '1':      return APP_KEY_TILE8;
     case '2':      return APP_KEY_TILE16;
     case '3':      return APP_KEY_TILE32;
+    case 'C':      return APP_KEY_CASTLES;
     default:       return 0;
     }
 }

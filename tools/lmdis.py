@@ -205,10 +205,33 @@ class Prog:
         return sorted(set(out))
 
 
+# Word tables that only an indexed `jmp` reaches, so following flow cannot find
+# what is in them.  Each entry is (address, count).
+#
+#   0x3a47  the unit order handlers.  The dispatcher at 0x385a does
+#           `mov bl,[si+0x0a] / and bx,0x0f / add bx,bx / jmp cs:[bx+0x3a47]`,
+#           so the low nibble of a unit's byte at +0x0a picks one of sixteen.
+JUMP_TABLES = (
+    (0x3a47, 16),
+)
+
+
+def seeds_from_tables(data):
+    out = set()
+    for at, n in JUMP_TABLES:
+        for i in range(n):
+            if at + i * 2 + 2 > len(data):
+                break
+            v = struct.unpack_from('<H', data, at + i * 2)[0]
+            if v < len(data):
+                out.add(v)
+    return out
+
+
 def seeds_from_calls(data):
     """Every plausible near-call target, so the sweep starts everywhere the
     code actually calls into rather than only where flow happens to reach."""
-    out = {ENTRY}
+    out = {ENTRY} | seeds_from_tables(data)
     for i in range(len(data) - 3):
         if data[i] == 0xe8:
             t = (i + 3 + struct.unpack_from('<h', data, i + 1)[0]) & 0xffff

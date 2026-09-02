@@ -60,6 +60,7 @@
   <button data-key="8">8×8</button>
   <button data-key="9">16×16</button>
   <button data-key="10">32×32</button>
+  <button data-key="12">城の位置</button>
 </div>
 
 <div id="keys">
@@ -67,6 +68,7 @@
   <b>← →</b><span>前後のマップ（全 52 面）</span>
   <b>Shift + ← → ↑ ↓</b><span>表示位置のスクロール</span>
   <b>1 / 2 / 3</b><span>タイルの大きさ 8×8 / 16×16 / 32×32</span>
+  <b>C</b><span>4 勢力の城に印をつける（マップの 0x14〜0x17 のセル）</span>
   <b>Backspace</b><span>タイトルに戻る</span>
 </div>
 
@@ -79,7 +81,7 @@
   // side cannot drift apart silently through a name.
   var KEY = {
     START: 1, PREV_MAP: 2, NEXT_MAP: 3, LEFT: 4, RIGHT: 5, UP: 6, DOWN: 7,
-    TILE8: 8, TILE16: 9, TILE32: 10, BACK: 11
+    TILE8: 8, TILE16: 9, TILE32: 10, BACK: 11, CASTLES: 12
   };
 
   var canvas = document.getElementById('screen');
@@ -125,6 +127,7 @@
       case '1': return KEY.TILE8;
       case '2': return KEY.TILE16;
       case '3': return KEY.TILE32;
+      case 'c': case 'C': return KEY.CASTLES;
       default:  return 0;
     }
   }

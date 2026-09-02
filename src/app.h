@@ -27,7 +27,8 @@ enum {
     APP_KEY_TILE8,
     APP_KEY_TILE16,
     APP_KEY_TILE32,
-    APP_KEY_BACK
+    APP_KEY_BACK,
+    APP_KEY_CASTLES        /* toggle the castle markers */
 };
 
 /* Opens the image and puts the app on the title screen.  0 on failure, with a

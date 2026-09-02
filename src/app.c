@@ -1,4 +1,5 @@
 #include "app.h"
+#include "game.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -42,6 +43,8 @@ static Screen bg;
 static Disk *disk;
 static Bank bank;
 static Map map;
+static Game game;
+static int showCastles;
 static int mode = APP_MODE_TITLE;
 static int mapNumber, tileSize = 16, scrollX, scrollY;
 static char status[256];
@@ -142,8 +145,12 @@ int app_show_map(int number, int size)
     mapNumber = number;
     tileSize = size;
     scrollX = scrollY = 0;
-    snprintf(status, sizeof status, "%s  terrain %d  %s  %dx%d tiles",
-             name, map.terrain, bankName, size, size);
+    game_init(&game, &map);
+    snprintf(status, sizeof status,
+             "%s  terrain %d  %s  %dx%d  castles %d,%d %d,%d %d,%d %d,%d",
+             name, map.terrain, bankName, size, size,
+             game.castleX[0], game.castleY[0], game.castleX[1], game.castleY[1],
+             game.castleX[2], game.castleY[2], game.castleX[3], game.castleY[3]);
     return 1;
 }
 
@@ -179,14 +186,43 @@ void app_key(int key)
     case APP_KEY_TILE8:     app_show_map(mapNumber, 8); break;
     case APP_KEY_TILE16:    app_show_map(mapNumber, 16); break;
     case APP_KEY_TILE32:    app_show_map(mapNumber, 32); break;
+    case APP_KEY_CASTLES:   showCastles = !showCastles; break;
     default: break;
+    }
+}
+
+/* A one-pixel box round a cell, in the view.  Purely an aid for reading the
+ * map while the simulation is being worked out - the original draws no such
+ * thing.  The positions themselves are the game's: cell values 0x14..0x17 mark
+ * the four sides' castles, and every one of the 52 maps has exactly one of
+ * each. */
+static void outline_cell(int cx, int cy, unsigned char colour)
+{
+    const int n = bank.size;
+    int x0 = VIEW_X + (cx - scrollX) * n, y0 = VIEW_Y + (cy - scrollY) * n;
+    int i;
+
+    if (x0 < VIEW_X || y0 < VIEW_Y ||
+        x0 + n > VIEW_X + VIEW_W || y0 + n > VIEW_Y + VIEW_H) return;
+    for (i = 0; i < n; i++) {
+        scr.px[(size_t)y0 * SCR_W + x0 + i] = colour;
+        scr.px[(size_t)(y0 + n - 1) * SCR_W + x0 + i] = colour;
+        scr.px[(size_t)(y0 + i) * SCR_W + x0] = colour;
+        scr.px[(size_t)(y0 + i) * SCR_W + x0 + n - 1] = colour;
     }
 }
 
 void app_render(void)
 {
     memcpy(scr.px, bg.px, sizeof scr.px);
-    if (mode == APP_MODE_MAP)
-        gfx_draw_map(&scr, &map, &bank, VIEW_X, VIEW_Y, scrollX, scrollY,
-                     VIEW_W / bank.size + 1, VIEW_H / bank.size + 1);
+    if (mode != APP_MODE_MAP) return;
+    gfx_draw_map(&scr, &map, &bank, VIEW_X, VIEW_Y, scrollX, scrollY,
+                 VIEW_W / bank.size + 1, VIEW_H / bank.size + 1);
+    if (showCastles) {
+        /* 6 is the yellow of the interface palette, which no terrain uses. */
+        int i;
+        for (i = 0; i < SIDES; i++)
+            if (game.castleX[i] >= 0)
+                outline_cell(game.castleX[i], game.castleY[i], 6);
+    }
 }
