@@ -105,6 +105,9 @@ typedef struct {
     unsigned short pos;         /* +0x02, (y << 8) | x of the castle */
     unsigned short at;          /* +0x04, the castle cell as a byte offset */
     short lord;                 /* +0x06, the side's first unit (a slot here) */
+    /* +0x08 and +0x0a are one 32-bit total: sub_a6a5 sums the `amount` byte of
+     * every square the side holds (and, for the neutral side, every nest). */
+    unsigned long landTotal;
     unsigned short full;        /* +0x0c, set to 200 */
     /* +0x0e and +0x10 are one 32-bit purse: sub_abc7 does
      * `sub cx,ax / sbb di,dx` across the pair. */
@@ -181,6 +184,10 @@ void game_tick_cells(Game *g);
  * Returns 1 if the square was developed.
  */
 int game_develop(Game *g, int slot);
+
+/* Recomputes every side's land total, at sub_a6a5: the sum of the `amount` byte
+ * over its 0x08 + side squares.  Tile 5, the nests, count towards side 4. */
+void game_land_totals(Game *g);
 
 /* A unit standing on its own productive land picks up what the square holds and
  * leaves 1 behind, at 0x34bb. */

@@ -483,6 +483,60 @@ int main(int argc, char **argv)
         }
     }
 
+    /* The lord: it tops itself up towards the side's land total, and pushes a
+     * worker out of the gate when what it holds outgrows that total. */
+    {
+        Map m;
+        int lord, before, i;
+
+        gfx_load_map(&m, d, "B_000.MAP");
+        game_init(g, &m);
+        game_land_totals(g);
+        lord = g->side[0].lord;
+
+        checkf(g->side[0].landTotal > 0,
+               "side 0's land holds %d in total", (int)g->side[0].landTotal,
+               0, 0);
+
+        /* Its carried 1000 is at or above the total, so nothing happens. */
+        before = g->unit[lord].carrying;
+        game_unit_step(g, lord);
+        checkf(g->unit[lord].carrying == before,
+               "a lord at its cap stays at %d (now %d)", before,
+               g->unit[lord].carrying, 0);
+
+        /* Drain the land and the lord pushes a worker out - but the gate is
+         * taken at the start, so free it first. */
+        for (i = 0; i < MAP_W * MAP_H; i++) g->cell[i].amount = 1;
+        game_land_totals(g);
+        {
+            int gate = game_cell_index(7, 8);
+            int mate = g->occupant[gate];
+            int units;
+            if (mate >= 0) {
+                g->unit[mate].flags = 0x80;
+                g->occupant[gate] = -1;
+            }
+            units = game_unit_count(g, -1);
+            before = g->unit[lord].carrying;
+            game_unit_step(g, lord);
+            checkf(game_unit_count(g, -1) == units + 1,
+                   "a worker appeared (%d -> %d)", units,
+                   game_unit_count(g, -1), 0);
+            check(g->occupant[gate] >= 0, "and it is standing in the gate");
+            if (g->occupant[gate] >= 0) {
+                const Unit *w = &g->unit[g->occupant[gate]];
+                checkf(w->carrying == (unsigned short)(before >> 2),
+                       "it carries %d, expected a quarter of %d",
+                       w->carrying, before, 0);
+                check(w->state == UNIT_STATE_FOLLOW, "in the worker state");
+                check(w->side == 0, "on our side");
+            }
+            checkf(g->unit[lord].carrying == (unsigned short)(before - (before >> 2)),
+                   "the lord kept %d of %d", g->unit[lord].carrying, before, 0);
+        }
+    }
+
     disk_close(d);
     free(g);
     if (failures) {

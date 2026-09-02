@@ -412,6 +412,7 @@ void game_tick_cells(Game *g)
         if (at >= MAP_W * MAP_H) at -= MAP_W * MAP_H;
     }
     g->cellCursor = at;
+    game_land_totals(g);
 }
 
 /* The castle collects, at 0x3581.  It only happens when the side's own lord is
@@ -641,13 +642,18 @@ static void unit_worker(Game *g, int slot)
     if (dir >= 0) game_move(g, slot, dir);
 }
 
+static void unit_lord(Game *g, int slot);
+
 void game_unit_step(Game *g, int slot)
 {
     Unit *u = &g->unit[slot];
 
     if (u->flags & 0x80) return;
     if (u->side >= PLAYERS) return;             /* the neutral ones idle */
-    if (u->state & 0x20) return;                /* the lord; 0x3a67, not ported */
+    if (u->state & 0x20) {                      /* the lord, 0x3a67 */
+        unit_lord(g, slot);
+        return;
+    }
     switch (u->state & 0x0f) {
     case 1: case 3:                 /* the worker, 0x3998 */
     case 2:                         /* walking to a target, 0x386c */
@@ -668,4 +674,65 @@ void game_land_count(const Game *g, int side, int *productive, int *claimed)
     }
     if (productive) *productive = p;
     if (claimed) *claimed = c;
+}
+
+void game_land_totals(Game *g)
+{
+    int i;
+    for (i = 0; i < SIDES; i++) g->side[i].landTotal = 0;
+    for (i = 0; i < MAP_W * MAP_H; i++) {
+        unsigned char t = g->cell[i].tile;
+        int side;
+        if (t == 5) side = 4;                       /* a nest, for the wild */
+        else if (t >= CELL_TERRITORY0 && t < CELL_TERRITORY0 + PLAYERS)
+            side = t - CELL_TERRITORY0;
+        else continue;
+        g->side[side].landTotal += g->cell[i].amount;
+    }
+}
+
+/* The lord, at 0x3a67 by way of sub_3c7f.  Standing on its own castle it either
+ * pushes a worker out of the gate or tops itself up:
+ *
+ *   carried / 2 > the side's land total   ->  a worker appears on the square to
+ *                                             the right carrying a quarter of
+ *                                             what the lord holds, which the
+ *                                             lord gives up
+ *   otherwise                             ->  carried climbs a quarter of the
+ *                                             way towards the land total, plus
+ *                                             one, and stops when it gets there
+ *
+ * So the lord's reserve tracks how much the side's ground is holding, and a
+ * worker goes out when the ground has been drained relative to it.
+ */
+static void unit_lord(Game *g, int slot)
+{
+    Unit *u = &g->unit[slot];
+    Side *s = &g->side[u->side];
+    int index = game_cell_index(u->pos & 0xff, u->pos >> 8);
+    unsigned long cap;
+
+    if (g->cell[index].tile != CELL_CASTLE0 + u->side) return;  /* 0x3cd9 */
+
+    if ((unsigned long)(u->carrying >> 1) > s->landTotal) {      /* 0x3ca0 */
+        int gate = index + 1;
+        int give, slot2;
+        if (index % MAP_W + 1 >= MAP_W) return;
+        if (g->occupant[gate] >= 0) return;                      /* 0x3ce2 */
+        give = u->carrying >> 2;                                 /* 0x3cf3 */
+        if (give == 0) return;
+        slot2 = place(g, gate, u->side, UNIT_STATE_FOLLOW,
+                      (unsigned short)give);
+        if (slot2 < 0) return;
+        u->carrying = (unsigned short)(u->carrying - give);
+        return;
+    }
+
+    cap = s->landTotal > 0xffff ? 0xffff : s->landTotal;          /* 0x3cb5 */
+    if (cap <= u->carrying) return;                               /* 0x3cc1 */
+    {
+        unsigned long room = cap - u->carrying;
+        unsigned long v = u->carrying + (room >> 2) + 1;
+        u->carrying = (unsigned short)(v > 0xffff ? 0xffff : v);
+    }
 }
