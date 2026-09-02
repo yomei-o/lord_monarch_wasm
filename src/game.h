@@ -50,7 +50,36 @@
 #define UNIT_STATE_LORD    0x2d /* the side's monarch */
 #define UNIT_STATE_FOLLOW  0x01
 #define UNIT_STATE_NEUTRAL 0x0f
-#define UNIT_STATE_BRIDGE  0x07 /* fill the target square in: sub_4040 */
+/* The five orders that work on a square rather than walk to it.  sub_20f0 sets
+ * one of these on the unit, puts the square in `home`, and then calls sub_c2e7,
+ * which shortens the path by one step - so the unit stops on the square before
+ * the target and works from there.
+ *
+ *   order  target tile   bite            cost        the square becomes
+ *   6      several       see sub_3f62    -           (not ported yet)
+ *   7      0x30..0x5f    carrying / 16   30 a unit   0x20, a bridge
+ *   7      0x7a          carrying / 16   2 a unit    0x20, a bridge
+ *   9      0x7b          carrying / 32   free        0x00, plain ground
+ *   10     0x20..0x2f    carrying / 32   free        0x7a, and whoever stood
+ *                                                    on it dies
+ *   10     0x7a          adds instead    free        a deeper rock, up to 255
+ *   11     0x05          carrying / 8    free        0x60
+ *
+ * In every case the bite comes off the square's `amount` and the overshoot
+ * becomes the new square's amount, so nothing is wasted.  The bite is capped at
+ * `amount + 1` for water and `amount + 255` for the rest - "add dx, 0xff" in
+ * sub_4040 and sub_4247 is a ceiling, not a minus one, which is worth writing
+ * down because reading it the other way makes the job stall one short of
+ * finishing. */
+#define UNIT_STATE_BRIDGE  0x07 /* fill it in: sub_4040 */
+#define UNIT_STATE_FELL    0x09 /* clear woodland 0x7b: sub_41dc */
+#define UNIT_STATE_BREAK   0x0a /* break a bridge back to rock: sub_4247 */
+#define UNIT_STATE_NEST    0x0b /* destroy a nest, tile 5: sub_4304 */
+
+#define CELL_NEST       0x05    /* the wild ones' nest */
+#define CELL_WOOD       0x7b    /* woodland, cleared by order 9 */
+#define CELL_BRIDGE_END 0x30    /* 0x20..0x2f is bridge and road */
+#define CELL_NEST_GONE  0x60    /* what a destroyed nest leaves */
 
 typedef struct {
     unsigned char tile;         /* the .MAP byte: which terrain tile */
@@ -293,6 +322,17 @@ int game_order_bridge(Game *g, int slot, int x, int y);
  * capped by `carrying / 16`.  Returns 1 while there is still work to do, 0 when
  * the square has become CELL_BRIDGE or the order cannot go on. */
 int game_bridge(Game *g, int slot);
+
+/* One action of whichever of the square orders the unit is on.  Returns 1 while
+ * there is more to do. */
+int game_job(Game *g, int slot);
+
+/* Which order a square asks for, or 0 if it is just somewhere to walk to. */
+int game_job_for(const Game *g, int x, int y);
+
+/* Issue that order, pathing to the shore or the edge of it as sub_c2e7 does.
+ * Returns the path length, or 0. */
+int game_order_job(Game *g, int slot, int x, int y);
 
 /* Handy for the viewer and for tests. */
 int game_unit_count(const Game *g, int side);

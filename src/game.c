@@ -1021,9 +1021,10 @@ void game_unit_step(Game *g, int slot)
         if (!state_outward(g, slot))
             u->state = (unsigned char)((u->state & 0xd0) | 1);
         break;
-    case 7:
-        /* 0x3941 -> sub_4040: standing on the shore, fill the square in. */
-        if (!game_bridge(g, slot))
+    case 7: case 9: case 10: case 11:
+        /* The square orders: fill it in, clear the wood, break a bridge, pull
+         * a nest down.  When the job is over the unit looks for fresh work. */
+        if (!game_job(g, slot))
             if (!decide(g, slot))
                 u->state = (unsigned char)((u->state & 0xd0) | 1);
         break;
@@ -1033,10 +1034,8 @@ void game_unit_step(Game *g, int slot)
             u->side = g->side[u->side].heir;
         u->state = (unsigned char)((u->state & 0xd0) | 1);
         break;
-    case 2: case 11:
-        /* Jobs at the target square: walking your own ground, chipping rock,
-         * clearing a nest.  Only developing is ported, so these fall back to
-         * looking for a fresh job. */
+    case 2:
+        /* Arrived where it was sent: develop the square it is standing on. */
         if (!game_develop(g, slot) && !(u->flags & 0x80))
             if (!decide(g, slot))
                 u->state = (unsigned char)((u->state & 0xd0) | 1);
@@ -1302,7 +1301,7 @@ int game_bridge(Game *g, int slot)
     Unit *u = &g->unit[slot];
     int tx = u->home & 0xff, ty = u->home >> 8;
     Cell *c;
-    int depth, take, per;
+    int depth, take, per, rockish;
     unsigned long cost;
 
     if (game_unit_free(g, slot) || u->side >= PLAYERS) return 0;
@@ -1310,11 +1309,16 @@ int game_bridge(Game *g, int slot)
     c = &g->cell[game_cell_index(tx, ty)];
 
     if (c->tile == CELL_ROCK) {
-        depth = c->amount - 1;
+        /* 0x40e6: the cap is `amount + 255`, which is only ever reached by a
+         * unit carrying a great deal - "add dx, 0xff" is a ceiling, not a
+         * "minus one". */
+        depth = c->amount + 255;
         per = 2;
+        rockish = 1;
     } else if (c->tile >= CELL_IMPASSABLE && c->tile < CELL_WATER_END) {
         depth = c->amount + 1;
         per = 30;
+        rockish = 0;
     } else {
         return 0;                       /* already filled, or never fillable */
     }
@@ -1327,7 +1331,9 @@ int game_bridge(Game *g, int slot)
     if (g->side[u->side].funds < cost) return 0;
     g->side[u->side].funds -= cost;
 
-    if (c->amount > take) {
+    /* Water keeps going while amount >= take (0x40c7 converts on a borrow);
+     * a rock converts as soon as amount <= take (0x4112 uses jbe). */
+    if (rockish ? c->amount > take : c->amount >= take) {
         c->amount = (unsigned char)(c->amount - take);
         return 1;                       /* more to do */
     }
@@ -1338,21 +1344,116 @@ int game_bridge(Game *g, int slot)
 
 int game_order_bridge(Game *g, int slot, int x, int y)
 {
+    if (game_job_for(g, x, y) != UNIT_STATE_BRIDGE) return 0;
+    return game_order_job(g, slot, x, y);
+}
+
+/* sub_41dc, sub_4247, sub_4304: the three free ones.  Each takes a bite out of
+ * the target's amount and turns the square into something else when it runs
+ * out; the shape is the same as the bridge, only the divisor, the tile it
+ * accepts and the tile it leaves differ. */
+static int job_fell(Game *g, int slot)          /* order 9, woodland */
+{
+    Unit *u = &g->unit[slot];
+    Cell *c = &g->cell[game_cell_index(u->home & 0xff, u->home >> 8)];
+    int take = u->carrying >> 5;
+
+    if (c->tile != CELL_WOOD || take <= 0) return 0;
+    if (c->amount > take) {
+        c->amount = (unsigned char)(c->amount - take);
+        return 1;
+    }
+    c->tile = 0;
+    c->amount = (unsigned char)(take - c->amount);
+    return 0;
+}
+
+static int job_break(Game *g, int slot)         /* order 10, a bridge or road */
+{
+    Unit *u = &g->unit[slot];
+    int index = game_cell_index(u->home & 0xff, u->home >> 8);
+    Cell *c = &g->cell[index];
+    int take = u->carrying >> 5, depth, who;
+
+    if (take <= 0) return 0;
+    if (c->tile == CELL_ROCK) {
+        /* Already a rock: pile more on, up to 255. */
+        int n = c->amount + take;
+        c->amount = (unsigned char)(n > 0xff ? 0xff : n);
+        return 0;
+    }
+    if (c->tile < CELL_BRIDGE || c->tile >= CELL_BRIDGE_END) return 0;
+    depth = c->amount + 255;            /* 0x4279, a ceiling and nothing more */
+    if (take > depth) take = depth;
+    if (c->amount > take) {
+        c->amount = (unsigned char)(c->amount - take);
+        return 1;
+    }
+    c->tile = CELL_ROCK;
+    c->amount = (unsigned char)(take - c->amount);
+    /* Whoever was standing on it goes down with it, credited to us. */
+    who = g->occupant[index];
+    if (who >= 0) game_kill(g, who, u->side);
+    return 0;
+}
+
+static int job_nest(Game *g, int slot)          /* order 11, a nest */
+{
+    Unit *u = &g->unit[slot];
+    int index = game_cell_index(u->home & 0xff, u->home >> 8);
+    Cell *c = &g->cell[index];
+    int take = u->carrying >> 3;
+
+    /* The original refuses while anything is standing on it. */
+    if (c->tile != CELL_NEST || take <= 0) return 0;
+    if (g->occupant[index] >= 0) return 0;
+    if (c->amount > take) {
+        c->amount = (unsigned char)(c->amount - take);
+        return 1;
+    }
+    c->tile = CELL_NEST_GONE;
+    c->amount = 0;
+    return 0;
+}
+
+int game_job(Game *g, int slot)
+{
+    if (game_unit_free(g, slot)) return 0;
+    switch (g->unit[slot].state & 0x0f) {
+    case UNIT_STATE_BRIDGE: return game_bridge(g, slot);
+    case UNIT_STATE_FELL:   return job_fell(g, slot);
+    case UNIT_STATE_BREAK:  return job_break(g, slot);
+    case UNIT_STATE_NEST:   return job_nest(g, slot);
+    default:                return 0;
+    }
+}
+
+int game_job_for(const Game *g, int x, int y)
+{
+    unsigned char t;
+    if (x <= 0 || x >= MAP_W - 1 || y <= 0 || y >= MAP_H - 1) return 0;
+    t = g->cell[game_cell_index(x, y)].tile;
+    if (t == CELL_ROCK) return UNIT_STATE_BRIDGE;   /* break it into a bridge */
+    if (t >= CELL_IMPASSABLE && t < CELL_WATER_END) return UNIT_STATE_BRIDGE;
+    if (t == CELL_WOOD) return UNIT_STATE_FELL;
+    if (t >= CELL_BRIDGE && t < CELL_BRIDGE_END) return UNIT_STATE_BREAK;
+    if (t == CELL_NEST) return UNIT_STATE_NEST;
+    return 0;
+}
+
+int game_order_job(Game *g, int slot, int x, int y)
+{
     static const signed char dx[4] = {0, 1, 0, -1};
     static const signed char dy[4] = {-1, 0, 1, 0};
-    int best = 0, d;
+    int order = game_job_for(g, x, y), best = 0, d;
 
-    if (game_unit_free(g, slot)) return 0;
-    if (x <= 0 || x >= MAP_W - 1 || y <= 0 || y >= MAP_H - 1) return 0;
-    {
-        unsigned char t = g->cell[game_cell_index(x, y)].tile;
-        if (t != CELL_ROCK && (t < CELL_IMPASSABLE || t >= CELL_WATER_END))
-            return 0;
-    }
-    /* Walk to whichever shore square is cheapest to reach.  Measuring means
-     * asking game_path_to, which leaves its answer on the unit, so the winner
-     * has to be asked for again at the end - otherwise the unit walks the last
-     * route tried rather than the shortest. */
+    if (!order || game_unit_free(g, slot)) return 0;
+
+    /* sub_c2e7 shortens the path by one step so the unit stops before the
+     * target; here that is done by pathing to a neighbour instead, which comes
+     * to the same thing and also works when the target cannot be entered at
+     * all.  Measuring means asking game_path_to, which leaves its answer on the
+     * unit, so the winner has to be asked for again. */
     {
         int bx = 0, by = 0;
         for (d = 0; d < 4; d++) {
@@ -1373,7 +1474,7 @@ int game_order_bridge(Game *g, int slot, int x, int y)
     }
     g->unit[slot].home = (unsigned short)((y << 8) | x);
     g->unit[slot].state =
-        (unsigned char)((g->unit[slot].state & 0xd0) | UNIT_STATE_BRIDGE);
+        (unsigned char)((g->unit[slot].state & 0xd0) | order);
     g->unit[slot].retry = 4;
     return best;
 }

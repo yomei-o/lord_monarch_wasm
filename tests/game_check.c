@@ -711,6 +711,75 @@ int main(int argc, char **argv)
         }
     }
 
+    /* The other three square orders, the same way: find a target this side can
+     * reach, order it, walk, and work until the square turns into what the
+     * handler says it turns into.
+     *
+     *   9  woodland 0x7b  -> plain ground, free       (sub_41dc)
+     *   10 a bridge 0x2x  -> a rock 0x7a, free        (sub_4247)
+     *   11 a nest 0x05    -> 0x60, free               (sub_4304)
+     */
+    {
+        static const struct {
+            const char *what;
+            unsigned char from, to;
+            int order;
+        } jobs[3] = {
+            {"woodland", CELL_WOOD, 0x00, UNIT_STATE_FELL},
+            {"a bridge", 0x25,      CELL_ROCK, UNIT_STATE_BREAK},
+            {"a nest",   CELL_NEST, CELL_NEST_GONE, UNIT_STATE_NEST},
+        };
+        int j;
+        for (j = 0; j < 3; j++) {
+            Map m;
+            int n, who = -1, target = -1, tx = 0, ty = 0, guard;
+
+            /* Whichever of the 52 offers a reachable one first. */
+            for (n = 0; n < 52 && target < 0; n++) {
+                char name[32];
+                int i;
+                snprintf(name, sizeof name, "B_%03d.MAP", n);
+                if (!gfx_load_map(&m, d, name)) continue;
+                game_init(g, &m);
+                who = g->occupant[game_cell_index(g->side[0].pos & 0xff,
+                                                  (g->side[0].pos >> 8) + 1)];
+                if (who < 0) continue;
+                for (i = 0; i < MAP_W * MAP_H; i++) {
+                    int x = i % MAP_W, y = i / MAP_W;
+                    if (g->cell[i].tile != jobs[j].from) continue;
+                    if (game_job_for(g, x, y) != jobs[j].order) continue;
+                    if (game_order_job(g, who, x, y) <= 0) continue;
+                    target = i;
+                    tx = x;
+                    ty = y;
+                    break;
+                }
+            }
+            checkf(target >= 0, "some map has %s side 0 can reach",
+                   0, 0, 0);
+            if (target < 0) continue;
+
+            checkf((g->unit[who].state & 0x0f) == jobs[j].order,
+                   "the state for %s is %02x", 0, g->unit[who].state, 0);
+            check(g->unit[who].home == (unsigned short)((ty << 8) | tx),
+                  "and the square is remembered");
+
+            while (game_path_dir(g, who) >= 0) {
+                int dir = game_path_dir(g, who);
+                if (game_move(g, who, dir)) game_path_advance(g, who);
+            }
+            /* A nest refuses while anything stands on it; nothing does here. */
+            guard = 0;
+            while (g->cell[target].tile == jobs[j].from && guard++ < 400) {
+                g->side[0].funds += 10000;
+                g->unit[who].carrying = CELL_FULL_AMOUNT;
+                if (!game_job(g, who)) break;
+            }
+            checkf(g->cell[target].tile == jobs[j].to,
+                   "%d,%d ended as tile %02x", tx, ty, g->cell[target].tile);
+        }
+    }
+
     disk_close(d);
     free(g);
     if (failures) {

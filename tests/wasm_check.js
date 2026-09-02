@@ -116,8 +116,7 @@ LordMonarch().then((m) => {
   if (picked < 0) process.exit(1);
   m._lm_click(...cell(12, 4));
   const bridged = m.UTF8ToString(m._lm_status());
-  const bridgeOk = /^bridge 12,4: \d+ squares to the shore, then 30 funds/
-      .test(bridged);
+  const bridgeOk = /^bridge 12,4: [0-9]+ squares to walk first/.test(bridged);
   console.log(`${bridgeOk ? 'ok  ' : 'FAIL'}  clicking water orders a bridge: ` +
               `${bridged}`);
   if (!bridgeOk) process.exit(1);

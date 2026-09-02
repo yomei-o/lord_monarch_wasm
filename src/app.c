@@ -453,19 +453,22 @@ void app_click(int x, int y)
             selected = who;
         return;
     }
-    /* Send it there.  A square that cannot be walked on but can be filled in -
-     * water, or a rock - becomes a bridge order (state 7) instead of a walk
-     * order (state 2); everything else is a walk.  If it cannot get there the
-     * selection just clears. */
+    /* Send it there.  A square that asks for work rather than a walk - water
+     * or a rock to fill in, woodland to clear, a bridge to break, a nest to
+     * pull down - becomes that order; everything else is a walk.  If it cannot
+     * get there the selection just clears. */
     {
-        unsigned char t = game.cell[index].tile;
-        if (t == CELL_ROCK || (t >= CELL_IMPASSABLE && t < CELL_WATER_END)) {
-            int len = game_order_bridge(&game, selected, cx, cy);
-            snprintf(status, sizeof status,
-                     len ? "bridge %d,%d: %d squares to the shore, then %d "
-                           "funds a unit of depth"
-                         : "bridge %d,%d: no way to the shore",
-                     cx, cy, len, t == CELL_ROCK ? 2 : 30);
+        int order = game_job_for(&game, cx, cy);
+        if (order) {
+            int len = game_order_job(&game, selected, cx, cy);
+            snprintf(status, sizeof status, len
+                     ? "%s %d,%d: %d squares to walk first"
+                     : "%s %d,%d: no way to reach it",
+                     order == UNIT_STATE_BRIDGE ? "bridge" :
+                     order == UNIT_STATE_FELL   ? "clear the wood at" :
+                     order == UNIT_STATE_BREAK  ? "break the bridge at" :
+                                                  "pull the nest down at",
+                     cx, cy, len);
         } else {
             game_order_move(&game, selected, cx, cy);
         }
