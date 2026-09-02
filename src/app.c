@@ -453,9 +453,23 @@ void app_click(int x, int y)
             selected = who;
         return;
     }
-    /* Send it there: a path and state 2, which is what the game's own orders
-     * amount to.  If it cannot get there the selection just clears. */
-    game_order_move(&game, selected, cx, cy);
+    /* Send it there.  A square that cannot be walked on but can be filled in -
+     * water, or a rock - becomes a bridge order (state 7) instead of a walk
+     * order (state 2); everything else is a walk.  If it cannot get there the
+     * selection just clears. */
+    {
+        unsigned char t = game.cell[index].tile;
+        if (t == CELL_ROCK || (t >= CELL_IMPASSABLE && t < CELL_WATER_END)) {
+            int len = game_order_bridge(&game, selected, cx, cy);
+            snprintf(status, sizeof status,
+                     len ? "bridge %d,%d: %d squares to the shore, then %d "
+                           "funds a unit of depth"
+                         : "bridge %d,%d: no way to the shore",
+                     cx, cy, len, t == CELL_ROCK ? 2 : 30);
+        } else {
+            game_order_move(&game, selected, cx, cy);
+        }
+    }
     selected = -1;
 }
 

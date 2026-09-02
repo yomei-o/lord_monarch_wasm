@@ -1021,6 +1021,12 @@ void game_unit_step(Game *g, int slot)
         if (!state_outward(g, slot))
             u->state = (unsigned char)((u->state & 0xd0) | 1);
         break;
+    case 7:
+        /* 0x3941 -> sub_4040: standing on the shore, fill the square in. */
+        if (!game_bridge(g, slot))
+            if (!decide(g, slot))
+                u->state = (unsigned char)((u->state & 0xd0) | 1);
+        break;
     case 12:
         /* 0x3985: the side has fallen, so change to whoever inherited it. */
         if (g->side[u->side].heir < PLAYERS)
@@ -1281,6 +1287,97 @@ void game_unit_pos(const Game *g, int slot, int *x, int *y)
 /* An order to walk somewhere: a path and state 2, which is the shape the
  * game's own orders take (0x45b4 writes the target, builds the path with
  * sub_c0bd and sets state 2).  Returns the number of steps. */
+/* sub_4040: fill the square the unit was sent to.
+ *
+ * The square has to be water (0x30..0x5f) or a rock (0x7a), and it has to be
+ * off the border - the original refuses row or column 0 and 0x2f outright,
+ * which is why no map can be bridged at its edge.  A square's `amount` is its
+ * depth; each action takes `min(depth + 1, carrying / 16)` off it at 30 funds
+ * a unit (a rock is 2), and when the depth runs out the tile becomes 0x20 and
+ * is walkable.  The overshoot is not wasted: it becomes the new square's
+ * amount, so a bridge starts out with land already on it.
+ */
+int game_bridge(Game *g, int slot)
+{
+    Unit *u = &g->unit[slot];
+    int tx = u->home & 0xff, ty = u->home >> 8;
+    Cell *c;
+    int depth, take, per;
+    unsigned long cost;
+
+    if (game_unit_free(g, slot) || u->side >= PLAYERS) return 0;
+    if (tx <= 0 || tx >= MAP_W - 1 || ty <= 0 || ty >= MAP_H - 1) return 0;
+    c = &g->cell[game_cell_index(tx, ty)];
+
+    if (c->tile == CELL_ROCK) {
+        depth = c->amount - 1;
+        per = 2;
+    } else if (c->tile >= CELL_IMPASSABLE && c->tile < CELL_WATER_END) {
+        depth = c->amount + 1;
+        per = 30;
+    } else {
+        return 0;                       /* already filled, or never fillable */
+    }
+
+    take = u->carrying >> 4;
+    if (take > depth) take = depth;
+    if (take <= 0) return 0;
+
+    cost = (unsigned long)take * (unsigned long)per;
+    if (g->side[u->side].funds < cost) return 0;
+    g->side[u->side].funds -= cost;
+
+    if (c->amount > take) {
+        c->amount = (unsigned char)(c->amount - take);
+        return 1;                       /* more to do */
+    }
+    c->tile = CELL_BRIDGE;
+    c->amount = (unsigned char)(take - c->amount);
+    return 0;                           /* done */
+}
+
+int game_order_bridge(Game *g, int slot, int x, int y)
+{
+    static const signed char dx[4] = {0, 1, 0, -1};
+    static const signed char dy[4] = {-1, 0, 1, 0};
+    int best = 0, d;
+
+    if (game_unit_free(g, slot)) return 0;
+    if (x <= 0 || x >= MAP_W - 1 || y <= 0 || y >= MAP_H - 1) return 0;
+    {
+        unsigned char t = g->cell[game_cell_index(x, y)].tile;
+        if (t != CELL_ROCK && (t < CELL_IMPASSABLE || t >= CELL_WATER_END))
+            return 0;
+    }
+    /* Walk to whichever shore square is cheapest to reach.  Measuring means
+     * asking game_path_to, which leaves its answer on the unit, so the winner
+     * has to be asked for again at the end - otherwise the unit walks the last
+     * route tried rather than the shortest. */
+    {
+        int bx = 0, by = 0;
+        for (d = 0; d < 4; d++) {
+            int nx = x + dx[d], ny = y + dy[d], len;
+            if (nx < 0 || nx >= MAP_W || ny < 0 || ny >= MAP_H) continue;
+            if (g->cell[game_cell_index(nx, ny)].tile >= CELL_IMPASSABLE)
+                continue;
+            len = game_path_to(g, slot, nx, ny);
+            if (len > 0 && (!best || len < best)) {
+                best = len;
+                bx = nx;
+                by = ny;
+            }
+        }
+        if (!best) return 0;
+        best = game_path_to(g, slot, bx, by);
+        if (best <= 0) return 0;
+    }
+    g->unit[slot].home = (unsigned short)((y << 8) | x);
+    g->unit[slot].state =
+        (unsigned char)((g->unit[slot].state & 0xd0) | UNIT_STATE_BRIDGE);
+    g->unit[slot].retry = 4;
+    return best;
+}
+
 int game_order_move(Game *g, int slot, int x, int y)
 {
     Unit *u = &g->unit[slot];

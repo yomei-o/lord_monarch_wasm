@@ -614,6 +614,103 @@ int main(int argc, char **argv)
         }
     }
 
+    /* Bridges.  B_014 is the spiral: four castles at the head of their own lane
+     * with water across each one, so it cannot be played at all without them. */
+    {
+        Map m;
+        int lord, i, water = -1, wx = 0, wy = 0, len;
+        unsigned long funds;
+
+        gfx_load_map(&m, d, "B_014.MAP");
+        game_init(g, &m);
+        /* The worker in the gate, not the lord: the lord is walled into its
+         * castle until the gate square is free. */
+        lord = g->occupant[game_cell_index(g->side[0].pos & 0xff,
+                                           (g->side[0].pos >> 8) + 1)];
+        check(lord >= 0, "B_014 side 0 has a worker in the gate");
+
+        /* Find the water this side has to cross: the nearest square in
+         * 0x30..0x5f that is off the border and has dry land next to it. */
+        for (i = 0; i < MAP_W * MAP_H && water < 0; i++) {
+            int x = i % MAP_W, y = i / MAP_W, d2;
+            unsigned char t = g->cell[i].tile;
+            if (x <= 0 || x >= MAP_W - 1 || y <= 0 || y >= MAP_H - 1) continue;
+            if (t < CELL_IMPASSABLE || t >= CELL_WATER_END) continue;
+            for (d2 = 0; d2 < 4; d2++) {
+                static const int ox[4] = {0, 1, 0, -1}, oy[4] = {-1, 0, 1, 0};
+                int n = game_cell_index(x + ox[d2], y + oy[d2]);
+                if (g->cell[n].tile < CELL_IMPASSABLE &&
+                    game_path_to(g, lord, x + ox[d2], y + oy[d2]) > 0) {
+                    water = i;
+                    wx = x;
+                    wy = y;
+                    break;
+                }
+            }
+        }
+        checkf(water >= 0, "B_014 has water side 0 can reach (%d)", water, 0, 0);
+
+        /* Ordering a bridge does not walk onto the water - it walks to the
+         * shore and remembers the square. */
+        len = game_order_bridge(g, lord, wx, wy);
+        checkf(len > 0, "an order to bridge %d,%d (%d)", wx, wy, len);
+        checkf((g->unit[lord].state & 0x0f) == UNIT_STATE_BRIDGE,
+               "the state is now %02x", g->unit[lord].state, 0, 0);
+        checkf(g->unit[lord].home == (unsigned short)((wy << 8) | wx),
+               "the target is remembered as %04x", g->unit[lord].home, 0, 0);
+
+        while (game_path_dir(g, lord) >= 0) {
+            int dir = game_path_dir(g, lord);
+            if (game_move(g, lord, dir)) game_path_advance(g, lord);
+        }
+        checkf(g->cell[game_cell_index(g->unit[lord].pos & 0xff,
+                                      g->unit[lord].pos >> 8)].tile
+                   < CELL_IMPASSABLE,
+               "it stopped on dry land at %d,%d",
+               g->unit[lord].pos & 0xff, g->unit[lord].pos >> 8, 0);
+
+        /* Filling costs 30 a unit of depth, capped by carrying / 16. */
+        {
+            int depth = g->cell[water].amount;
+            int take = g->unit[lord].carrying >> 4;
+            int guard = 0;
+            if (take > depth + 1) take = depth + 1;
+            funds = g->side[0].funds;
+            game_bridge(g, lord);
+            checkf(g->side[0].funds == funds - (unsigned long)take * 30,
+                   "%lu funds went on %d units of depth",
+                   funds - g->side[0].funds, take, 0);
+
+            /* Keep going and the square becomes walkable. */
+            while (g->cell[water].tile >= CELL_IMPASSABLE && guard++ < 200) {
+                g->side[0].funds += 10000;      /* the treasury is not the test */
+                if (!game_bridge(g, lord)) break;
+            }
+            checkf(g->cell[water].tile == CELL_BRIDGE,
+                   "%d,%d is tile %02x, expected the bridge 0x20",
+                   wx, wy, g->cell[water].tile);
+            check(g->cell[water].tile < CELL_IMPASSABLE,
+                  "and a unit can now walk over it");
+            printf("bridge: worker at %d,%d, %d,%d is tile %02x, "
+                   "route %d\n",
+                   g->unit[lord].pos & 0xff, g->unit[lord].pos >> 8, wx, wy,
+                   g->cell[water].tile, game_path_to(g, lord, wx, wy));
+            checkf(game_path_to(g, lord, wx, wy) > 0,
+                   "the pathfinder routes over %d,%d", wx, wy, 0);
+        }
+
+        /* The border ring is refused outright, as sub_4040 refuses row and
+         * column 0 and 0x2f. */
+        for (i = 0; i < MAP_W; i++) {
+            unsigned char t = g->cell[game_cell_index(i, 0)].tile;
+            if (t >= CELL_IMPASSABLE && t < CELL_WATER_END) {
+                check(!game_order_bridge(g, lord, i, 0),
+                      "the border ring cannot be bridged");
+                break;
+            }
+        }
+    }
+
     disk_close(d);
     free(g);
     if (failures) {

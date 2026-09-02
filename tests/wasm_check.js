@@ -98,6 +98,30 @@ LordMonarch().then((m) => {
     process.exit(1);
   }
 
+  // Bridges, through the same clicks a person makes.  B_014 is the spiral: side
+  // 0's castle is at 14,2, its worker sits in the gate at 14,3, and 12,4 is
+  // water.  At 16x16 with the view unscrolled a cell is at
+  // (96 + x*16 + 8, 8 + y*16 + 8).
+  icon(1);                       // VIEW was left on by the panel checks above
+  // PREV_MAP wraps, so walk from a known point: the title, then map 0.
+  m._lm_key(KEY.BACK);
+  m._lm_key(KEY.START);
+  for (let i = 0; i < 14; i++) m._lm_key(KEY.NEXT_MAP);
+  m._lm_key(KEY.TILE16);
+  const cell = (x, y) => [96 + x * 16 + 8, 8 + y * 16 + 8];
+  m._lm_click(...cell(14, 3));
+  const picked = m._lm_selected();
+  console.log(`${picked >= 0 ? 'ok  ' : 'FAIL'}  the gate worker is selected ` +
+              `(slot ${picked})`);
+  if (picked < 0) process.exit(1);
+  m._lm_click(...cell(12, 4));
+  const bridged = m.UTF8ToString(m._lm_status());
+  const bridgeOk = /^bridge 12,4: \d+ squares to the shore, then 30 funds/
+      .test(bridged);
+  console.log(`${bridgeOk ? 'ok  ' : 'FAIL'}  clicking water orders a bridge: ` +
+              `${bridged}`);
+  if (!bridgeOk) process.exit(1);
+
   const distinct = (b) => new Set(
     Array.from({length: b.length / 4}, (_, i) => b.readUInt32LE(i * 4))).size;
   console.log(`distinct colours: title ${distinct(title)}, ` +

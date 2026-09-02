@@ -36,6 +36,9 @@
 #define CELL_CASTLE0   0x14     /* + side: the middle of a side's castle */
 #define CELL_TERRITORY0 0x08    /* + side: ground that side holds */
 #define CELL_IMPASSABLE 0x30    /* this and above is water and the like */
+#define CELL_WATER_END  0x60    /* 0x30..0x5f is what a bridge can be built on */
+#define CELL_BRIDGE    0x20     /* what a filled square turns into */
+#define CELL_ROCK      0x7a     /* fillable too, but at 2 a unit rather than 30 */
 
 #define CELL_START_AMOUNT 0x64  /* 100 */
 #define CELL_MAX_AMOUNT   0xff
@@ -47,6 +50,7 @@
 #define UNIT_STATE_LORD    0x2d /* the side's monarch */
 #define UNIT_STATE_FOLLOW  0x01
 #define UNIT_STATE_NEUTRAL 0x0f
+#define UNIT_STATE_BRIDGE  0x07 /* fill the target square in: sub_4040 */
 
 typedef struct {
     unsigned char tile;         /* the .MAP byte: which terrain tile */
@@ -277,6 +281,18 @@ int game_unit_side(const Game *g, int slot);
 int game_unit_free(const Game *g, int slot);
 void game_unit_pos(const Game *g, int slot, int *x, int *y);
 int game_order_move(Game *g, int slot, int x, int y);
+
+/* Send a unit to fill a square in - a bridge over water, or a rock broken up.
+ * The target itself cannot be walked on, so the path goes to a neighbour of it
+ * and the square is remembered in `home`; this is what sub_c2e7 does in the
+ * original by shortening the path by one step for orders 6, 7, 9, 10 and 11.
+ * Returns the path length, or 0 if there is no way to reach the shore. */
+int game_order_bridge(Game *g, int slot, int x, int y);
+
+/* One action of filling: 30 funds per remaining depth for water (2 for rock),
+ * capped by `carrying / 16`.  Returns 1 while there is still work to do, 0 when
+ * the square has become CELL_BRIDGE or the order cannot go on. */
+int game_bridge(Game *g, int slot);
 
 /* Handy for the viewer and for tests. */
 int game_unit_count(const Game *g, int side);
