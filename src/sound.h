@@ -47,7 +47,9 @@ double snd_note_hz(const unsigned char *fnumTable, int note, int detune);
  * The sequence is copied rather than pointed at: command 0xf6 is a loop that
  * decrements its own counter *inside the data*, so playing straight out of
  * PROG.DAT would work once and then be wrong for ever. */
-#define SND_SEQ_MAX 96
+/* A song's track is longer than an effect: the SSG parts of FM001 run about
+ * 230 bytes each and its FM parts up to 320. */
+#define SND_SEQ_MAX 1024
 
 typedef struct {
     unsigned char seq[SND_SEQ_MAX];
@@ -87,6 +89,28 @@ typedef struct {
 /* Loads effect `id` out of PROG.DAT.  0 if there is no such effect. */
 int snd_start(SndVoice *v, const unsigned char *progDat, unsigned progDatSize,
               int id);
+
+/* Point a voice at a sequence that is already in hand.  A song's tracks are not
+ * in PROG.DAT - FUN_1000_0bda moves the file to its own buffer at DS:0x3f1c and
+ * hands each channel a pointer into it - so they come this way. */
+int snd_start_bytes(SndVoice *v, const unsigned char *seq, int len);
+
+/* Where one of a song's six tracks is.  A song file starts with ten uint16
+ * offsets into itself; FUN_1000_0bda reads six of them from offset 6 and gives
+ * them to the six channel structures at DS:0x3a3a in order, so tracks 0..2 are
+ * the FM channels and 3..5 the SSG ones.  The tenth word is the end of the
+ * last track. */
+int snd_song_track(const unsigned char *song, unsigned songSize, int track,
+                   unsigned *offOut, unsigned *lenOut);
+
+/* Renders a song's three SSG tracks together.  The three FM tracks are not
+ * rendered and are not missing: see the note on snd_render_effect - this
+ * program never loads an FM voice, so on this floppy they make no sound.  The
+ * voice table the song carries (seven 32-byte blocks from offset 0x20, in the
+ * YM2203's own register order) is therefore never uploaded. */
+int snd_render_song(const unsigned char *progDat, unsigned progDatSize,
+                    const unsigned char *song, unsigned songSize,
+                    short *out, int maxSamples, int sampleRate);
 
 /* One tick.  Returns 1 while the voice is still playing.  `keyedNow` is set
  * when this tick started a new note. */

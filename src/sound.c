@@ -336,3 +336,104 @@ int snd_render_effect(const unsigned char *progDat, unsigned progDatSize,
     }
     return made;
 }
+
+/* --------------------------------------------------------------- the songs */
+
+int snd_start_bytes(SndVoice *v, const unsigned char *seq, int len)
+{
+    int i;
+
+    memset(v, 0, sizeof *v);
+    v->note = -1;
+    v->volume = 0x0f;
+    if (!seq || len <= 0) return 0;
+    if (len > SND_SEQ_MAX) len = SND_SEQ_MAX;
+    for (i = 0; i < len; i++) v->seq[i] = seq[i];
+    v->len = len;
+    return 1;
+}
+
+int snd_song_track(const unsigned char *song, unsigned songSize, int track,
+                   unsigned *offOut, unsigned *lenOut)
+{
+    unsigned a, b;
+
+    if (!song || track < 0 || track > 5 || songSize < 20) return 0;
+    /* Word 3 is the first channel, so track n is word 3 + n; the next word
+     * along is where it stops, and for the last one that is word 9. */
+    a = song[(3 + track) * 2] | (unsigned)song[(3 + track) * 2 + 1] << 8;
+    b = song[(4 + track) * 2] | (unsigned)song[(4 + track) * 2 + 1] << 8;
+    if (a >= songSize || b > songSize || b <= a) return 0;
+    *offOut = a;
+    *lenOut = b - a;
+    return 1;
+}
+
+int snd_render_song(const unsigned char *progDat, unsigned progDatSize,
+                    const unsigned char *song, unsigned songSize,
+                    short *out, int maxSamples, int sampleRate)
+{
+    /* The three SSG channels, which on the chip are A, B and C: periods in
+     * registers 0/1, 2/3 and 4/5, levels in 8, 9 and 10. */
+    const unsigned char *periods, *env;
+    SndVoice v[3];
+    int live[3];
+    Ssg chip;
+    int made = 0, ch;
+    int perTick = sampleRate / SND_TICK_HZ;
+
+    if (progDatSize < (unsigned)(SSG_PERIOD_AT - 0x1000) + 32) return 0;
+    if (progDatSize < (unsigned)(SND_ENV_AT - 0x1000) + 256) return 0;
+    periods = progDat + (SSG_PERIOD_AT - 0x1000);
+    env = progDat + (SND_ENV_AT - 0x1000);
+
+    for (ch = 0; ch < 3; ch++) {
+        unsigned off = 0, len = 0;
+
+        live[ch] = snd_song_track(song, songSize, 3 + ch, &off, &len) &&
+                   snd_start_bytes(&v[ch], song + off, (int)len);
+    }
+    if (!live[0] && !live[1] && !live[2]) return 0;
+
+    ssg_reset(&chip);
+    ssg_write(&chip, 7, 0x3f);              /* everything off to begin with */
+
+    for (;;) {
+        int any = 0, room;
+
+        for (ch = 0; ch < 3; ch++) {
+            int keyed = 0, level;
+
+            if (!live[ch]) continue;
+            if (!snd_tick(&v[ch], &keyed)) {
+                /* Same tail as an effect: into the release and let it run out
+                 * rather than cutting the note off dead. */
+                snd_env_release(&v[ch], env);
+                if (v[ch].spent) { live[ch] = 0; ssg_write(&chip, 8 + ch, 0); }
+            } else {
+                any = 1;
+                if (keyed) {
+                    int p = ssg_period(periods, v[ch].note, 0);
+
+                    ssg_write(&chip, ch * 2, p & 0xff);
+                    ssg_write(&chip, ch * 2 + 1, (p >> 8) & 0x0f);
+                    ssg_write(&chip, 7, 0x38 | (0x07 & ~(1 << ch)));
+                    snd_env_key(&v[ch], env);
+                }
+                if (v[ch].keyed && v[ch].tie && v[ch].wait <= 1 &&
+                    !(v[ch].stage & 8))
+                    snd_env_release(&v[ch], env);
+            }
+            level = v[ch].keyed ? snd_env_step(&v[ch], env) : 0;
+            level = (level * (v[ch].volume + 1)) >> 8;
+            ssg_write(&chip, 8 + ch, level > 15 ? 15 : level);
+        }
+        if (!any) break;
+        room = maxSamples - made;
+        if (room > perTick) room = perTick;
+        if (room <= 0) break;
+        ssg_render(&chip, out + made, room, sampleRate);
+        made += room;
+    }
+    return made;
+}
