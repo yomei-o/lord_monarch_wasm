@@ -1,0 +1,195 @@
+#include "sound.h"
+
+#include <string.h>
+
+/* sub_1518.  The octave goes to bits 3..5 of the high byte, which is where the
+ * YM2203 keeps its block, and the semitone indexes a table of sixteen words at
+ * DS:0x244d of which twelve are a chromatic octave.  [si+8] is a signed detune
+ * added to the F-number before the block is folded in. */
+unsigned short snd_fnumber(const unsigned char *fnumTable, int note,
+                           int detune)
+{
+    int semitone = note & 0x0f;
+    int block = (note & 0x70) >> 1;         /* already shifted into place */
+    int fnum = fnumTable[semitone * 2] | (fnumTable[semitone * 2 + 1] << 8);
+
+    fnum += detune;
+    return (unsigned short)((fnum & 0xffff) | (block << 8));
+}
+
+double snd_note_hz(const unsigned char *fnumTable, int note, int detune)
+{
+    unsigned short v = snd_fnumber(fnumTable, note, detune);
+    int block = (v >> 11) & 7;
+    int fnum = v & 0x07ff;
+    /* The OPN's own relation, with its prescaler of 72. */
+    double step = (double)SND_CLOCK / 72.0 / 1048576.0;
+    int shift = block - 1;
+    double hz = fnum * step;
+
+    while (shift-- > 0) hz *= 2.0;
+    return hz;
+}
+
+int snd_start(SndVoice *v, const unsigned char *progDat, unsigned progDatSize,
+              int id)
+{
+    unsigned tableOff, seqAddr, off, i;
+
+    memset(v, 0, sizeof *v);
+    v->note = -1;
+    v->volume = 0x0f;
+    if (id < 0 || id >= SND_EFFECTS) return 0;
+
+    /* PROG.DAT sits at DS:0x1000, so a DS address is an offset less that. */
+    tableOff = (unsigned)(SND_TABLE_AT - 0x1000) + (unsigned)id * 2;
+    if (tableOff + 2 > progDatSize) return 0;
+    seqAddr = progDat[tableOff] | (progDat[tableOff + 1] << 8);
+    if (seqAddr < 0x1000) return 0;
+    off = seqAddr - 0x1000;
+    if (off >= progDatSize) return 0;
+
+    /* How far it runs.  NOT "up to the first 0xff": 0xff turns up inside
+     * operands - effect 11's pitch envelope is f7 01 01 38 ff - and stopping
+     * there truncated it to nothing.  The nineteen sequences lie one after
+     * another in PROG.DAT, so the end is the next address in the table, and
+     * the last one is capped.
+     *
+     * It is copied rather than pointed at because command 0xf6 decrements its
+     * own counter inside the data: played in place it would work once. */
+    {
+        unsigned end = off + SND_SEQ_MAX, j;
+        for (j = 0; j < SND_EFFECTS; j++) {
+            unsigned o = (unsigned)(SND_TABLE_AT - 0x1000) + j * 2;
+            unsigned a2;
+            if (o + 2 > progDatSize) break;
+            a2 = progDat[o] | (progDat[o + 1] << 8);
+            if (a2 > seqAddr && a2 - 0x1000 < end) end = a2 - 0x1000;
+        }
+        if (end > progDatSize) end = progDatSize;
+        for (i = 0; off + i < end && i < SND_SEQ_MAX; i++)
+            v->seq[i] = progDat[off + i];
+        v->len = (int)i;
+    }
+    return v->len > 0;
+}
+
+/* The commands, from the jump table at CS:0x11a6.  Each has already had one
+ * operand byte fetched by sub_1175, which is why every one of the sixteen takes
+ * at least one.  Returns 0 when the sequence has ended. */
+static int command(SndVoice *v, int cmd)
+{
+    int a;
+
+    if (v->pos >= v->len) return 0;
+    a = v->seq[v->pos++];                   /* sub_1175 fetches this one */
+
+    switch (cmd) {
+    case 0xf0:                              /* 0x1310: the timbre */
+        v->timbre = a;
+        return 1;
+    case 0xf1:                              /* 0x132e: the volume */
+        v->volume = a;
+        return 1;
+    case 0xfb:                              /* 0x1332: quieter, floored at 0 */
+        v->pos--;
+        if (--v->volume < 0) v->volume = 0;
+        return 1;
+    case 0xfc:                              /* 0x133e: louder */
+        v->pos--;
+        v->volume++;
+        return 1;
+    case 0xf6: {                            /* 0x120e: loop */
+        /* The counter lives in the sequence: decrement it, and when it runs
+         * out reload it from the next byte and carry on, otherwise jump back
+         * by the sixteen-bit offset that follows. */
+        int at = v->pos - 1;                /* where the counter is */
+        int reload, back;
+        if (at + 3 >= v->len) return 0;
+        reload = v->seq[at + 1];
+        back = v->seq[at + 2] | (v->seq[at + 3] << 8);
+        v->seq[at]--;
+        if (v->seq[at] == 0) {
+            v->seq[at] = (unsigned char)reload;
+            v->pos = at + 4;
+        } else {
+            v->pos = at + 4 - back;
+            if (v->pos < 0) v->pos = 0;
+        }
+        return 1;
+    }
+    case 0xf7:                              /* 0x1351: the pitch envelope */
+        v->pos--;
+        if (v->pos + 5 > v->len) return 0;
+        v->envA = v->seq[v->pos] | (v->seq[v->pos + 1] << 8);
+        v->envB = v->seq[v->pos + 2] | (v->seq[v->pos + 3] << 8);
+        v->envC = v->seq[v->pos + 4];
+        v->pos += 5;
+        return 1;
+    case 0xfe:                              /* 0x13de: silence everything */
+        v->silenceAll = 1;
+        return 1;
+    case 0xff:                              /* 0x127f: the end */
+        return 0;
+    default:
+        /* f2 f3 f4 f5 f8 f9 fa fd are not worked out yet; their one operand
+         * has been eaten, which keeps the walk in step. */
+        return 1;
+    }
+}
+
+int snd_tick(SndVoice *v, int *keyedNow)
+{
+    if (keyedNow) *keyedNow = 0;
+    if (v->done) return 0;
+
+    /* sub_0f2d: the note runs until its count reaches zero. */
+    if (v->wait > 0 && --v->wait > 0) return 1;
+
+    for (;;) {
+        int d, n;
+
+        if (v->pos >= v->len) {
+            v->done = 1;
+            v->keyed = 0;
+            return 0;
+        }
+        d = v->seq[v->pos];
+        if (d >= 0xf0) {
+            v->pos++;
+            if (!command(v, d)) {
+                v->done = 1;
+                v->keyed = 0;
+                return 0;
+            }
+            continue;
+        }
+        v->pos++;
+
+        /* The duration's bit 7 makes it a REST: 0x0f69 branches to 0x0f99,
+         * which stores the pointer and leaves without reading a note byte.
+         * Reading one anyway walked off the end of effect 17 and turned its
+         * terminating 0xff into a note of semitone 15. */
+        v->wait = d & 0x7f;
+        if (v->wait == 0) v->wait = 1;
+        if (d & 0x80) {
+            v->keyed = 0;
+            return 1;
+        }
+        v->keyed = 0;                               /* 0x0f71, sub_111e */
+        if (v->pos >= v->len) {
+            v->done = 1;
+            return 0;
+        }
+        n = v->seq[v->pos++];
+        v->tie = (n & 0x80) != 0;
+        n &= 0x7f;
+        /* A tie onto the same note leaves it alone; anything else keys on. */
+        if (!(v->tie && n == v->note)) {
+            v->note = n;
+            v->keyed = 1;
+            if (keyedNow) *keyedNow = 1;
+        }
+        return 1;
+    }
+}
