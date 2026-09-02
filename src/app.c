@@ -235,6 +235,15 @@ static int viewMode;                      /* the VIEW icon: scroll, do not pick 
 static int selected = -1;                 /* a unit slot */
 static int mode = APP_MODE_TITLE;
 static int mapNumber, tileSize = 16, scrollX, scrollY;
+
+/* The tileset's own names - see gfx_load_names.  [1..5] are the countries and
+ * [6..21] the sixteen unit states, so a state number indexes from 6. */
+static unsigned char names[GFX_NAMES][16];
+static int namesOk;
+
+/* 0x7d0e: when the cursor is over nothing, the box keeps whatever it showed
+ * last, in [0x32bf]. */
+static int boxUnit = -1;
 static char status[256];
 
 const Screen *app_screen(void) { return &scr; }
@@ -655,6 +664,8 @@ int app_show_map(int number, int size)
         return 0;
     }
     if (!palette_from_terrain(map.terrain)) return 0;
+    namesOk = gfx_load_names(disk, map.terrain, names);
+    boxUnit = -1;
     gfx_bank_name(&map, size, bankName, sizeof bankName);
     gfx_free_bank(&bank);
     if (!gfx_load_bank(&bank, disk, bankName, size)) {
@@ -1547,6 +1558,53 @@ void app_render(void)
         snprintf(buf, sizeof buf, "%5d",
                  game.daysLeft > 99999 ? 99999 : game.daysLeft);
         gfx_text_sjis(&scr, &font, &fontRom, 560, 96, buf, 7);
+    }
+
+    /* The unit standing there, in the box above.  0x7cff takes the cursor
+     * through sub_9b34 and reads [bx + 0xe47e], the occupant array, keeping
+     * the last one it had (0x32bf) when there is nothing there.
+     *
+     *   0x7d33  VRAM 0x25c2 = row 120 x 528, DS:0x1bb6 "@5w  @2b,@2b" with
+     *           34b8 | 34bf | 34be - sub_c5bb puts [si+6] in 0x34b8 and
+     *           [si+2] in 0x34be, so that is what the unit carries and then
+     *           its position, high byte first: y, then x.
+     *   0x7d3c  VRAM 0x2ac2 = row 136 x 528, DS:0x1bc9 "@S@16t@s" with
+     *           34bc | 34ba | c692 - "@16t" works out [0x34ba] * 16 + 0xc692
+     *           and "@s" prints the string there, which is the state's name;
+     *           "@S" ahead of it prints the string [0x34bc] points at, which
+     *           sub_c5bb sets to DS:0x1306 or DS:0x1308 - colour 6 or 7 - on
+     *           bit 4 of [si+0xa].
+     */
+    {
+        int at = game_cell_index(curX, curY);
+        int slot = at >= 0 ? game.occupant[at] : -1;
+
+        if (slot >= 0) boxUnit = slot;
+        if (boxUnit >= 0 && !(game.unit[boxUnit].flags & 0x80)) {
+            const Unit *u = &game.unit[boxUnit];
+            int state = u->state & 0x0f;
+            unsigned char colour = (u->state & 0x10) ? 6 : 7;
+            char buf[24];
+
+            snprintf(buf, sizeof buf, "%5d", u->carrying);
+            gfx_text_sjis(&scr, &font, &fontRom, 528, 120, buf, 7);
+            snprintf(buf, sizeof buf, "%2d", (u->pos >> 8) & 0xff);
+            /* Five columns from 528 and then the string's own two spaces put
+             * the coordinates at 584 - the same place the line below has
+             * them, since 528 + 5*8 + 2*8 and 544 + 3*8 + 2*8 both come to
+             * 584. */
+            gfx_text_sjis(&scr, &font, &fontRom, 584, 120, buf, 7);
+            gfx_text_sjis(&scr, &font, &fontRom, 600, 120, ",", 7);
+            snprintf(buf, sizeof buf, "%2d", u->pos & 0xff);
+            gfx_text_sjis(&scr, &font, &fontRom, 608, 120, buf, 7);
+            if (namesOk) {
+                char nm[17];
+
+                memcpy(nm, names[6 + state], 16);
+                nm[16] = 0;
+                gfx_text_sjis(&scr, &font, &fontRom, 528, 136, nm, colour);
+            }
+        }
     }
 
     /* What the cursor is standing on.  0x7d4f clears ten cells at VRAM 0x34c4

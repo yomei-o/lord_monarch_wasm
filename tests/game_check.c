@@ -912,6 +912,44 @@ int main(int argc, char **argv)
         printf("the calendar: a day is 2^(speed+1) turns, out of 3200\n");
     }
 
+    /* The names in the tail of every B_0n0L.CH4: one scenario, five countries
+     * and sixteen unit states, sixteen bytes each.  0x615a reads them from
+     * offset 0x7ca0 + 512, and the giveaway that the offset is right is that
+     * the first record is the scenario's name in plain ASCII.
+     *
+     * The states are checked by their leading Shift-JIS pair, because that is
+     * what decides whether the port's own state numbers line up with the
+     * game's: 0x07 has to be the one that starts with 橋 and 0x0b the one
+     * that starts with 洞. */
+    {
+        static const int terrain[] = { 10, 20, 30, 40, 50 };
+        unsigned char nm[GFX_NAMES][16];
+        unsigned k;
+
+        for (k = 0; k < sizeof terrain / sizeof *terrain; k++) {
+            checkf(gfx_load_names(d, terrain[k], nm),
+                   "B_%03dL.CH4 has no name table", terrain[k], 0, 0);
+            checkf(!memcmp(nm[0], "First Monarch", 14),
+                   "B_%03dL.CH4's first record is not the scenario's name",
+                   terrain[k], 0, 0);
+        }
+        gfx_load_names(d, 10, nm);
+        /* 0x8bb4 is 橋, 0x6d1e is 洞, 0x958b is 開 - the states this port
+         * names BRIDGE, NEST and the cultivating one. */
+        check(nm[6 + UNIT_STATE_BRIDGE][0] == 0x8b &&
+              nm[6 + UNIT_STATE_BRIDGE][1] == 0xb4,
+              "state 0x07 is not the bridge one");
+        check(nm[6 + UNIT_STATE_BREAK][0] == 0x8b &&
+              nm[6 + UNIT_STATE_BREAK][1] == 0xb4,
+              "state 0x0a is not the other bridge one");
+        check(nm[6 + UNIT_STATE_NEST][0] == 0x93 &&
+              nm[6 + UNIT_STATE_NEST][1] == 0xb4,
+              "state 0x0b is not the cave one");
+        check(nm[6 + (UNIT_STATE_LORD & 15)][0] == 0x20,
+              "state 0x2d should land on the blank record");
+        printf("the tileset names: 22 records, and the states line up\n");
+    }
+
     disk_close(d);
     free(g);
     if (failures) {

@@ -389,6 +389,24 @@ int gfx_load_pac(Screen *s, Disk *d, const char *name,
     return 1;
 }
 
+int gfx_load_names(Disk *d, int terrain, unsigned char out[GFX_NAMES][16])
+{
+    /* 0x7ca0 is where the tail begins and the names are 512 bytes into it. */
+    const unsigned at = 0x7ca0 + 512;
+    char name[32];
+    unsigned n = 0;
+    unsigned char *b;
+
+    memset(out, 0, (size_t)GFX_NAMES * 16);
+    snprintf(name, sizeof name, "B_%03dL.CH4", terrain);
+    b = disk_read_bz(d, name, &n);
+    if (!b) return 0;
+    if (n < at + (unsigned)GFX_NAMES * 16) { free(b); return 0; }
+    memcpy(out, b + at, (size_t)GFX_NAMES * 16);
+    free(b);
+    return 1;
+}
+
 int gfx_load_bank(Bank *b, Disk *d, const char *name, int size)
 {
     unsigned n = 0;

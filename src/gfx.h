@@ -161,6 +161,21 @@ int gfx_load_pac(Screen *s, Disk *d, const char *name,
 int gfx_load_bank(Bank *b, Disk *d, const char *name, int size);
 void gfx_free_bank(Bank *b);
 
+/* The names in the tail of B_0n0L.CH4.  0x615a patches the filename's sixth
+ * byte to 'L', reads the file to 0x4000:0000, and copies from offset 0x7ca0:
+ * 512 bytes to DS:0x3c20, then 352 to DS:0xc632, then 45 to DS:0x3eea.  Those
+ * 352 are twenty-two records of sixteen bytes ending exactly where the side
+ * records start at DS:0xc792 - the scenario's name, then five countries, then
+ * sixteen unit states.  Each is Shift-JIS, NUL-terminated, and the countries
+ * begin with a colour control (0x14 for GREEN, 0x12 for RED and so on).
+ *
+ * Every tileset carries its own set, and they are not the same: terrain 20's
+ * first state reads 臨時休業 and terrain 50's reads まってるね!!.
+ *
+ * Writes 22 x 16 bytes and returns 0 if the file is not there or is short. */
+#define GFX_NAMES 22
+int gfx_load_names(Disk *d, int terrain, unsigned char out[GFX_NAMES][16]);
+
 /* Loads a .MAP: 48x48 one-byte cells plus a uint16 terrain-set number.  The
  * file is column-major and is transposed on the way in - see gfx.c. */
 int gfx_load_map(Map *m, Disk *d, const char *name);
