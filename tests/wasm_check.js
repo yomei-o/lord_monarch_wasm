@@ -39,8 +39,37 @@ LordMonarch().then((m) => {
   }
   const title = dump(m, 'wasm_title.raw');
 
+  // The music each screen calls for.  0x00fe puts 4 in [0x3bc6] at boot and
+  // 0x1945 works a map's out as 16 + 2 * (terrain / 10 - 1), so B_000 is
+  // terrain 10 and asks for 16.  Getting these wrong is silent in the sense
+  // that something still plays, which is why they are checked by number.
+  let songFailed = 0;
+  {
+    const n = m._lm_song_wanted();
+    console.log(`${n === 4 ? 'ok  ' : 'FAIL'}  the title asks for song ${n}`);
+    if (n !== 4) songFailed++;
+    const started = m._lm_song_start(n, 44100);
+    console.log(`${started ? 'ok  ' : 'FAIL'}  FM${String(n).padStart(3, '0')}.DAT opened`);
+    if (!started) songFailed++;
+    let loud = 0;
+    for (let k = 0; k < 40; k++) {
+      const made = m._lm_song_fill(4096);
+      if (made <= 0) break;
+      const pcm = new Int16Array(m.HEAPU8.buffer, m._lm_song_pcm(), made);
+      for (let i = 0; i < made; i++) if (Math.abs(pcm[i]) > 64) loud++;
+    }
+    console.log(`${loud > 4096 ? 'ok  ' : 'FAIL'}  and sounded for ${loud} samples`);
+    if (loud <= 4096) songFailed++;
+  }
+
   m._lm_key(KEY.START);          // title -> map view
   m._lm_key(KEY.TILE8);
+  {
+    const n = m._lm_song_wanted();
+    console.log(`${n === 16 ? 'ok  ' : 'FAIL'}  B_000 (terrain 10) asks for song ${n}`);
+    if (n !== 16) songFailed++;
+  }
+  if (songFailed) process.exit(1);
   const map0 = dump(m, 'wasm_map000.raw');
 
   // B_014 is terrain 50, the pencil kingdom - a different palette, so this also
