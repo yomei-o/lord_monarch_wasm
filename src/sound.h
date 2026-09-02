@@ -84,6 +84,19 @@ typedef struct {
      * marks the last stage, so a timbre gets at most three of them. */
     int step, count, target, level, stage, downwards, spent;
     int silenceAll;             /* command 0xfe was seen */
+
+    /* The rest of the channel structure, which the songs use and the effects
+     * never touch.  The offsets are the original's, off DS:0x3a3a + ch*0x20. */
+    int tieAt;                  /* [si+9], command 0xf2 - see snd_tick */
+    int param8;                 /* [si+8], command 0xf3 */
+    int algo;                   /* [si+4], command 0xf4 */
+    int tempo;                  /* command 0xf5, which lands in [0x3b3d] */
+    int chan;                   /* [si+0x1e], which chip channel this is */
+    /* Command 0xf9 writes an envelope into the table as it plays, so a song
+     * needs a writable copy of it; an effect leaves this null and reads the
+     * one in PROG.DAT. */
+    unsigned char *envRam;
+    int envBase;                /* [0x3b3f], the slot f9 counts from */
 } SndVoice;
 
 /* Loads effect `id` out of PROG.DAT.  0 if there is no such effect. */

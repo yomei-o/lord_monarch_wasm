@@ -132,9 +132,82 @@ static int command(SndVoice *v, int cmd)
         return 1;
     case 0xff:                              /* 0x127f: the end */
         return 0;
+    case 0xf2:                              /* 0x11fa: [si+9] */
+        v->tieAt = a;
+        return 1;
+    case 0xf3:                              /* 0x11fe: [si+8] */
+        v->param8 = a;
+        return 1;
+    case 0xf4:                              /* 0x134d: [si+4] */
+        v->algo = a;
+        return 1;
+    case 0xf5:                              /* 0x1208: [0x3b3d], then
+                                             * sub_14c9 writes it to the
+                                             * YM2203's timer at 0x26/0x27 */
+        v->tempo = a;
+        return 1;
+    case 0xf8:                              /* 0x1373: poke the structure */
+        if (v->pos >= v->len) return 0;
+        {
+            int b = v->seq[v->pos++];
+
+            /* [si + al] = b, for the offsets this port keeps.  0x10 is its
+             * own case in the original and sets bits in [si+0x1f]. */
+            switch (a) {
+            case 4:  v->algo = b; break;
+            case 5:  v->timbre = b; break;
+            case 6:  v->volume = b; break;
+            case 8:  v->param8 = b; break;
+            case 9:  v->tieAt = b; break;
+            default: break;                 /* the rest are not modelled */
+            }
+        }
+        return 1;
+    case 0xf9: {                            /* 0x1398: the song's own envelope */
+        /* The slot is [0x3b3f] + this channel + 0x0a, and [si+5] becomes
+         * slot << 4 - so f9 both writes an envelope and selects it.  The six
+         * bytes go into the table at DS:0x34e2 + slot*16, at +0, +3, +4, +6,
+         * +8 and +12, which is stage 0's step and starting level, stage 1's
+         * step and target, and one step each for stages 2 and 3. */
+        int at = v->pos - 1, slot = v->envBase + v->chan + 0x0a, base;
+
+        if (at + 6 > v->len) return 0;
+        base = (slot << 4) & 0xff;
+        v->timbre = base;
+        if (v->envRam) {
+            v->envRam[base + 0x00] = v->seq[at + 1];
+            v->envRam[base + 0x03] = v->seq[at + 0];
+            v->envRam[base + 0x04] = v->seq[at + 2];
+            v->envRam[base + 0x06] = v->seq[at + 3];
+            v->envRam[base + 0x08] = v->seq[at + 4];
+            v->envRam[base + 0x0c] = v->seq[at + 5];
+        }
+        v->pos = at + 6;
+        return 1;
+    }
+    case 0xfa:                              /* 0x13d6: straight to the chip */
+        /* dh = al, dl = the next byte, sub_740d.  Nothing here has a chip to
+         * write to at sequence level - the renderer owns it - so the pair is
+         * read and dropped, which at least keeps the walk in step. */
+        if (v->pos >= v->len) return 0;
+        v->pos++;
+        return 1;
+    case 0xfd: {                            /* 0x1225: a conditional jump */
+        /* bx += the sixteen-bit word that starts at the operand, and the jump
+         * only sticks if the byte after the target is 1; otherwise it carries
+         * on past both operand bytes. */
+        int at = v->pos - 1, disp, target;
+
+        if (at + 2 > v->len) return 0;
+        disp = v->seq[at] | (v->seq[at + 1] << 8);
+        target = at + 1 + disp;
+        if (target >= 0 && target + 1 < v->len && v->seq[target + 1] == 1)
+            v->pos = target;
+        else
+            v->pos = at + 2;
+        return 1;
+    }
     default:
-        /* f2 f3 f4 f5 f8 f9 fa fd are not worked out yet; their one operand
-         * has been eaten, which keeps the walk in step. */
         return 1;
     }
 }
@@ -375,7 +448,10 @@ int snd_render_song(const unsigned char *progDat, unsigned progDatSize,
 {
     /* The three SSG channels, which on the chip are A, B and C: periods in
      * registers 0/1, 2/3 and 4/5, levels in 8, 9 and 10. */
-    const unsigned char *periods, *env;
+    const unsigned char *periods;
+    /* Writable, because command 0xf9 defines an envelope as the song plays.
+     * It starts as the table PROG.DAT ships. */
+    unsigned char env[256];
     SndVoice v[3];
     int live[3];
     Ssg chip;
@@ -385,13 +461,15 @@ int snd_render_song(const unsigned char *progDat, unsigned progDatSize,
     if (progDatSize < (unsigned)(SSG_PERIOD_AT - 0x1000) + 32) return 0;
     if (progDatSize < (unsigned)(SND_ENV_AT - 0x1000) + 256) return 0;
     periods = progDat + (SSG_PERIOD_AT - 0x1000);
-    env = progDat + (SND_ENV_AT - 0x1000);
+    memcpy(env, progDat + (SND_ENV_AT - 0x1000), sizeof env);
 
     for (ch = 0; ch < 3; ch++) {
         unsigned off = 0, len = 0;
 
         live[ch] = snd_song_track(song, songSize, 3 + ch, &off, &len) &&
                    snd_start_bytes(&v[ch], song + off, (int)len);
+        v[ch].chan = ch;
+        v[ch].envRam = env;
     }
     if (!live[0] && !live[1] && !live[2]) return 0;
 
@@ -420,8 +498,11 @@ int snd_render_song(const unsigned char *progDat, unsigned progDatSize,
                     ssg_write(&chip, 7, 0x38 | (0x07 & ~(1 << ch)));
                     snd_env_key(&v[ch], env);
                 }
-                if (v[ch].keyed && v[ch].tie && v[ch].wait <= 1 &&
-                    !(v[ch].stage & 8))
+                /* 0x0f40: a tied note goes into its release when its
+                 * remaining ticks reach [si+9], which command 0xf2 sets and
+                 * an effect leaves at zero. */
+                if (v[ch].keyed && v[ch].tie &&
+                    v[ch].wait <= v[ch].tieAt + 1 && !(v[ch].stage & 8))
                     snd_env_release(&v[ch], env);
             }
             level = v[ch].keyed ? snd_env_step(&v[ch], env) : 0;

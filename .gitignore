@@ -19,3 +19,6 @@ font.rom
 
 # Python leaves these beside the tools.
 __pycache__/
+
+# Rendered songs; they are large and reproducible from the disk.
+/wav/
