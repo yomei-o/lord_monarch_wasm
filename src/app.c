@@ -47,7 +47,24 @@ enum {
     ICON_ALLY, ICON_EDIT, ICON_LOAD, ICON_MAP, ICON_SAVE, ICON_FORM,
     ICON_CRT, ICON_DRIVE, ICON_COUNT
 };
-static const short iconCol[2] = {8, 40};
+/* Measured, not eyeballed.  The staged dim copies are the same artwork, so
+ * correlating one against the panel finds where its lit twin is: icon 0 lands
+ * at 16,24 with 967 of 1024 pixels agreeing against 781 for the next best
+ * offset, every other icon agrees on the same two columns, and cropping
+ * (16,24) out of WAKU shows the GO character squarely inside its plate.  An
+ * earlier cut had 8 and 40 from lining a grid up by eye, which put every
+ * highlight eight pixels to the left of the icon it was meant to be on.
+ *
+ * The game does keep its own table: sub_4d4a, which draws the blinking cursor
+ * on the panel, reads a VRAM offset from DS:0x2055 + index * 4.  Its relative
+ * geometry agrees exactly - four bytes (32 pixels) between the columns, 0xa00
+ * (32 rows) and 0x1400 (64 rows) between the blocks - but its origin comes out
+ * as x 8, y 40 for icon 0, a constant eight pixels left and sixteen rows down
+ * from where the artwork actually is once WAKU is assembled.  The offset is the
+ * same for all fourteen, so it is a base address of some kind rather than a
+ * misreading of the table, and until that is pinned down the artwork's own
+ * position is the one to trust: it is where the icons are on the screen. */
+static const short iconCol[2] = {16, 48};
 static const short iconRow[7] = {24, 56, 120, 184, 248, 280, 312};
 
 /* Which of the fourteen this port actually does something with.  The rest are
