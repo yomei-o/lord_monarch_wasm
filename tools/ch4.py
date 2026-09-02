@@ -46,12 +46,26 @@ PAL_TITLE = _pal({
     4: (4, 7, 7), 5: (7, 10, 10), 6: (10, 12, 12),
 })
 
-# From WAKU (the in-game frame), which uses 0..9 and 15.  8 is the orange of the
-# frame, 6 its yellow highlight, 1 the panel blue.
+# 0..9 from WAKU (the in-game frame), which is the only screen that uses just
+# frame art: 8 is the orange of the frame, 6 its yellow highlight, 1 the panel
+# blue.  WAKU is byte-identical between the demo and the retail game, so these
+# carry over.
+#
+# 10..14 are **provisional**, not measured.  They never appear in WAKU - only in
+# the terrain tiles - and the only screenshot of a map to hand (ss3.jpg) is from
+# the *retail* game, whose maps and character art differ from the demo's, so its
+# map window cannot be aligned against anything on this disk.  What the tiles do
+# say is which indices belong together: the grass cell (value 0x00, 33% of every
+# cell on the disk) is drawn from indices 4, 12, 13 and 14 in that order of
+# area, and the mountain cell (0x60) pairs index 10 with the frame orange.  So
+# these are a green ramp plus two browns, picked to make development renders
+# legible, and they will be replaced the moment the real tables turn up.
 PAL_GAME = _pal({
     0: (0, 0, 0), 1: (0, 0, 10), 2: (10, 1, 0), 3: (8, 12, 14),
-    5: (0, 10, 12), 6: (15, 12, 1), 7: (1, 11, 8), 8: (13, 7, 0),
-    9: (1, 7, 11),
+    4: (0, 11, 5), 5: (0, 10, 12), 6: (15, 12, 1), 7: (1, 11, 8),
+    8: (13, 7, 0), 9: (1, 7, 11),
+    10: (12, 8, 2), 11: (7, 4, 1), 12: (0, 9, 4), 13: (0, 13, 7),
+    14: (0, 7, 3), 15: (15, 15, 15),
 })
 
 DEFAULT_PAL = PAL_GAME
