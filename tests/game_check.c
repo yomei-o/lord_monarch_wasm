@@ -315,7 +315,8 @@ int main(int argc, char **argv)
     /* The castle's collection. */
     {
         Map m;
-        int side = 0, got, before, i, owned = 0, castle;
+        int side = 0, got, i, owned = 0, castle;
+        unsigned long before;
 
         gfx_load_map(&m, d, "B_000.MAP");
         game_init(g, &m);
@@ -403,6 +404,82 @@ int main(int argc, char **argv)
                    "unit %d is at %d,%d", i, x, y);
             checkf(g->occupant[game_cell_index(x, y)] == i,
                    "unit %d is not in the occupancy array at %d,%d", i, x, y);
+        }
+    }
+
+    /* Developing a square, and picking up from it. */
+    {
+        Map m;
+        int mate, here, target, i;
+        unsigned long funds;
+
+        gfx_load_map(&m, d, "B_000.MAP");
+        game_init(g, &m);
+        mate = g->occupant[game_cell_index(7, 8)];
+        check(mate >= 0, "the second unit is there to work with");
+
+        /* It stands on the castle's 0x1d square, which is not developable. */
+        check(!game_develop(g, mate), "the castle gate cannot be developed");
+
+        /* 9,8 is claimed land (0x0c) with our own 0x08 either side of it. */
+        target = game_cell_index(9, 8);
+        checkf(g->cell[target].tile == CELL_TERRITORY0 + 4 + 0,
+               "9,8 holds tile %02x, expected 0x0c",
+               g->cell[target].tile, 0, 0);
+
+        /* Walk there and develop it. */
+        i = game_path_to(g, mate, 9, 8);
+        checkf(i > 0, "no path to 9,8 (%d)", i, 0, 0);
+        while (game_path_dir(g, mate) >= 0) {
+            int dir = game_path_dir(g, mate);
+            if (game_move(g, mate, dir)) game_path_advance(g, mate);
+        }
+        check((g->unit[mate].pos & 0xff) == 9, "the worker reached 9,8");
+
+        funds = g->side[0].funds;
+        check(game_develop(g, mate), "and developed it");
+        checkf(g->cell[target].tile == CELL_TERRITORY0 + 0,
+               "the square became %02x, expected 0x08",
+               g->cell[target].tile, 0, 0);
+        checkf(g->side[0].funds == funds - DEVELOP_COST,
+               "it cost %d, not %d", (int)(funds - g->side[0].funds),
+               DEVELOP_COST, 0);
+        /* It carried 200, spent all of it, and is finished. */
+        check(g->unit[mate].flags & 0x80,
+              "a worker that spends its last is finished with");
+        checkf(g->cell[target].amount == (CELL_FULL_AMOUNT >> 1) + 1,
+               "the square holds %d, expected %d", g->cell[target].amount,
+               (CELL_FULL_AMOUNT >> 1) + 1, 0);
+
+        /* Picking up: put a unit on its own land and let it take the amount. */
+        game_init(g, &m);
+        for (here = 0; here < MAP_W * MAP_H; here++)
+            if (g->cell[here].tile == CELL_TERRITORY0 + 0 &&
+                g->occupant[here] < 0) break;
+        check(here < MAP_W * MAP_H, "side 0 has a free square of its own land");
+        if (here < MAP_W * MAP_H) {
+            int who = -1, k;
+            for (k = 0; k < UNIT_SLOTS; k++)
+                if (!(g->unit[k].flags & 0x80) && g->unit[k].side == 0 &&
+                    !(g->unit[k].state & 0x20)) { who = k; break; }
+            check(who >= 0, "and a worker to do it");
+            if (who >= 0) {
+                int had = g->unit[who].carrying, amount = g->cell[here].amount;
+                /* Move it there by hand; the walk is tested elsewhere. */
+                g->occupant[game_cell_index(g->unit[who].pos & 0xff,
+                                            g->unit[who].pos >> 8)] = -1;
+                g->unit[who].pos = (unsigned short)
+                    (((here / MAP_W) << 8) | (here % MAP_W));
+                g->unit[who].at = (unsigned short)(here * 2);
+                g->occupant[here] = (short)who;
+
+                checkf(game_pick_up(g, who) == amount,
+                       "picked up %d, expected %d", amount, amount, 0);
+                checkf(g->unit[who].carrying == had + amount,
+                       "carries %d, expected %d", g->unit[who].carrying,
+                       had + amount, 0);
+                check(g->cell[here].amount == 1, "and left 1 behind");
+            }
         }
     }
 

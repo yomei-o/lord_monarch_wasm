@@ -106,11 +106,13 @@ typedef struct {
     unsigned short at;          /* +0x04, the castle cell as a byte offset */
     short lord;                 /* +0x06, the side's first unit (a slot here) */
     unsigned short full;        /* +0x0c, set to 200 */
-    unsigned short funds;       /* +0x0e, set to 5000 */
-    unsigned short spent;       /* +0x10, set to 0 */
+    /* +0x0e and +0x10 are one 32-bit purse: sub_abc7 does
+     * `sub cx,ax / sbb di,dx` across the pair. */
+    unsigned long funds;        /* starts at 5000 */
     unsigned char rate;         /* +0x12, set to 10 */
     unsigned char b13;          /* +0x13, set to 0 */
-    unsigned char b14;          /* +0x14, set to 0x80; sub_a61d returns it */
+    unsigned char ally;         /* +0x14, another side, or 0x80 for none */
+    unsigned char heir;         /* +0x15, who takes the land if this side falls */
     int alive;                  /* the castle was found on this map */
 } Side;
 
@@ -140,6 +142,10 @@ typedef struct {
  */
 void game_init(Game *g, const Map *m);
 
+/* One unit's turn.  Only the worker state (1 and 3) is ported so far; the
+ * lord's 0x20 branch and the rest of the sixteen handlers are not. */
+void game_unit_step(Game *g, int slot);
+
 /* One pass of the unit updater: `0x40 >> speed` slots, stepping 31 at a time. */
 void game_step(Game *g);
 
@@ -157,6 +163,28 @@ void game_step(Game *g);
  *   0x14 + side   the castle; not ported yet
  */
 void game_tick_cells(Game *g);
+
+/* What developing a square costs, from `mov ax,0x64` before sub_abc7. */
+#define DEVELOP_COST 100
+
+/* A unit turns the square it stands on into its side's productive land, at
+ * sub_3ec7:
+ *
+ *   - the square has to be plain ground or claimed land (0x0c + any side)
+ *   - one of the eight neighbours has to already be 0x08 + this side or
+ *     0x08 + its ally, so the land stays connected (sub_ae9e)
+ *   - it costs the side 100 from its purse (sub_abc7)
+ *   - the square becomes 0x08 + side holding `min(carried, 200) / 2 + 1`, and
+ *     the unit spends that much of what it carries
+ *   - a unit that spends its last is finished (sub_a9ca)
+ *
+ * Returns 1 if the square was developed.
+ */
+int game_develop(Game *g, int slot);
+
+/* A unit standing on its own productive land picks up what the square holds and
+ * leaves 1 behind, at 0x34bb. */
+int game_pick_up(Game *g, int slot);
 
 /* The castle's collection, at 0x3581: with the side's lord standing on the
  * castle in a 0x20 mode and the square past its gate not held by anybody else,
@@ -196,6 +224,10 @@ void game_path_advance(Game *g, int slot);
 
 /* Handy for the viewer and for tests. */
 int game_unit_count(const Game *g, int side);
+
+/* How many squares a side holds: `productive` counts 0x08 + side, `claimed`
+ * counts 0x0c + side. */
+void game_land_count(const Game *g, int side, int *productive, int *claimed);
 int game_cell_index(int x, int y);
 
 #endif

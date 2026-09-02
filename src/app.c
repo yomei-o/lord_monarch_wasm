@@ -231,18 +231,25 @@ void app_tick(void)
 {
     int i;
     if (mode != APP_MODE_MAP) return;
+    /* The castles collect from inside the cell sweep, when the cursor lands on
+     * one - not once a tick.  0x3332 dispatches on the tile. */
     game_tick_cells(&game);
     game_step(&game);
-    for (i = 0; i < PLAYERS; i++) game_collect(&game, i);
     for (i = 0; i < MAP_W * MAP_H; i++) live.cell[i] = game.cell[i].tile;
     ticks++;
-    snprintf(status, sizeof status,
-             "B_%03d.MAP  terrain %d  %dx%d  tick %ld  units %d "
-             "(neutral %d)  funds %u %u %u %u",
-             mapNumber, map.terrain, bank.size, bank.size, ticks,
-             game_unit_count(&game, -1), game_unit_count(&game, 4),
-             game.side[0].funds, game.side[1].funds,
-             game.side[2].funds, game.side[3].funds);
+    {
+        int p[PLAYERS], c[PLAYERS];
+        for (i = 0; i < PLAYERS; i++)
+            game_land_count(&game, i, &p[i], &c[i]);
+        snprintf(status, sizeof status,
+                 "B_%03d.MAP tick %ld  units %d (wild %d)  "
+                 "land %d+%d %d+%d %d+%d %d+%d  funds %lu %lu %lu %lu",
+                 mapNumber, ticks, game_unit_count(&game, -1),
+                 game_unit_count(&game, 4),
+                 p[0], c[0], p[1], c[1], p[2], c[2], p[3], c[3],
+                 game.side[0].funds, game.side[1].funds,
+                 game.side[2].funds, game.side[3].funds);
+    }
 }
 
 void app_render(void)

@@ -118,11 +118,11 @@ void game_init(Game *g, const Map *m)
         s->pos = pack_pos(found);
         s->at = (unsigned short)(found * 2);
         s->full = CELL_FULL_AMOUNT;     /* 0xc8 */
-        s->funds = 0x1388;              /* 5000 */
-        s->spent = 0;
+        s->funds = 5000;                /* 0x1388 across +0x0e and +0x10 */
         s->rate = 0x0a;                 /* 10 */
         s->b13 = 0;
-        s->b14 = 0x80;
+        s->ally = 0x80;
+        s->heir = 0x80;
 
         lord = place(g, found, side, UNIT_STATE_LORD, 0x3e8);
         if (lord >= 0) {
@@ -145,7 +145,7 @@ void game_init(Game *g, const Map *m)
         g->cell[i].amount = CELL_START_AMOUNT;
         place(g, i, 4, UNIT_STATE_NEUTRAL, CELL_FULL_AMOUNT);
     }
-    g->side[4].b14 = 0x80;
+    g->side[4].ally = 0x80;
 }
 
 void game_step(Game *g)
@@ -157,12 +157,11 @@ void game_step(Game *g)
 
     if (todo < 1) todo = 1;
     while (todo--) {
-        Unit *u = &g->unit[slot & (UNIT_SLOTS - 1)];
+        int i = slot & (UNIT_SLOTS - 1);
+        Unit *u = &g->unit[i];
         if (!(u->flags & 0x80)) {
             u->flags &= (unsigned char)~1u;
-            /* The sixteen order handlers behind CS:3A47 are not ported yet.
-             * Keeping the visiting order right now means nothing else has to
-             * move when they are. */
+            game_unit_step(g, i);
         }
         slot = (slot + 31) & (UNIT_SLOTS - 1);
     }
@@ -407,7 +406,8 @@ void game_tick_cells(Game *g)
             tick_nest(g, at);
         else if (tile >= CELL_TERRITORY0 && tile < CELL_TERRITORY0 + PLAYERS)
             tick_land(g, at, tile - CELL_TERRITORY0);
-        /* castles (0x14..0x17) go through 0x3581, which is not ported yet */
+        else if (tile >= CELL_CASTLE0 && tile < CELL_CASTLE0 + PLAYERS)
+            game_collect(g, tile - CELL_CASTLE0);   /* 0x3581 */
         at += 23;                            /* 46 bytes */
         if (at >= MAP_W * MAP_H) at -= MAP_W * MAP_H;
     }
@@ -422,6 +422,8 @@ void game_tick_cells(Game *g)
  *
  * Returns what was collected.
  */
+int game_collect(Game *g, int side);
+
 int game_collect(Game *g, int side)
 {
     Side *s = &g->side[side];
@@ -452,9 +454,218 @@ int game_collect(Game *g, int side)
         take = (s->rate * g->cell[i].amount) >> 8;   /* mul, keep the high byte */
         if (take == 0) continue;
         g->cell[i].amount = (unsigned char)(g->cell[i].amount - take);
-        s->funds = (unsigned short)(s->funds + take);
+        s->funds += (unsigned long)take;
         got += take;
     }
     (void)gate;
     return got;
+}
+
+/* ------------------------------------------------------------ what units do */
+
+/* sub_ae9e: is one of the eight neighbours this side's productive land, or its
+ * ally's?  Developing needs the ground to stay joined up. */
+static int joined_up(const Game *g, int index, int side)
+{
+    static const int dx[8] = { 0,  1, 1, 1, 0, -1, -1, -1 };
+    static const int dy[8] = {-1, -1, 0, 1, 1,  1,  0, -1 };
+    unsigned char mine = (unsigned char)(CELL_TERRITORY0 + side);
+    unsigned char ally = g->side[side].ally;
+    int x = index % MAP_W, y = index / MAP_W, k;
+
+    for (k = 0; k < 8; k++) {
+        int nx = x + dx[k], ny = y + dy[k], n;
+        unsigned char t;
+        if (nx < 0 || nx >= MAP_W || ny < 0 || ny >= MAP_H) continue;
+        n = ny * MAP_W + nx;
+        t = g->cell[n].tile;
+        if (t == mine) return 1;
+        if (ally < PLAYERS && t == CELL_TERRITORY0 + ally) return 1;
+    }
+    return 0;
+}
+
+/* sub_abc7: take from the side's purse, or fail. */
+static int spend(Game *g, int side, unsigned long cost)
+{
+    if (g->side[side].funds < cost) return 0;
+    g->side[side].funds -= cost;
+    return 1;
+}
+
+/* sub_a9ca, for an ordinary unit: it is finished with.  The lord's death does a
+ * great deal more - it hands the side's land to whoever killed it - and is not
+ * ported yet. */
+static void unit_spent(Game *g, int slot)
+{
+    Unit *u = &g->unit[slot];
+    int index = game_cell_index(u->pos & 0xff, u->pos >> 8);
+
+    u->carrying = 0;
+    u->link = 0xff;
+    if (u->state & 0x20) return;        /* the lord; left alone for now */
+    if (g->occupant[index] == slot) g->occupant[index] = -1;
+    u->flags = 0x80;                    /* back to a free slot */
+}
+
+int game_develop(Game *g, int slot)
+{
+    Unit *u = &g->unit[slot];
+    int index = game_cell_index(u->pos & 0xff, u->pos >> 8);
+    unsigned char tile = g->cell[index].tile;
+    int take;
+
+    if (u->side >= PLAYERS) return 0;
+    if (tile != 0) {                            /* 0x3ece */
+        int c = tile - (CELL_TERRITORY0 + 4);
+        if (c < 0 || c >= PLAYERS) return 0;
+    }
+    if (!joined_up(g, index, u->side)) return 0;
+    if (!spend(g, u->side, DEVELOP_COST)) return 0;
+
+    take = u->carrying;
+    if (take > CELL_FULL_AMOUNT) take = CELL_FULL_AMOUNT;   /* 0x3ef7 */
+    g->cell[index].tile = (unsigned char)(CELL_TERRITORY0 + u->side);
+    g->cell[index].amount = (unsigned char)((take >> 1) + 1);
+    u->carrying = (unsigned short)(u->carrying - take);
+    if (u->carrying == 0) unit_spent(g, slot);
+    return 1;
+}
+
+int game_pick_up(Game *g, int slot)
+{
+    Unit *u = &g->unit[slot];
+    int index = game_cell_index(u->pos & 0xff, u->pos >> 8);
+    int got;
+
+    if (g->cell[index].tile != CELL_TERRITORY0 + u->side) return 0;
+    got = g->cell[index].amount;
+    g->cell[index].amount = 1;                  /* xchg with 1 */
+    if (u->carrying + got > 0xffff) u->carrying = 0xffff;   /* 0x34c7 */
+    else u->carrying = (unsigned short)(u->carrying + got);
+    return got;
+}
+
+/* sub_af42: the first of the four orthogonal neighbours whose tile is `tile`,
+ * looked at up, down, left, right - which the original turns into 0, 4, 2, 6 of
+ * the eight-direction table.  Returns -1 if none of them is. */
+static int direction_towards(const Game *g, int index, unsigned char tile)
+{
+    static const int off[4] = {-MAP_W, MAP_W, -1, 1};
+    static const int dir[4] = {DIR_UP, DIR_DOWN, DIR_LEFT, DIR_RIGHT};
+    int x = index % MAP_W, y = index / MAP_W, k;
+
+    for (k = 0; k < 4; k++) {
+        int n = index + off[k];
+        int nx = (k >= 2) ? x + off[k] : x;
+        int ny = (k < 2) ? y + (off[k] > 0 ? 1 : -1) : y;
+        if (nx < 0 || nx >= MAP_W || ny < 0 || ny >= MAP_H) continue;
+        if (n < 0 || n >= MAP_W * MAP_H) continue;
+        if (g->cell[n].tile == tile) return dir[k];
+    }
+    return -1;
+}
+
+/* Somewhere worth walking to: a square this side could develop - plain ground
+ * or claimed land - that already touches its own productive land.
+ *
+ * **This part is ours.**  The original picks its target through sub_4814 and
+ * sub_bc56, which run its own flood fill over the pathfinding grid and choose
+ * the nearest square of the side's own land, with the AI and the human taking
+ * different branches (sub_bd3b against sub_bd84).  Those are not decoded yet.
+ * What is decoded is everything the worker then does with the answer, so this
+ * stands in for the choice and nothing else.
+ */
+static int worker_target(const Game *g, int slot)
+{
+    const Unit *u = &g->unit[slot];
+    int here = game_cell_index(u->pos & 0xff, u->pos >> 8);
+    int hx = here % MAP_W, hy = here / MAP_W;
+    int best = -1, bestD = 0, i;
+
+    for (i = 0; i < MAP_W * MAP_H; i++) {
+        int x = i % MAP_W, y = i / MAP_W, d, c;
+        unsigned char t = g->cell[i].tile;
+        if (x < MAP_MIN || x > MAP_MAX || y < MAP_MIN || y > MAP_MAX) continue;
+        if (g->occupant[i] >= 0) continue;
+        if (t != 0) {
+            c = t - (CELL_TERRITORY0 + 4);
+            if (c < 0 || c >= PLAYERS) continue;
+        }
+        if (!joined_up(g, i, u->side)) continue;
+        d = (x - hx) * (x - hx) + (y - hy) * (y - hy);
+        if (best < 0 || d < bestD) {
+            best = i;
+            bestD = d;
+        }
+    }
+    return best;
+}
+
+/* State 1, at 0x3998: develop the square you stand on.  Failing that the
+ * original spends its action budget on sub_4881, which picks a target, checks
+ * the unit carries at least twice the distance, paths to it and moves the unit
+ * to state 2; when the budget is gone it just steps towards its own land with
+ * sub_af42.  Both of those are here, with the target choice standing in for
+ * sub_4814 / sub_bc56.
+ */
+static void unit_worker(Game *g, int slot)
+{
+    Unit *u = &g->unit[slot];
+    int index, dir, target;
+
+    if (game_develop(g, slot)) return;
+    if (u->flags & 0x80) return;                /* it spent itself developing */
+    index = game_cell_index(u->pos & 0xff, u->pos >> 8);
+
+    /* Already walking somewhere: keep going. */
+    dir = game_path_dir(g, slot);
+    if (dir >= 0) {
+        if (game_move(g, slot, dir)) game_path_advance(g, slot);
+        return;
+    }
+
+    target = worker_target(g, slot);
+    if (target >= 0) {
+        int len = game_path_to(g, slot, target % MAP_W, target / MAP_W);
+        /* 0x45af: it has to carry at least twice the distance to be worth it. */
+        if (len > 0 && u->carrying >= (unsigned short)(len * 2)) {
+            u->state = 2;
+            return;
+        }
+        u->link = 0xff;
+    }
+    /* The budget-exhausted path: step towards your own land. */
+    dir = direction_towards(g, index,
+                            (unsigned char)(CELL_TERRITORY0 + u->side));
+    if (dir >= 0) game_move(g, slot, dir);
+}
+
+void game_unit_step(Game *g, int slot)
+{
+    Unit *u = &g->unit[slot];
+
+    if (u->flags & 0x80) return;
+    if (u->side >= PLAYERS) return;             /* the neutral ones idle */
+    if (u->state & 0x20) return;                /* the lord; 0x3a67, not ported */
+    switch (u->state & 0x0f) {
+    case 1: case 3:                 /* the worker, 0x3998 */
+    case 2:                         /* walking to a target, 0x386c */
+        unit_worker(g, slot);
+        break;
+    default:
+        break;
+    }
+}
+
+void game_land_count(const Game *g, int side, int *productive, int *claimed)
+{
+    int i, p = 0, c = 0;
+    for (i = 0; i < MAP_W * MAP_H; i++) {
+        unsigned char t = g->cell[i].tile;
+        if (t == CELL_TERRITORY0 + side) p++;
+        else if (t == CELL_TERRITORY0 + 4 + side) c++;
+    }
+    if (productive) *productive = p;
+    if (claimed) *claimed = c;
 }
