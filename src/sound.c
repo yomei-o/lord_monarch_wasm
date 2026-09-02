@@ -212,6 +212,19 @@ void snd_env_key(SndVoice *v, const unsigned char *env)
     if (v->count == 0) v->count = 1;
 }
 
+void snd_env_release(SndVoice *v, const unsigned char *env)
+{
+    int at = (v->timbre & 0xf0) | 0x0c;         /* 0x114f, 0x1152 */
+
+    v->stage = at;
+    v->step = env[at];
+    v->count = env[at + 1] & 0x7f;
+    v->downwards = (env[at + 1] & 0x80) != 0;
+    v->target = env[at + 2];
+    if (v->count == 0) v->count = 1;
+    v->spent = 0;
+}
+
 /* 0x0fab onwards.  The count runs down; when it reaches zero the level takes
  * one step towards the target, and on arriving it either chains to the next
  * stage or the voice is spent. */
@@ -235,11 +248,16 @@ int snd_env_step(SndVoice *v, const unsigned char *env)
         if (v->level <= 0xff && v->level < v->target) return v->level;
     }
 
-    /* 0x0fdf: arrived. */
+    /* 0x0fdf: arrived.  The target is written, and then - if it was zero, or
+     * this was the last stage - 0x1016 marks the voice finished and writes a
+     * level of ZERO over it.  Leaving the target standing instead ended every
+     * effect on a step down to silence rather than a fade into it, which is
+     * audible as a click and measured as a tail that stops around 6000. */
     v->level = v->target;
     if (v->level == 0 || (v->stage & 8)) {      /* 0x0fe5, 0x0fee */
         v->spent = 1;
-        return v->level;
+        v->level = 0;                           /* 0x101a: xor al, al */
+        return 0;
     }
     v->stage = at + 4;                          /* 0x0ff3 */
     at = v->stage;
@@ -274,7 +292,26 @@ int snd_render_effect(const unsigned char *progDat, unsigned progDatSize,
 
     for (;;) {
         int keyed = 0, room;
-        if (!snd_tick(&v, &keyed)) break;
+        if (!snd_tick(&v, &keyed)) {
+            /* The sequence is over but the voice is not: sub_114b takes it into
+             * the release stage and the driver keeps servicing it until it is
+             * spent.  Stopping here instead cut every effect off dead, which is
+             * the difference between a note that fades and one that clicks. */
+            int tail = 0;
+            snd_env_release(&v, env);
+            while (!v.spent && made < maxSamples && tail < 240) {
+                int n2 = maxSamples - made;
+                level = snd_env_step(&v, env);
+                ssg_write(&chip, 8, (level * (v.volume + 1)) >> 8 > 15
+                                    ? 15 : (level * (v.volume + 1)) >> 8);
+                if (n2 > perTick) n2 = perTick;
+                if (n2 <= 0) break;
+                ssg_render(&chip, out + made, n2, sampleRate);
+                made += n2;
+                tail++;
+            }
+            break;
+        }
         if (keyed) {
             int p = ssg_period(periods, v.note, 0);
             ssg_write(&chip, 0, p & 0xff);
@@ -282,6 +319,11 @@ int snd_render_effect(const unsigned char *progDat, unsigned progDatSize,
             ssg_write(&chip, 7, 0x3e);      /* tone on channel A */
             snd_env_key(&v, env);           /* sub_111e */
         }
+        /* 0x0f40: with the tie flag set, the note goes into its release when
+         * its remaining ticks reach [si+9] - which the initialiser leaves at
+         * zero, so that is the note's last tick. */
+        if (v.keyed && v.tie && v.wait <= 1 && !(v.stage & 8))
+            snd_env_release(&v, env);
         level = v.keyed ? snd_env_step(&v, env) : 0;
         /* sub_10c2: the level times volume + 1, shifted down eight. */
         ssg_write(&chip, 8, (level * (v.volume + 1)) >> 8 > 15

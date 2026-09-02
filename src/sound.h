@@ -122,4 +122,14 @@ void snd_env_key(SndVoice *v, const unsigned char *env);
 /* One tick of it, after snd_tick.  Returns the level that reaches the chip. */
 int snd_env_step(SndVoice *v, const unsigned char *env);
 
+/* sub_114b, the release: it jumps straight to stage 0x0c of the timbre's block
+ * and loads that stage's step, count and target.  Since bit 3 of 0x0c is set,
+ * arriving at its target is the end of the voice - so stage 0x0c is the fade,
+ * and the four-byte block is attack, decay, sustain, release in that order.
+ *
+ * The original enters it from 0x0f40, when the note's remaining ticks reach
+ * [si+9] and the tie flag is set, which is how a note starts fading before the
+ * next one arrives rather than stopping dead. */
+void snd_env_release(SndVoice *v, const unsigned char *env);
+
 #endif
