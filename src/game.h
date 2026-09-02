@@ -135,6 +135,11 @@ typedef struct {
     int speed;                          /* DS:3C02, 0 = fastest */
     int human;                          /* DS:3C00, the side the player has */
     long stamp;                         /* bumped whenever the ground changes */
+    /* DS:C4F2, the number of units allowed to make a decision this turn.  It is
+     * reloaded from [0x3c1e] once a turn (0x1a4a), and that is
+     * `max(3 - cx, 0) + 1` - so between one and four.  sub_adbe hands them out
+     * and sets a unit's flag bit 0 when there are none left. */
+    int budget;
     int aiBonus;                        /* DS:347E, doubles AI land growth */
 } Game;
 

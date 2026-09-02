@@ -2,6 +2,9 @@
 
 #include <string.h>
 
+/* [0x3c1e] is `max(3 - cx, 0) + 1`, so one to four units may decide a turn. */
+#define TURN_BUDGET 4
+
 /* DS:2827, eight words of (dy << 8) | dx. */
 const signed char GAME_DX[8] = { 0, -1, -1, -1,  0,  1,  1,  1 };
 const signed char GAME_DY[8] = {-1, -1,  0,  1,  1,  1,  0, -1 };
@@ -97,6 +100,10 @@ void game_init(Game *g, const Map *m)
 
     memset(g, 0, sizeof *g);
     g->terrain = m->terrain;
+    g->speed = 1;                       /* PROG.DAT DS:3c02 */
+    g->human = 0;                       /* PROG.DAT DS:3c00 */
+    g->stamp = 1;
+    game_forget_distances();
 
     /* The loader's in-place expansion: every cell becomes (tile, 100). */
     for (i = 0; i < MAP_W * MAP_H; i++) {
@@ -164,6 +171,7 @@ void game_step(Game *g)
     int todo = (0x40 >> (g->speed & 7)) - 1;
     int slot = g->cursor;
 
+    g->budget = TURN_BUDGET;            /* 0x1a4a reloads it once a turn */
     if (todo < 1) todo = 1;
     while (todo--) {
         int i = slot & (UNIT_SLOTS - 1);
@@ -394,6 +402,20 @@ static void land_produces(Game *g, int index, int side)
 static void tick_land(Game *g, int index, int side)
 {
     int same, empty, last, gain, v, n;
+
+    /* 0x33dc -> 0x34ce: a fallen side's ground becomes the heir's, or plain
+     * again when there is no heir. */
+    if (g->side[side].flag & 8) {
+        unsigned char heir = g->side[side].heir;
+        if (heir < PLAYERS) {
+            g->cell[index].tile = (unsigned char)(CELL_TERRITORY0 + heir);
+        } else {
+            g->cell[index].tile = 0;
+            g->cell[index].amount = CELL_START_AMOUNT;
+        }
+        g->stamp++;
+        return;
+    }
 
     /* 0x34b0: if one of that side's own units is standing here it takes what
      * the square holds, leaving 1 - which is how a unit builds up the thousand
@@ -908,6 +930,15 @@ static int decide(Game *g, int slot)
 {
     int r;
 
+    /* sub_adbe: only a handful of units get to think each turn.  Without this
+     * every idle unit floods the board once a tick, which is most of the cost
+     * of the whole simulation - and it is not what the original does. */
+    if (g->budget <= 0) {
+        g->unit[slot].flags |= 1;
+        return 0;
+    }
+    g->budget--;
+
     if (pick_assault(g, slot)) return 1;
     r = roll(100);                                  /* 0x4897, sub_9a24(100) */
     if (r >= 90) return pick_job(g, slot);          /* 0x48a9 */
@@ -988,6 +1019,12 @@ void game_unit_step(Game *g, int slot)
     case 4:
         if (!state_outward(g, slot))
             u->state = (unsigned char)((u->state & 0xd0) | 1);
+        break;
+    case 12:
+        /* 0x3985: the side has fallen, so change to whoever inherited it. */
+        if (g->side[u->side].heir < PLAYERS)
+            u->side = g->side[u->side].heir;
+        u->state = (unsigned char)((u->state & 0xd0) | 1);
         break;
     case 2: case 11:
         /* Jobs at the target square: walking your own ground, chipping rock,
