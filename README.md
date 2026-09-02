@@ -187,11 +187,12 @@ Python 実装と突き合わせて確認）。
 ## WASM（ブラウザ）
 
 ```sh
-make wasm      # docs/monarch.js と docs/monarch.wasm
+make wasm      # monarch.js と monarch.wasm をリポジトリのルートに
 ```
 
-GitHub Pages が `docs/` を配信する設定なら、そのまま
-<https://yomei-o.github.io/lord_monarch_wasm/> で動きます。
+GitHub Pages はリポジトリのルートを配信するので、`index.html` と
+`monarch.js` と `monarch.wasm` はルートに置いてあります。
+<https://yomei-o.github.io/lord_monarch_wasm/>
 
 * **WebGL は使いません。** C 側で 640×400 の RGBA に描いて `putImageData`
   するだけです

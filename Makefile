@@ -42,19 +42,20 @@ $(OUT):
 shots: $(OUT)/monarch_shot.exe
 	sh tools/shots.sh
 
-# GitHub Pages serves docs/, so the WASM output lands there.
+# GitHub Pages serves the repository root, so index.html, monarch.js and
+# monarch.wasm live there; docs/ keeps only the pictures the README uses.
 #
 # The image on the disk is named in Shift-JIS half-width katakana, which no
 # shell here passes through intact, so it is copied to an ASCII name first.
-wasm: docs/monarch.js
+wasm: monarch.js
 
 $(OUT)/monarch.fim: $(IMAGE) | $(OUT)
 	cp "$(IMAGE)" $@
 
-docs/monarch.js: src/main_wasm.c $(APP) $(OUT)/monarch.fim
+monarch.js: src/main_wasm.c $(APP) $(OUT)/monarch.fim
 	$(EMCC) -O2 -std=c99 -o $@ src/main_wasm.c $(APP) --embed-file $(OUT)/monarch.fim@/monarch.fim -s MODULARIZE=1 -s EXPORT_NAME=LordMonarch -s EXPORTED_RUNTIME_METHODS=ccall,cwrap,UTF8ToString,HEAPU8,HEAPU32 -s ALLOW_MEMORY_GROWTH=1 -s ENVIRONMENT=web,worker,node
 
 clean:
-	rm -f $(OUT)/monarch.exe $(OUT)/monarch_shot.exe $(OUT)/game_check.exe docs/monarch.js docs/monarch.wasm
+	rm -f $(OUT)/monarch.exe $(OUT)/monarch_shot.exe $(OUT)/game_check.exe $(OUT)/sim.exe monarch.js monarch.wasm
 
 .PHONY: all shots wasm check clean

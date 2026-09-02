@@ -1246,3 +1246,50 @@ int game_merge(Game *g, int slot, int toIndex)
     unit_spent(g, slot);
     return 1;
 }
+
+/* ------------------------------------------------------- for the host layer */
+
+int game_cell_occupant(const Game *g, int index)
+{
+    if (index < 0 || index >= MAP_W * MAP_H) return -1;
+    return g->occupant[index];
+}
+
+int game_unit_side(const Game *g, int slot)
+{
+    if (slot < 0 || slot >= UNIT_SLOTS) return -1;
+    return g->unit[slot].side;
+}
+
+int game_unit_free(const Game *g, int slot)
+{
+    if (slot < 0 || slot >= UNIT_SLOTS) return 1;
+    return (g->unit[slot].flags & 0x80) != 0;
+}
+
+void game_unit_pos(const Game *g, int slot, int *x, int *y)
+{
+    if (slot < 0 || slot >= UNIT_SLOTS) {
+        *x = *y = -1;
+        return;
+    }
+    *x = g->unit[slot].pos & 0xff;
+    *y = g->unit[slot].pos >> 8;
+}
+
+/* An order to walk somewhere: a path and state 2, which is the shape the
+ * game's own orders take (0x45b4 writes the target, builds the path with
+ * sub_c0bd and sets state 2).  Returns the number of steps. */
+int game_order_move(Game *g, int slot, int x, int y)
+{
+    Unit *u = &g->unit[slot];
+    int len;
+
+    if (game_unit_free(g, slot)) return 0;
+    len = game_path_to(g, slot, x, y);
+    if (len <= 0) return 0;
+    u->home = (unsigned short)((y << 8) | x);
+    u->state = (unsigned char)((u->state & 0xd0) | 2);
+    u->retry = 4;
+    return len;
+}

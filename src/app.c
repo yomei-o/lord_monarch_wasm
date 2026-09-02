@@ -48,6 +48,8 @@ static Map live;                /* the map as the simulation has it now */
 static int showCastles;
 static int running;
 static long ticks;
+static int hoverX = -1, hoverY = -1;      /* in cells */
+static int selected = -1;                 /* a unit slot */
 static int mode = APP_MODE_TITLE;
 static int mapNumber, tileSize = 16, scrollX, scrollY;
 static char status[256];
@@ -149,6 +151,7 @@ int app_show_map(int number, int size)
     tileSize = size;
     scrollX = scrollY = 0;
     game_init(&game, &map);
+    selected = -1;
     game.human = 0;
     live = map;
     running = 0;
@@ -252,6 +255,49 @@ void app_tick(void)
     }
 }
 
+/* Screen pixel -> map cell, or 0 if the point is outside the view. */
+static int screen_to_cell(int x, int y, int *cx, int *cy)
+{
+    if (mode != APP_MODE_MAP || bank.size <= 0) return 0;
+    if (x < VIEW_X || y < VIEW_Y || x >= VIEW_X + VIEW_W ||
+        y >= VIEW_Y + VIEW_H) return 0;
+    *cx = scrollX + (x - VIEW_X) / bank.size;
+    *cy = scrollY + (y - VIEW_Y) / bank.size;
+    return *cx >= 0 && *cx < MAP_W && *cy >= 0 && *cy < MAP_H;
+}
+
+void app_hover(int x, int y)
+{
+    int cx, cy;
+    if (screen_to_cell(x, y, &cx, &cy)) {
+        hoverX = cx;
+        hoverY = cy;
+    } else {
+        hoverX = hoverY = -1;
+    }
+}
+
+int app_selected(void) { return selected; }
+
+void app_click(int x, int y)
+{
+    int cx, cy, index;
+
+    if (!screen_to_cell(x, y, &cx, &cy)) return;
+    index = game_cell_index(cx, cy);
+
+    if (selected < 0) {
+        int who = game_cell_occupant(&game, index);
+        if (who >= 0 && game_unit_side(&game, who) == game.human)
+            selected = who;
+        return;
+    }
+    /* Send it there: a path and state 2, which is what the game's own orders
+     * amount to.  If it cannot get there the selection just clears. */
+    game_order_move(&game, selected, cx, cy);
+    selected = -1;
+}
+
 void app_render(void)
 {
     memcpy(scr.px, bg.px, sizeof scr.px);
@@ -259,6 +305,15 @@ void app_render(void)
     if (running) app_tick();
     gfx_draw_map(&scr, &live, &bank, VIEW_X, VIEW_Y, scrollX, scrollY,
                  VIEW_W / bank.size + 1, VIEW_H / bank.size + 1);
+    if (hoverX >= 0)
+        outline_cell(hoverX, hoverY, 6);
+    if (selected >= 0 && !game_unit_free(&game, selected)) {
+        int sx, sy;
+        game_unit_pos(&game, selected, &sx, &sy);
+        outline_cell(sx, sy, 7);
+    } else if (selected >= 0) {
+        selected = -1;
+    }
     if (showCastles) {
         /* The starting state, as the original builds it.  These marks are ours;
          * the game draws no such thing.  Index 6 is the interface yellow and 2

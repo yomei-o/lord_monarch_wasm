@@ -9,6 +9,7 @@
  *   C                mark the units and castles
  *   R                run the world; S steps it once
  *   BACKSPACE        back to the title
+ *   the mouse         click a unit, then click where it should go
  *   ESC              quit
  *
  * An 8bpp DIB with the palette in its BITMAPINFO is the closest thing Windows
@@ -93,6 +94,14 @@ static LRESULT CALLBACK proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         }
         return 0;
     }
+    case WM_MOUSEMOVE:
+        app_hover(LOWORD(lp) / ZOOM, HIWORD(lp) / ZOOM);
+        InvalidateRect(w, 0, FALSE);
+        return 0;
+    case WM_LBUTTONDOWN:
+        app_click(LOWORD(lp) / ZOOM, HIWORD(lp) / ZOOM);
+        InvalidateRect(w, 0, FALSE);
+        return 0;
     case WM_ERASEBKGND:
         return 1;
     case WM_TIMER:

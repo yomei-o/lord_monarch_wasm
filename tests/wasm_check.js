@@ -10,7 +10,7 @@ const fs = require('fs');
 const path = require('path');
 
 const root = path.join(__dirname, '..');
-const LordMonarch = require(path.join(root, 'docs', 'monarch.js'));
+const LordMonarch = require(path.join(root, 'monarch.js'));
 
 // APP_KEY_* from src/app.h.
 const KEY = {

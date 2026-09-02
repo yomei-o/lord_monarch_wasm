@@ -271,6 +271,13 @@ int game_path_to(Game *g, int slot, int x, int y);
 int game_path_dir(const Game *g, int slot);
 void game_path_advance(Game *g, int slot);
 
+/* For the host layer: enough to point at things without reaching inside. */
+int game_cell_occupant(const Game *g, int index);
+int game_unit_side(const Game *g, int slot);
+int game_unit_free(const Game *g, int slot);
+void game_unit_pos(const Game *g, int slot, int *x, int *y);
+int game_order_move(Game *g, int slot, int x, int y);
+
 /* Handy for the viewer and for tests. */
 int game_unit_count(const Game *g, int side);
 

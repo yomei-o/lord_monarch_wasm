@@ -1,4 +1,4 @@
-// Runs the inline script of docs/index.html under node against a stub DOM, so
+// Runs the inline script of index.html under node against a stub DOM, so
 // the page is checked without a browser.
 //
 //   node tests/page_check.js
@@ -12,7 +12,7 @@ const path = require('path');
 const vm = require('vm');
 
 const root = path.join(__dirname, '..');
-const html = fs.readFileSync(path.join(root, 'docs', 'index.html'), 'utf8');
+const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
 
 // The page has two script tags: the module loader, then the inline logic.
 const inline = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
@@ -36,6 +36,7 @@ function elem(id) {
                                    data: new Uint8ClampedArray(w * h * 4)}),
       putImageData: (img) => puts.push(img),
     }),
+    getBoundingClientRect: () => ({left: 0, top: 0, width: 1280, height: 800}),
     width: 640,
     height: 400,
   };
@@ -46,7 +47,7 @@ const raf = [];
 const sandbox = {
   console,
   require,
-  LordMonarch: require(path.join(root, 'docs', 'monarch.js')),
+  LordMonarch: require(path.join(root, 'monarch.js')),
   requestAnimationFrame: (f) => { raf.push(f); },
   document: {
     getElementById: (id) => els[id] || elem(id),
@@ -124,6 +125,32 @@ setTimeout(() => {
 
   const buttonsWired = (handlers['button0:click'] || []).length > 0;
   check(buttonsWired, 'the on-screen buttons are wired up');
+
+  // The pointer.  The canvas is presented at 1280 x 800, so client pixels have
+  // to come back to the frame's 640 x 400 - a click at 1280,... lands at 640.
+  const point = (t, cx, cy) => {
+    const list = handlers['screen:' + t] || [];
+    if (!list.length) throw new Error('nothing is listening for ' + t);
+    for (const f of list) f({clientX: cx, clientY: cy});
+  };
+  check((handlers['screen:mousemove'] || []).length > 0,
+        'the canvas listens for mousemove');
+  check((handlers['screen:click'] || []).length > 0,
+        'the canvas listens for click');
+
+  // Somewhere inside the map view: VIEW_X is 160 of 640, so 400 client pixels.
+  point('mousemove', 400, 100);
+  pump(4);
+  check(puts.length > 0, 'hovering redrew the frame');
+
+  // B_001's side 0 castle is at 3,5 with its second unit on 4,5.  Clicking a
+  // cell picks a unit up if one of ours is standing there; there is no way to
+  // read that back from the page, so this only checks nothing throws and the
+  // frame keeps coming.
+  const putsBefore = puts.length;
+  point('click', 400, 100);
+  pump(4);
+  check(puts.length > putsBefore, 'clicking redrew the frame');
 
   process.exit(failed ? 1 : 0);
 }, 400);

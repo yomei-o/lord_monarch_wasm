@@ -39,6 +39,18 @@ int app_init(const char *imagePath);
 void app_shutdown(void);
 
 void app_key(int key);
+
+/* The pointer, in screen pixels (0..639, 0..399).  The original is keyboard
+ * only - there is no INT 33h anywhere in it - so this is the port's own way in:
+ * a click inside the map picks up one of the player's units, and the next click
+ * sends it somewhere, which is the game's own "walk there" order (a path and
+ * state 2).  Clicks outside the map are ignored for now; the panel's icons have
+ * not been decoded. */
+void app_hover(int x, int y);
+void app_click(int x, int y);
+
+/* -1 when nothing is picked up. */
+int app_selected(void);
 void app_render(void);
 
 /* One turn of the world - the cell sweep, the unit sweep and the castles. */

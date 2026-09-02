@@ -42,6 +42,17 @@ int lm_mode(void) { return app_mode(); }
 EMSCRIPTEN_KEEPALIVE
 void lm_key(int key) { app_key(key); }
 
+/* The pointer, in the frame's own 640 x 400 pixels.  The page scales the canvas
+ * with CSS, so it divides the client coordinates itself. */
+EMSCRIPTEN_KEEPALIVE
+void lm_hover(int x, int y) { app_hover(x, y); }
+
+EMSCRIPTEN_KEEPALIVE
+void lm_click(int x, int y) { app_click(x, y); }
+
+EMSCRIPTEN_KEEPALIVE
+int lm_selected(void) { return app_selected(); }
+
 /* Expands the indexed frame to RGBA.  A 16-entry lookup rebuilt each frame is
  * cheaper than it looks and means a palette change needs no invalidation. */
 EMSCRIPTEN_KEEPALIVE

@@ -17,6 +17,7 @@
   p.sub { margin: 0 0 16px; color: #8d949e; font-size: 12px; }
   p.sub a { color: #7fb7e8; }
   #wrap { position: relative; }
+  canvas { cursor: crosshair; }
   canvas {
     display: block; width: 1280px; max-width: calc(100vw - 24px);
     height: auto; aspect-ratio: 640 / 400;
@@ -46,9 +47,9 @@
 <h1>ロードモナーク (PC-98, 1991) — 解析中のビューア</h1>
 <p class="sub">
   体験版フロッピーを Ghidra で解析して C に書き直しているところです。
-  ディスクから読んだ絵をそのまま表示しています。R を押すと、解析できた
-  ぶんのゲームロジック（土地の成長・領土の拡張・ユニットの生産・城の徴税）が
-  動きます。
+  R を押すと、解析できたぶんのゲームロジック（土地の成長・領土の拡張・
+  ユニットの生産・城の徴税・戦闘）が動きます。自分の勢力のユニットを
+  クリックして選び、行き先をクリックすると歩きます。
   <a href="https://github.com/yomei-o/lord_monarch_wasm">ソース</a>
 </p>
 
@@ -74,6 +75,7 @@
   <b>1 / 2 / 3</b><span>タイルの大きさ 8×8 / 16×16 / 32×32</span>
   <b>C</b><span>城とユニットに印をつける（解析用。原作にこの表示は無い）</span>
   <b>R / S</b><span>世界を動かす / 1 ステップだけ進める</span>
+  <b>マウス</b><span>自分の勢力のユニットをクリックして選び、行き先をクリックすると歩きます</span>
   <b>Backspace</b><span>タイトルに戻る</span>
 </div>
 
@@ -143,6 +145,36 @@
       default:  return 0;
     }
   }
+
+  // The canvas is scaled by CSS, so client pixels have to be divided back to
+  // the frame's own 640 x 400.
+  function framePoint(e) {
+    var r = canvas.getBoundingClientRect();
+    return {
+      x: Math.floor((e.clientX - r.left) * canvas.width / r.width),
+      y: Math.floor((e.clientY - r.top) * canvas.height / r.height)
+    };
+  }
+
+  canvas.addEventListener('mousemove', function (e) {
+    if (!mod) return;
+    var p = framePoint(e);
+    mod._lm_hover(p.x, p.y);
+    dirty = true;
+  });
+
+  canvas.addEventListener('mouseleave', function () {
+    if (!mod) return;
+    mod._lm_hover(-1, -1);
+    dirty = true;
+  });
+
+  canvas.addEventListener('click', function (e) {
+    if (!mod) return;
+    var p = framePoint(e);
+    mod._lm_click(p.x, p.y);
+    dirty = true;
+  });
 
   window.addEventListener('keydown', function (e) {
     var k = fromEvent(e);
