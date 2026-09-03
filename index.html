@@ -143,10 +143,10 @@
 <!-- BUILD is bumped by "make wasm".  Without it a browser will happily hold
      on to a monarch.js from an earlier build and then fail on whichever
      function was added since - which is exactly what happened once. -->
-<script src="monarch.js?v=54491a3f"></script>
+<script src="monarch.js?v=04f47381"></script>
 <script>
   // Stamped by tools/stamp.py from the wasm's own hash.
-  window.LM_BUILD = '54491a3f';
+  window.LM_BUILD = '04f47381';
 
 (function () {
   'use strict';
@@ -262,8 +262,15 @@
     // Ask the game whether its clock is running.  Keeping a flag here and
     // toggling it on the R key missed GO on the panel entirely, so the world
     // only advanced on the frames something else happened to make dirty.
-    var live = mod._lm_running();
-    if (dirty || live) {
+    // Always.  The original's animations live in the retrace, which runs
+    // whatever else is happening: the opening's stars and its fade up from the
+    // silhouette, and the triangle wave 0x07b6 puts on palette entry 15 - the
+    // selected line's background.  Rendering only when the world was running
+    // or something had made the frame dirty meant the title never animated at
+    // all, so the fade never finished and its three lines stayed invisible,
+    // and the bar in a window sat still because a window stops the world.
+    var live = true;                    // see the note above
+    if (live) {
       mod._lm_render();
       var p = mod._lm_framebuffer();
       var w = mod._lm_width(), h = mod._lm_height();

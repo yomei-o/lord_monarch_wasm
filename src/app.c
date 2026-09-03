@@ -170,6 +170,12 @@ static void bar_pulse(void);
  * port last uploaded because the pulse is re-applied over it every frame the
  * way the retrace re-uploads the whole table at 0x07ce. */
 static int barPulse = 15, barUp;
+/* The pulse's own clock.  0x07b6 lives in the RETRACE, so it steps whether or
+ * not the world is running - and the world is stopped exactly when a window is
+ * up, which is when the bar is on screen.  Driving it off `ticks`, which only
+ * moves inside app_tick, made the in-game bars sit still while the display
+ * question's changed. */
+static long pulseTick;
 static unsigned char palBase[48];
 static int palBaseOk;
 static void dlg_say_table(unsigned tableAddr);
@@ -346,6 +352,12 @@ static int hoverIcon = -1;                /* a panel index, 0..13 */
  * panel one with index +- 2 for up and down and bit 0 for left and right. */
 static int curX = MAP_MIN, curY = MAP_MIN;
 static int panelIcon = -1;                /* -1 while the cursor is on the map */
+/* Where the hand was left.  [0x3bee] is never initialised in the original and
+ * only the arrows at 0x4e26 write it, so the panel comes back with the hand
+ * where you left it - 0x1f5b and 0x1f62 even push and pop it round the LOAD
+ * handler to keep it.  Nought, the GO icon, is this port's answer for a fresh
+ * boot rather than the game's. */
+static int panelPick;
 static int viewMode;                      /* the VIEW icon: scroll, do not pick */
 static int selected = -1;                 /* a unit slot */
 static int mode = APP_MODE_TITLE;
@@ -3441,8 +3453,13 @@ void app_key(int key)
              * panel loop - is called from.  So going into the panel sounds
              * like a command being taken, and this port did it in silence. */
             app_sound(APP_SND_OK);
-            panelIcon = 0;
-            snprintf(status, sizeof status, "panel: %s", icon_name(0));
+            /* [0x3bee] is never initialised and only the arrows at 0x4e26
+             * write it, so the hand comes back where it was left - 0x1f5b and
+             * 0x1f62 even push and pop it round the LOAD handler to keep it.
+             * This port put it on GO every time the panel opened. */
+            panelIcon = panelPick;
+            snprintf(status, sizeof status, "panel: %s",
+                     icon_name(panelIcon));
             return;
         default: break;
         }
@@ -3990,6 +4007,7 @@ static void panel_move(int dx, int dy)
         n += dy * 2;
         if (n < 0 || n >= ICON_COUNT) return;
         panelIcon = n;
+        panelPick = n;
         return;
     }
     if (dx < 0) {
@@ -3999,6 +4017,7 @@ static void panel_move(int dx, int dy)
         if (n & 1) return;
         panelIcon = n | 1;
     }
+    panelPick = panelIcon;
 }
 
 /* Copy the dim artwork over an icon, and outline one. */
@@ -4168,8 +4187,7 @@ void app_render(void)
 
         /* sub_7518's ax = 0x0f is ah = 0, so it clears the screen. */
         memset(scr.px, 0, sizeof scr.px);
-        if (!(ticks & 1)) bar_pulse();      /* 0x07ae, every other tick */
-        ticks++;
+        if (!(pulseTick++ & 1)) bar_pulse();    /* 0x07ae, every other tick */
         /* 0x070e draws the message at VRAM 0x231b, which is row 112 byte 27 -
          * (216, 112) - and 0x0717's menu descriptor puts its own lines below
          * it.  The port had the whole block at (32, 192). */
@@ -4204,7 +4222,7 @@ void app_render(void)
      * and that is the only way the world starts again.  The original has no
      * pause command because it does not need one - opening the panel IS the
      * pause. */
-    if (!(ticks & 1)) bar_pulse();       /* 0x07b6, with [0x32e0] set */
+    if (!(pulseTick++ & 1)) bar_pulse(); /* 0x07b6, with [0x32e0] set */
     if (running && dlg.what == DLG_NONE && panelIcon < 0) app_tick();
     /* No stage, no world.  [0x3bc2] is 0xffff until GO loads one, and until
      * then the map window keeps the frame's own artwork - so everything below
