@@ -23,9 +23,12 @@
 
 #include "app.h"
 
-#define DLG_TAX  2
-#define DLG_FELL 7
-#define DLG_OVER 8
+#define DLG_TAX     2
+#define DLG_ALLY    5
+#define DLG_FELL    7
+#define DLG_OVER    8
+#define DLG_REFUSED 9
+#define DLG_VIEW    10
 
 static int failures;
 
@@ -64,8 +67,33 @@ int main(int argc, char **argv)
     check(strstr(app_status(), "tax rate 0 of 30") != NULL,
           "nought is what the game got");
 
+    /* The look-around at 0x1b5f is a loop of its own, not a mode that stays on:
+     * the arrows are the cursor's while it is up and either button leaves. */
+    /* The columns are x 16..47 and 48..79 and the rows start at y 24, so
+     * ICON_VIEW - index 1 - is row 0 column 1. */
+    app_click(64, 40);                          /* ICON_VIEW */
+    check(app_dialog() == DLG_VIEW, "the view icon opens the look-around");
+    app_key(APP_KEY_RIGHT);
+    check(app_dialog() == DLG_VIEW, "the arrows do not close it");
+    app_key(APP_KEY_BACK);
+    check(app_dialog() == 0, "and either button does");
+
+    /* 0x1cb0 is the one command with all three guards, and sub_b52e is the one
+     * that matters here: the alliance cannot be touched once the stage is under
+     * way.  Before GO it opens. */
+    app_click(24, 200);                         /* ICON_ALLY, row 3 column 0 */
+    check(app_dialog() == DLG_ALLY, "the alliance opens before the stage starts");
+    app_key(APP_KEY_BACK);
+
     app_key(APP_KEY_RUN);
     check(app_running(), "GO starts the world");
+
+    /* GO is what sets [0x3bd4], so this is the icon rather than the R key. */
+    app_click(24, 40);                          /* ICON_GO, row 0 column 0 */
+    app_click(24, 200);                         /* ICON_ALLY again */
+    check(app_dialog() == DLG_REFUSED,
+          "and sub_b52e refuses it once the stage is under way");
+    app_key(APP_KEY_START);
 
     for (f = 0; f < 200000; f++) {
         int d;

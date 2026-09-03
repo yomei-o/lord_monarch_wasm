@@ -131,6 +131,7 @@ static int screen_to_icon(int x, int y);
 static void confirm_at(int cx, int cy);
 static void dlg_cancel(void);
 static void dlg_confirm(void);
+static void cursor_move(int dx, int dy);
 static void follow_cursor(void);
 static void panel_move(int dx, int dy);
 static const char *icon_name(int idx);
@@ -178,7 +179,7 @@ static FontRom fontRom;
 #define DLG_TEXT 34
 enum {
     DLG_NONE, DLG_INFO, DLG_TAX, DLG_SPEED, DLG_ZOOM, DLG_ALLY, DLG_ORDER,
-    DLG_FELL, DLG_OVER
+    DLG_FELL, DLG_OVER, DLG_REFUSED, DLG_VIEW
 };
 static struct {
     int what;                       /* DLG_* , DLG_NONE when closed */
@@ -247,6 +248,10 @@ static int overSaid;
  * (0xb3e3).  So clearing stage 5 having already reached 10 puts you back on 10,
  * not on 6, and this port advancing with mapNumber + 1 was wrong for that. */
 static int reached;
+/* [0x3bd4], the stage is under way.  sub_1afa sets it and sub_b52e refuses a
+ * command while it stands: the alliance is one of those, so it can only be
+ * arranged before the stage starts. */
+static int underWay;
 
 /* 0 = the LOGiN three, 1 = the game's own fifty-two.  mapNumber is the index
  * within whichever is in force, not the file's number. */
@@ -723,6 +728,7 @@ int app_show_map(int number, int size)
     if (!palette_from_terrain(map.terrain)) return 0;
     gfx_load_map_names(disk, mapNames);
     overSaid = 0;
+    underWay = 0;               /* sub_6033 loads it; GO is what starts it */
     nameShow = 120;
     namesOk = gfx_load_names(disk, map.terrain, names);
     composeOk = gfx_load_compose(disk, map.terrain, compose);
@@ -893,6 +899,88 @@ static void dlg_open_fell(int side)
     dlg_say(buf);
     dlg_say("");
     dlg_choice(JP_CLOSE, 0);
+}
+
+/* The refusals, and their words are the game's rather than mine: sub_4a4d is
+ * handed the address of a little table - a word of position, a byte of how many
+ * lines with 0x80 as a flag, a byte of height, then that many pointers - and
+ * every one of the three guards passes one of these:
+ *
+ *   DS:0x1153   sub_b509, no stage is loaded or a loss is pending
+ *   DS:0x1159   sub_b52e, the stage has started, so this cannot change
+ *   DS:0x115f   sub_b571, the player has no country
+ *
+ * All three then play 0x0702 and wait for a key at sub_c90f.
+ */
+#define GUARD_NO_STAGE  0x1153
+#define GUARD_UNDER_WAY 0x1159
+#define GUARD_NO_LAND   0x115f
+
+/* Says every line of one of sub_4a4d's tables. */
+static void dlg_say_table(unsigned tableAddr)
+{
+    const unsigned char *t = dat_at(tableAddr, 4);
+    int lines, i;
+
+    if (t) {
+        lines = t[2] & 0x7f;
+        if (lines > DLG_LINES - 2) lines = DLG_LINES - 2;
+        for (i = 0; i < lines; i++) {
+            const unsigned char *p = dat_at(tableAddr + 4 + i * 2, 2);
+            unsigned at;
+            const unsigned char *text;
+            if (!p) break;
+            at = p[0] | (p[1] << 8);
+            text = dat_at(at, 1);
+            if (text) dlg_say((const char *)text);
+        }
+    }
+}
+
+static void dlg_open_refused(unsigned tableAddr)
+{
+    dlg_close();
+    dlg.what = DLG_REFUSED;
+    dlg_say_table(tableAddr);
+    if (dlg.lines == 0) dlg_say("refused");
+    dlg_say("");
+    dlg_choice(JP_CLOSE, 0);
+    app_sound(APP_SND_FAILED);          /* 0x0702 at every one of the three */
+}
+
+/* The look-around at 0x1b5f.  Its window is the table at DS:0x10f1, which is
+ * one line, and while it is up the arrows walk the cursor and either button
+ * closes it. */
+#define VIEW_TABLE 0x10f1
+
+static void dlg_open_view(void)
+{
+    dlg_close();
+    dlg.what = DLG_VIEW;
+    dlg_say_table(VIEW_TABLE);
+    if (dlg.lines == 0) dlg_say("VIEW");
+}
+
+/* The three guards themselves.  Each answers 1 when the command may go ahead. */
+static int guard_stage(void)            /* sub_b509 */
+{
+    if (mode == APP_MODE_MAP) return 1;
+    dlg_open_refused(GUARD_NO_STAGE);
+    return 0;
+}
+
+static int guard_has_land(void)         /* sub_b571 */
+{
+    if (game.human >= 0 && game.human < PLAYERS) return 1;
+    dlg_open_refused(GUARD_NO_LAND);
+    return 0;
+}
+
+static int guard_not_started(void)      /* sub_b52e */
+{
+    if (!underWay) return 1;
+    dlg_open_refused(GUARD_UNDER_WAY);
+    return 0;
 }
 
 /* sub_b2f2 and sub_b28d, and the table DS:0x1105 puts under the first. */
@@ -1104,6 +1192,7 @@ static void icon_press(int idx)
          * not in the game. */
         app_sound(APP_SND_OK);
         running = 1;
+        underWay = 1;                   /* 0x1b37: [0x3bd4] = 0xffff */
         panelIcon = -1;
         snprintf(status, sizeof status, "GO");
         break;
@@ -1115,16 +1204,35 @@ static void icon_press(int idx)
      * There was no sound at the end of the switch, so opening a dialog made
      * no noise at all. */
     case ICON_VIEW:
+        /* 0x1b5f is a loop of its own, not a mode that stays on: it puts up the
+         * window DS:0x10f1 names, walks [0x3be4] about with the move sound at
+         * 0x1baa, and leaves on either button (0x1b85 confirm, 0x1b89 cancel).
+         * A toggle that persisted was this port's invention. */
+        if (!guard_stage()) break;
         app_sound(APP_SND_OK);
-        viewMode = !viewMode;
-        snprintf(status, sizeof status, "VIEW mode %s",
-                 viewMode ? "on" : "off");
+        dlg_open_view();
         break;
-    case ICON_TAX:   app_sound(APP_SND_OK); dlg_open_tax();   break;
-    case ICON_INFO:  app_sound(APP_SND_OK); dlg_open_info();  break;
-    case ICON_SPEED: app_sound(APP_SND_OK); dlg_open_speed(); break;
-    case ICON_ZOOM:  app_sound(APP_SND_OK); dlg_open_zoom();  break;
-    case ICON_ALLY:  app_sound(APP_SND_OK); dlg_open_ally();  break;
+    /* Each of these opens with sub_b509 and nothing else - 0x1c06, 0x1c36,
+     * 0x1c21 and 0x1c4d all call it and return on the carry. */
+    case ICON_TAX:
+        if (!guard_stage()) break;
+        app_sound(APP_SND_OK); dlg_open_tax();   break;
+    case ICON_INFO:
+        if (!guard_stage()) break;
+        app_sound(APP_SND_OK); dlg_open_info();  break;
+    case ICON_SPEED:
+        if (!guard_stage()) break;
+        app_sound(APP_SND_OK); dlg_open_speed(); break;
+    case ICON_ZOOM:
+        if (!guard_stage()) break;
+        app_sound(APP_SND_OK); dlg_open_zoom();  break;
+    /* 0x1cb0 opens with all three, which is why an alliance can only be
+     * arranged before the stage is under way. */
+    case ICON_ALLY:
+        if (!guard_stage()) break;
+        if (!guard_has_land()) break;
+        if (!guard_not_started()) break;
+        app_sound(APP_SND_OK); dlg_open_ally();  break;
     case ICON_MAP:
         app_sound(APP_SND_OK);
         app_show_map(mapNumber + 1 >= MAP_COUNT ? 0 : mapNumber + 1,
@@ -1157,6 +1265,7 @@ static void dlg_cancel(void)
         break;                      /* selected is left alone: choose again */
     case DLG_FELL:
     case DLG_OVER:
+    case DLG_REFUSED:
         dlg_confirm();              /* these only wait for a key */
         break;
     default:
@@ -1175,6 +1284,8 @@ static void dlg_confirm(void)
 
     switch (what) {
     case DLG_INFO:
+    case DLG_REFUSED:
+    case DLG_VIEW:
         dlg_close();
         break;
     case DLG_OVER:
@@ -1349,6 +1460,24 @@ void app_key(int key)
      *              they do nothing.  The tax window is not a menu but the
      *              slider at sub_531d, which is why it alone takes them.
      */
+    /* The look-around is its own loop in the original (0x1b7e), and while it is
+     * up the arrows are the cursor's rather than the window's. */
+    if (dlg.what == DLG_VIEW) {
+        switch (key) {
+        case APP_KEY_LEFT:  cursor_move(-1, 0); return;
+        case APP_KEY_RIGHT: cursor_move(1, 0);  return;
+        case APP_KEY_UP:    cursor_move(0, -1); return;
+        case APP_KEY_DOWN:  cursor_move(0, 1);  return;
+        case APP_KEY_START:                     /* 0x1b85 */
+        case APP_KEY_BACK:                      /* 0x1b89 - either one */
+            dlg_close();
+            snprintf(status, sizeof status, "back from VIEW");
+            return;
+        default:
+            return;
+        }
+    }
+
     if (dlg.what != DLG_NONE) {
         switch (key) {
         case APP_KEY_LEFT:
