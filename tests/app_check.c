@@ -23,6 +23,7 @@
 
 #include "app.h"
 
+#define DLG_INFO    1
 #define DLG_TAX     2
 #define DLG_ALLY    5
 #define DLG_FELL    7
@@ -33,10 +34,28 @@
 
 static int failures;
 
+/* The four playable countries.  game.h is not included here - this test drives
+ * the app through its own interface only - so the number is written out. */
+#define PLAYERS_HERE 4
+
 static void check(int ok, const char *what)
 {
     if (!ok) { printf("FAIL: %s\n", what); failures++; }
     else printf("ok:   %s\n", what);
+}
+
+static void checkf(int ok, const char *fmt, int a, int b, int c)
+{
+    if (!ok) {
+        printf("FAIL: ");
+        printf(fmt, a, b, c);
+        printf("\n");
+        failures++;
+    } else {
+        printf("ok:   ");
+        printf(fmt, a, b, c);
+        printf("\n");
+    }
 }
 
 int main(int argc, char **argv)
@@ -207,6 +226,52 @@ int main(int argc, char **argv)
      * menu has four countries and no "none" line.  So the stage is loaded again
      * before the rest of this runs, which is what game_init does to the side
      * records anyway. */
+    /* The country readout.  Both of its lines are the game's own templates,
+     * DS:0x1a54 and DS:0x1a74, run through the format engine, so this checks
+     * the numbers that come out of it rather than any wording: four countries
+     * at three lines each, and the four shares of the land adding up to a
+     * hundred, because 0x503a works each one out as sub_bcce over sub_bc99.
+     *
+     * A fresh stage first, and some ticks, because sub_a6a5 is what puts a
+     * total in the side records and before the first sweep every share is
+     * nought over nought.
+     */
+    {
+        int k, lines, found = 0, tenths = 0;
+
+        app_show_map(0, 16);
+        for (k = 0; k < 400; k++) app_key(APP_KEY_STEP);
+        app_click(64, 72);                      /* ICON_INFO, row 1 column 1 */
+        check(app_dialog() == DLG_INFO, "the info icon opens the readout");
+        lines = app_dialog_lines();
+        check(lines == PLAYERS_HERE * 3,
+              "four countries at a name and two lines each");
+        for (k = 0; k < lines; k++) {
+            const char *l = app_dialog_line(k);
+            const char *dot = strchr(l, '.');
+
+            printf("      | %s\n", l);
+            /* "@3b.@1b%" - the whole percent, a dot, the tenth, a per cent
+             * sign - is the only place a dot is followed by one digit and a
+             * percent, so this finds the share without knowing the column. */
+            if (dot && dot[1] >= '0' && dot[1] <= '9' && dot[2] == '%') {
+                int whole = 0;
+                const char *d = dot;
+
+                while (d > l && d[-1] >= '0' && d[-1] <= '9') d--;
+                while (d < dot) whole = whole * 10 + (*d++ - '0');
+                tenths += whole * 10 + (dot[1] - '0');
+                found++;
+            }
+        }
+        check(found == PLAYERS_HERE, "every country states its share");
+        checkf(tenths >= 995 && tenths <= 1005,
+               "the four shares come to %d tenths of a per cent",
+               tenths, 0, 0);
+        app_key(APP_KEY_START);
+        check(app_dialog() == 0, "and any key closes it");
+    }
+
     app_shutdown();
     printf(failures ? "%d failed\n" : "all passed\n", failures);
     return failures != 0;

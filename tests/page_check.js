@@ -205,11 +205,12 @@ setTimeout(() => {
         `right moved a column: "${els.status.textContent}"`);
   press(' ');
   pump(2);
-  // The heading is in the original's Japanese when a font image is present and
-  // in English when it is not, so this accepts either rather than pinning the
-  // language.
-  check(/^dialog: (THE FOUR COUNTRIES|\u56db\u3064\u306e\u56fd)/
-            .test(els.status.textContent),
+  // sub_4faf draws no heading - each country gets its own little frame - so the
+  // readout's first line is a country's name off the floppy, and the wording
+  // depends on the tileset.  What is always there is the share of the land,
+  // "@3b.@1b%", so that is what this looks for rather than any words.
+  check(/^dialog: /.test(els.status.textContent) &&
+        /%/.test(els.status.textContent),
         `confirm opened the dialog on the game's own screen: ` +
         `"${els.status.textContent}"`);
   press('Backspace');            // close the dialog

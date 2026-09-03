@@ -175,7 +175,7 @@ void game_init(Game *g, const Map *m)
         if (g->cell[i].tile != CELL_NEUTRAL) continue;
         g->cell[i].tile = 0;
         g->cell[i].amount = CELL_START_AMOUNT;
-    g->stamp++;
+        g->stamp++;
         place(g, i, 4, UNIT_STATE_NEUTRAL, CELL_FULL_AMOUNT);
     }
     g->side[4].ally = 0x80;

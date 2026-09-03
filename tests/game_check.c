@@ -993,7 +993,13 @@ int main(int argc, char **argv)
      * everything sub_bd84 does - so a square that answers at any tier has to be
      * reachable on the terrain alone, which is what game_path_to measures.  A
      * tier that claimed more than the plain fill would mean the blocking had
-     * gone the wrong way round somewhere. */
+     * gone the wrong way round somewhere.
+     *
+     * Water, rock and a fence are the exception, and deliberately: sub_c316
+     * opens the destination square before the fill so that a square nothing
+     * could stand on can still be named - without it no bridge could be
+     * ordered.  game_path_to does not do that, so those are left out of the
+     * comparison rather than the comparison being weakened. */
     {
         Map m;
         int seen[4];
@@ -1015,6 +1021,13 @@ int main(int argc, char **argv)
                         asked++;
                         seen[tier < 0 ? 3 : tier]++;
                         if (tier < 0) continue;
+                        {
+                            unsigned char t =
+                                g->cell[game_cell_index(x, y)].tile;
+                            if (t == CELL_ROCK || t == CELL_WOOD ||
+                                (t >= CELL_IMPASSABLE && t < CELL_WATER_END))
+                                continue;
+                        }
                         plain = game_path_to(g, i, x, y);
                         if (plain <= 0) bad++;
                     }
@@ -1093,6 +1106,48 @@ int main(int argc, char **argv)
         printf("route tiers over %d questions: clear %d, "
                "past an enemy %d, through friends %d, none %d\n",
                asked, seen[2], seen[1], seen[0], seen[3]);
+    }
+
+    /* The one thing the calendar does NOT do.  [0x3bca] is written in four
+     * places - 0x0475 and 0x63f0 set it up, 0xa74f/0xa756 tick it down while it
+     * is not already nought, and 0xb37d/0xb3fc read it back for the score - and
+     * nowhere is it tested for nought to bring a stage to an end.  So the days
+     * running out is not a loss and not a win: the counter sits at nought, that
+     * term of the score becomes nought, and the stage carries on.  Worth a
+     * check of its own, because "the days ran out and nothing happened" reads
+     * like a bug when it is the game.
+     */
+    {
+        Map m3;
+        int t, ended = 0;
+
+        /* The calendar is put at its end rather than played there, so that what
+         * is being checked is the day counter and not who happened to win the
+         * war in the meantime.  0xa74f/0xa756 tick it down only while it is not
+         * already nought, so a stage sitting at nought is exactly the state a
+         * stage that ran its days out is in. */
+        if (gfx_load_map(&m3, d, "B_000.MAP")) {
+            game_init(g, &m3);
+            g->daysLeft = 0;
+            g->day = GAME_DAYS;
+            for (t = 0; t < 200; t++) {
+                g->turn = (g->turn + 1) & 0xff;
+                game_tick_cells(g);
+                game_step(g);
+                game_day(g);
+                game_endgame(g);
+                if (g->over) ended = 1;
+            }
+            /* The two halves behave differently and both on purpose: 0xa743
+             * keeps counting the days gone, saturating at 0xffff, while 0xa756
+             * leaves the days left alone once it is nought. */
+            checkf(g->daysLeft == 0 && g->day > GAME_DAYS,
+                   "the calendar stalled: %d days gone, %d left",
+                   g->day, g->daysLeft, 0);
+            check(!ended, "the days running out does not end the stage");
+            printf("the calendar: at day %d of %d the stage carries on\n",
+                   g->day, GAME_DAYS);
+        }
     }
 
     disk_close(d);

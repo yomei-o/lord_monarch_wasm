@@ -183,7 +183,12 @@ static FontRom fontRom;
  * the original's messages come from the PC-98 font ROM and are not on the
  * floppy. */
 #define DLG_LINES 14
-#define DLG_TEXT 34
+/* Long enough for the widest of the game's own templates.  DS:0x1a54 is
+ * "@5w    @10l@10w@o@10l" - five, four spaces, and three fields of ten, which
+ * is thirty-nine characters - and DS:0x1a74 comes to forty.  At 34 both lines
+ * lost their tail, which showed up as the purse running straight into the
+ * villages' total with none of the six spaces between them. */
+#define DLG_TEXT 48
 enum {
     DLG_NONE, DLG_INFO, DLG_TAX, DLG_SPEED, DLG_ZOOM, DLG_ALLY, DLG_ORDER,
     DLG_FELL, DLG_OVER, DLG_REFUSED, DLG_VIEW, DLG_MAPSEL, DLG_ORDER2,
@@ -992,46 +997,93 @@ static void dlg_clean(const char *in, char *out, int max)
  * that is not understood costs one word, "@?" three and "@Nt" two, which is
  * what sub_759b's own handlers consume.
  */
-typedef struct { unsigned addr; const char *text; } FmtSlot;
+/* One answer for one argument address.  A string slot fills "@s" and "@S"; a
+ * number slot fills "@b", "@w" and "@l", whose default widths are the digits
+ * their sizes need - three, five and ten - and whose padding is the space or
+ * the zero that "@." chose.  An address the port has no answer for is drawn as
+ * that many pad characters, so the columns stay where the original put them
+ * rather than the rest of the line sliding left.
+ *
+ * "@o" sets a base that every later argument is an offset from, and the port
+ * cannot hand out real addresses for its own structures, so a slot wanted after
+ * an "@o" is keyed as FMT_BASED + the offset. */
+#define FMT_BASED 0x10000u
+
+typedef struct {
+    unsigned addr;
+    const char *text;
+    long value;
+    int isNum;
+} FmtSlot;
 
 static void dlg_say_fmt(unsigned strAddr, const FmtSlot *slot, int slots)
 {
-    const unsigned char *str = dat_at(strAddr, 1);
+    const unsigned char *str;
     char out[DLG_TEXT];
-    unsigned args, at;
+    unsigned at, based = 0;
     int n = 0, len = 0;
 
-    if (!str) return;
+    if (!dat_at(strAddr, 1)) return;
     while (dat_at(strAddr + len, 1) && *dat_at(strAddr + len, 1)) len++;
-    args = strAddr + len + 1;
-    at = args;
+    at = strAddr + len + 1;
     str = dat_at(strAddr, 1);
     while (*str && n < (int)sizeof out - 1) {
         if (*str < 0x20) { str++; continue; }
         if (*str == '@') {
-            int eats = 1, i;
-            unsigned arg = 0;
+            int eats = 1, width = 0, i, found = -1;
+            char pad = ' ', letter;
+            unsigned arg = 0, key;
             const unsigned char *w;
-            char letter;
 
             str++;
-            if (*str == '.') str++;
-            while (*str >= '0' && *str <= '9') str++;
+            if (*str == '.') { pad = '0'; str++; }
+            while (*str >= '0' && *str <= '9') width = width * 10 + (*str++ - '0');
             letter = (char)*str;
             if (*str) str++;
             if (letter == '?') eats = 3;
-            else if (letter == 't') eats = 2;
+            else if (letter == 't') eats = pad == '0' ? 1 : 2;
             w = dat_at(at, 2);
             if (w) arg = (unsigned)(w[0] | (w[1] << 8));
             at += (unsigned)(eats * 2);
-            if (letter != 'S' && letter != 's') continue;
+            /* "@o" is not printed: it says where the arguments after it are
+             * measured from.  0x7735 with no "@." reads the word at the
+             * argument and takes that as the base, which is how DS:0x1a54 gets
+             * at a side record it only knows through [0x1aa3]. */
+            if (letter == 'o' || letter == 'O') { based = FMT_BASED; continue; }
+            if (letter != 'S' && letter != 's' && letter != 'b' &&
+                letter != 'w' && letter != 'l')
+                continue;
+            key = based ? FMT_BASED + arg : arg;
             for (i = 0; i < slots; i++)
-                if (slot[i].addr == arg && slot[i].text) {
+                if (slot[i].addr == key) { found = i; break; }
+            if (letter == 'S' || letter == 's') {
+                if (found >= 0 && slot[found].text) {
                     int k = 0;
-                    while (slot[i].text[k] && n < (int)sizeof out - 1)
-                        out[n++] = slot[i].text[k++];
-                    break;
+                    while (slot[found].text[k] && n < (int)sizeof out - 1)
+                        out[n++] = slot[found].text[k++];
                 }
+                continue;
+            }
+            /* A number.  sub_c455, sub_c492 and sub_c52d all fill a buffer that
+             * ends at DS:0x32ba with the pad byte and then write the digits
+             * into its tail, so the value is right-aligned in `width`. */
+            if (width <= 0) width = letter == 'b' ? 3 : letter == 'w' ? 5 : 10;
+            if (width > (int)sizeof out - 1 - n) width = (int)sizeof out - 1 - n;
+            if (found >= 0 && slot[found].isNum) {
+                char num[24];
+                long v = slot[found].value;
+                int k;
+
+                if (letter == 'b') v &= 0xff;
+                else if (letter == 'w') v &= 0xffff;
+                snprintf(num, sizeof num, "%ld", v);
+                for (k = (int)strlen(num); k < width; k++) out[n++] = pad;
+                for (k = 0; num[k] && n < (int)sizeof out - 1; k++)
+                    out[n++] = num[k];
+            } else {
+                int k;
+                for (k = 0; k < width; k++) out[n++] = ' ';
+            }
             continue;
         }
         if ((*str >= 0x81 && *str <= 0x9f) || (*str >= 0xe0 && *str <= 0xef)) {
@@ -1238,25 +1290,100 @@ static void dlg_open_over(int won)
     dlg_choice(JP_CLOSE, 0);
 }
 
+/* The country readout, and both of its lines are the game's own templates.
+ *
+ * sub_4f76 walks the four side records from DS:0xc792, sixteen bytes apart,
+ * and calls sub_4faf for each; sub_4faf skips a country whose flag word has
+ * bit 3 set (0x4fb2 - one that has fallen), draws its frame and its flag art,
+ * works out six numbers into a run of variables at DS:0x1a9b, and then hands
+ * DS:0x1a54 and DS:0x1a74 to sub_759b:
+ *
+ *     "@5w    @10l@10w@o@10l"
+ *        args 1a9b 1a9d 1aa1 1aa3 000e
+ *     "@3b.@1b%   @10b@10w@o@10b%"
+ *        args 1aa9 1aaa 1aa5 1aa7 1aa3 0012
+ *
+ * so, reading them off:
+ *
+ *   [0x1a9b]  the lord's carry            - 0x4ff4, the unit with bit 0x20
+ *   [0x1a9d]  everyone else's carry, 32   - 0x4ffb, summed with adc
+ *   [0x1aa1]  the villages' amount        - 0x5026, cells whose tile is side+8
+ *   [0x1aa3]  the side record, which "@o" then takes as a base, so 0x0e is
+ *             the purse and 0x12 the rate
+ *   [0x1aa5]  how many units, not counting the lord
+ *   [0x1aa7]  how many villages
+ *   [0x1aa9]  the share of the land: sub_bcce over sub_bc99, times 1000, then
+ *             "div cl" by ten - so al is the whole percent and ah the tenth,
+ *             which is why the line reads "@3b.@1b%" with the second argument
+ *             one byte further on.
+ *
+ * The original gives each country its own little box with its flag drawn
+ * beside it; here the four boxes are four pairs of lines in one window, with
+ * the country's own name above each pair, because this port has one window
+ * shape and the flag art is not what says which country a row is.
+ */
 static void dlg_open_info(void)
 {
+    unsigned long total = 0;
     int i;
+
     dlg_close();
     dlg.what = DLG_INFO;
-    dlg_say(JP_INFO_TITLE);
-    dlg_say("");
-    dlg_say(JP_INFO_HEAD);
+    for (i = 0; i < PLAYERS; i++) total += game.side[i].landTotal;
+
     for (i = 0; i < PLAYERS; i++) {
-        int plain, claimed;
-        char buf[DLG_TEXT];
-        game_land_count(&game, i, &plain, &claimed);
-        snprintf(buf, sizeof buf, " %s%d  %4d  %4d  %6lu%s",
-                 i == game.human ? ">" : " ", i, plain, claimed,
-                 game.side[i].funds, game.side[i].alive ? "" : JP_GONE);
-        dlg_say(buf);
+        FmtSlot slot[8];
+        char nm[DLG_TEXT];
+        const Side *sd = &game.side[i];
+        long lordCarry = 0, othersCarry = 0, others = 0;
+        long villageAmount = 0, villages = 0;
+        long pct = 0, tenth = 0;
+        int u, c;
+
+        /* 0x4fb2: a fallen country has no row at all. */
+        if (!sd->alive || (sd->flag & 8)) continue;
+
+        for (u = 0; u < UNIT_SLOTS; u++) {
+            if (game_unit_free(&game, u)) continue;
+            if (game.unit[u].side != i) continue;
+            if (game.unit[u].state & 0x20) lordCarry = game.unit[u].carrying;
+            else { others++; othersCarry += game.unit[u].carrying; }
+        }
+        for (c = 0; c < MAP_W * MAP_H; c++)
+            if (game.cell[c].tile == (unsigned char)(i + 8)) {
+                villages++;
+                villageAmount += game.cell[c].amount;
+            }
+        if (total) {
+            long thousandths = (long)(sd->landTotal * 1000UL / total);
+            pct = thousandths / 10;
+            tenth = thousandths % 10;
+        }
+
+        country_name(i, nm, sizeof nm);
+        dlg_say(nm);
+
+        slot[0].addr = 0x1a9b; slot[0].value = lordCarry;    slot[0].isNum = 1;
+        slot[1].addr = 0x1a9d; slot[1].value = othersCarry;  slot[1].isNum = 1;
+        slot[2].addr = 0x1aa1; slot[2].value = villageAmount; slot[2].isNum = 1;
+        slot[3].addr = FMT_BASED + 0x0e; slot[3].value = (long)sd->funds;
+        slot[3].isNum = 1;
+        slot[0].text = slot[1].text = slot[2].text = slot[3].text = 0;
+        dlg_say_fmt(0x1a54, slot, 4);
+
+        slot[0].addr = 0x1aa9; slot[0].value = pct;          slot[0].isNum = 1;
+        slot[1].addr = 0x1aaa; slot[1].value = tenth;        slot[1].isNum = 1;
+        slot[2].addr = 0x1aa5; slot[2].value = others;       slot[2].isNum = 1;
+        slot[3].addr = 0x1aa7; slot[3].value = villages;     slot[3].isNum = 1;
+        slot[4].addr = FMT_BASED + 0x12; slot[4].value = sd->rate;
+        slot[4].isNum = 1;
+        slot[0].text = slot[1].text = slot[2].text = slot[3].text =
+            slot[4].text = 0;
+        dlg_say_fmt(0x1a74, slot, 5);
     }
-    dlg_say("");
-    dlg_choice(JP_CLOSE, 0);
+    if (dlg.lines == 0) dlg_say("no countries left");
+    /* 0x1c47 waits at sub_c90f, so any key closes it and there is nothing to
+     * choose.  dlg_confirm and dlg_cancel both close a window with no menu. */
 }
 
 /* The tax window, as 0x4e49 and 0x4f08 have it.  It is not a menu of rates:
