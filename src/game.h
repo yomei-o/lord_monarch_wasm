@@ -200,7 +200,13 @@ typedef struct {
      *             the terrain's pair when the human holds more than eight
      *             times that, and back when their total passes the human's.
      */
-    int fellSide, over, songHot;
+    /* The three windows a fall puts up, in the order sub_a9ca and sub_b102
+     * put them: the king first (DS:0x11e3 at 0xaa50), then the country
+     * (DS:0x1137 at 0xb197), and then - only when the SECOND country has gone,
+     * which is what 0xb230's "cmp dx, 2" tests - the alliance the two
+     * survivors had (DS:0x11d5 at 0xb274).  Each is a side number, or -1, and
+     * allyBroke holds the two it names. */
+    int kingSide, fellSide, allyBroke[2], over, songHot;
     int day;                            /* DS:3BCC, days gone */
     int daysLeft;                       /* DS:3BCA */
     int human;                          /* DS:3C00, the side the player has */

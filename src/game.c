@@ -117,7 +117,9 @@ void game_init(Game *g, const Map *m)
     g->terrain = m->terrain;
     g->speed = 1;                       /* PROG.DAT DS:3c02 */
     g->daysLeft = GAME_DAYS;            /* 0x63ca */
+    g->kingSide = -1;
     g->fellSide = -1;
+    g->allyBroke[0] = g->allyBroke[1] = -1;
     g->human = 0;                       /* PROG.DAT DS:3c00 */
     g->stamp = 1;
     game_forget_distances();
@@ -1540,6 +1542,30 @@ static void side_falls(Game *g, int side)
         u->link = 0xff;
     }
 
+    /* 0xb21b onwards: count the sides that have gone, and when that count
+     * reaches exactly two, dissolve the alliance the first of them still has
+     * on record and say so.  Four countries make two pairs, so the second fall
+     * is where a two-against-two becomes one-against-one. */
+    {
+        int gone = 0, k;
+
+        for (k = 0; k < PLAYERS; k++) if (g->side[k].flag & 8) gone++;
+        if (gone == 2) {
+            for (k = 0; k < PLAYERS; k++) {
+                if (!(g->side[k].flag & 8)) continue;
+                if (g->side[k].ally < PLAYERS) {
+                    int other = g->side[k].ally;
+
+                    g->side[k].ally = 0x80;
+                    g->side[other].ally = 0x80;
+                    g->allyBroke[0] = other;    /* [0xc530], 0xb259 */
+                    g->allyBroke[1] = k;        /* [0xc52e], 0xb26e */
+                }
+                break;
+            }
+        }
+    }
+
     /* And the castle itself becomes plain ground holding 100, all nine
      * squares of it (0x b1ab writes 0x6400 nine times). */
     cx = s->pos & 0xff;
@@ -1565,6 +1591,9 @@ static void tick_dying(Game *g, int slot)
         /* [unit + 0x0f] is the killer, and it becomes the heir. */
         int index = game_cell_index(u->pos & 0xff, u->pos >> 8);
         g->side[u->side].heir = u->retry;
+        /* 0xaa50 puts DS:0x11e3 up before sub_b102 is called at 0xaa67, so the
+         * king is announced first and the country after it. */
+        g->kingSide = u->side;
         side_falls(g, u->side);
         /* sub_a9ca runs straight on into 0xaa78 for a lord as well, so the
          * slot goes now.  unit_spent will not free a lord - it is the one that

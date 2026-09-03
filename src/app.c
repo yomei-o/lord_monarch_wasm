@@ -133,9 +133,20 @@ static const unsigned char *dat_at(unsigned addr, unsigned need)
 
 static void snapshot_dim_icons(void);
 static int screen_to_icon(int x, int y);
+#define FMT_BASED 0x10000u
+
+typedef struct {
+    unsigned addr;
+    const char *text;
+    long value;
+    int isNum;
+} FmtSlot;
+
 static void confirm_at(int cx, int cy);
 static void app_palette(const unsigned char *t48);
 static void dlg_say_table(unsigned tableAddr);
+static void dlg_say_table_fmt(unsigned tableAddr, const FmtSlot *slot,
+                              int slots);
 static void dlg_choices_table(unsigned tableAddr);
 static void dlg_clean(const char *in, char *out, int max);
 static void device_lines(void);
@@ -219,7 +230,8 @@ static FontRom fontRom;
 enum {
     DLG_NONE, DLG_INFO, DLG_TAX, DLG_SPEED, DLG_ZOOM, DLG_ALLY, DLG_ORDER,
     DLG_FELL, DLG_OVER, DLG_REFUSED, DLG_VIEW, DLG_MAPSEL, DLG_ORDER2,
-    DLG_FORCE, DLG_DRIVE, DLG_SAVE, DLG_LOAD, DLG_DEVICE
+    DLG_FORCE, DLG_DRIVE, DLG_SAVE, DLG_LOAD, DLG_DEVICE, DLG_KING,
+    DLG_ALLYBROKE
 };
 static struct {
     int what;                       /* DLG_* , DLG_NONE when closed */
@@ -398,6 +410,13 @@ static int overImproved;
 static int lcd;
 
 static int stageLoaded;
+/* [0x3bd6].  sub_b509 refuses a command when it is set as well as when no
+ * stage is loaded, and the port only ever checked the second: 0xb433 sets it on
+ * a win and 0xb2d3 on a loss, and sub_6315 - the advance - is what clears it.
+ * So a stage that has ended stays on the screen with every command refused
+ * until another one is loaded, which is what "マップをロードしてください。"
+ * is telling you. */
+static int overPending;
 
 static int reached;
 /* [0x3bd4], the stage is under way.  sub_1afa sets it and sub_b52e refuses a
@@ -993,6 +1012,7 @@ int app_show_map(int number, int size)
     /* A stage replaces the screen, so whatever window was up goes with it -
      * the display question at boot among them. */
     dlg_close();
+    overPending = 0;                    /* sub_6315 clears [0x3bd6] */
 
     if (number < 0) number = MAP_COUNT - 1;
     if (number >= MAP_COUNT) number = 0;
@@ -1169,14 +1189,70 @@ static const char *country_name(int side, char *buf, int n)
 }
 
 /* 0xb197, when a country goes: a window and the 0x302 sound. */
+/* A king has been killed.  0xaa50 puts DS:0x11e3 up - "@Sの王が倒されました。"
+ * with [0xc546], which sub_a9ca sets at 0xa9ed - plays 0x302 and waits at
+ * sub_c921, and only then calls sub_b102 for the country itself.  So this
+ * window comes before the country's own, and the port had neither. */
+static void dlg_open_king(int side)
+{
+    FmtSlot slot[1];
+    char who[DLG_TEXT];
+
+    country_name(side, who, sizeof who);
+    slot[0].addr = 0xc546;
+    slot[0].text = who;
+    slot[0].value = 0;
+    slot[0].isNum = 0;
+    dlg_close();
+    dlg.what = DLG_KING;
+    dlg_say_table_fmt(0x11e3, slot, 1);
+    if (dlg.lines == 0) dlg_say("a king has fallen");
+    dlg_say("");
+    dlg_choice(JP_CLOSE, 0);
+}
+
+/* And the alliance the second fall dissolves: DS:0x11d5, "@Sと@Sの / 同盟は
+ * 破れました。" with [0xc52e] and [0xc530] from 0xb259 and 0xb26e. */
+static void dlg_open_allybroke(int a, int b)
+{
+    FmtSlot slot[2];
+    char one[DLG_TEXT], two[DLG_TEXT];
+
+    country_name(a, one, sizeof one);
+    country_name(b, two, sizeof two);
+    slot[0].addr = 0xc52e; slot[0].text = one;
+    slot[1].addr = 0xc530; slot[1].text = two;
+    slot[0].value = slot[1].value = 0;
+    slot[0].isNum = slot[1].isNum = 0;
+    dlg_close();
+    dlg.what = DLG_ALLYBROKE;
+    dlg_say_table_fmt(0x11d5, slot, 2);
+    if (dlg.lines == 0) dlg_say("the alliance is broken");
+    dlg_say("");
+    dlg_choice(JP_CLOSE, 0);
+}
+
+/* A country has fallen.  0xb197 puts DS:0x1137 up - one line, "@Sは滅亡しました。"
+ * with [0xc536] holding the name, which 0xb18a takes out of DS:0x12ad - plays
+ * 0x302 and waits at sub_c921.  The port wrote its own line here. */
 static void dlg_open_fell(int side)
 {
-    char buf[64], who[24];
+    FmtSlot slot[1];
+    char who[DLG_TEXT];
 
+    country_name(side, who, sizeof who);
+    slot[0].addr = 0xc536;
+    slot[0].text = who;
+    slot[0].value = 0;
+    slot[0].isNum = 0;
     dlg_close();
     dlg.what = DLG_FELL;
-    snprintf(buf, sizeof buf, JP_DESTROYED, country_name(side, who, sizeof who));
-    dlg_say(buf);
+    dlg_say_table_fmt(0x1137, slot, 1);
+    if (dlg.lines == 0) {
+        char buf[64];
+        snprintf(buf, sizeof buf, JP_DESTROYED, who);
+        dlg_say(buf);
+    }
     dlg_say("");
     dlg_choice(JP_CLOSE, 0);
 }
@@ -1262,14 +1338,6 @@ static void dlg_clean(const char *in, char *out, int max)
  * "@o" sets a base that every later argument is an offset from, and the port
  * cannot hand out real addresses for its own structures, so a slot wanted after
  * an "@o" is keyed as FMT_BASED + the offset. */
-#define FMT_BASED 0x10000u
-
-typedef struct {
-    unsigned addr;
-    const char *text;
-    long value;
-    int isNum;
-} FmtSlot;
 
 static int fmt_render(unsigned strAddr, const FmtSlot *slot, int slots,
                       char *out, int max, int depth, int line, unsigned inBase)
@@ -1440,6 +1508,38 @@ static int fmt_render(unsigned strAddr, const FmtSlot *slot, int slots,
     return n;
 }
 
+/* How many argument words a string takes, which is what sub_759b's handlers
+ * consume between them: three for "@?", two for "@Nt" and one for "@.Nt",
+ * none at all for "@O", and one for everything else that reads an argument. */
+static int fmt_args(unsigned strAddr)
+{
+    const unsigned char *p;
+    int n = 0;
+    unsigned at = strAddr;
+
+    while ((p = dat_at(at, 1)) != 0 && *p) {
+        if (*p == '@') {
+            int zero = 0;
+            char letter;
+
+            at++;
+            p = dat_at(at, 1);
+            if (p && *p == '.') { zero = 1; at++; }
+            while ((p = dat_at(at, 1)) != 0 && *p >= '0' && *p <= '9') at++;
+            p = dat_at(at, 1);
+            letter = p ? (char)*p : 0;
+            if (letter) at++;
+            if (letter == '?') n += 3;
+            else if (letter == 't') n += zero ? 1 : 2;
+            else if (letter == 'O') n += 0;
+            else if (letter) n += 1;
+            continue;
+        }
+        at++;
+    }
+    return n;
+}
+
 static void dlg_say_fmt(unsigned strAddr, const FmtSlot *slot, int slots)
 {
     char out[DLG_TEXT];
@@ -1587,7 +1687,8 @@ static void dlg_open_view(void)
 /* The three guards themselves.  Each answers 1 when the command may go ahead. */
 static int guard_stage(void)            /* sub_b509 */
 {
-    if (mode == APP_MODE_MAP) return 1;
+    /* 0xb50e and 0xb515: no stage, or a stage that has ended. */
+    if (mode == APP_MODE_MAP && stageLoaded && !overPending) return 1;
     dlg_open_refused(GUARD_NO_STAGE);
     return 0;
 }
@@ -1692,7 +1793,18 @@ static void dlg_open_over(int won)
     slot[9].addr = 0xc542; slot[9].value = diff;             slot[9].isNum = 1;
     for (i = 1; i < 10; i++) slot[i].text = 0;
 
-    dlg_say_table_fmt(won ? 0x1105 : 0x112f, slot, 10);
+    /* Two win tables, and 0xb38b and 0xb394 choose between them: DS:0x1105 has
+     * the score on the end, DS:0x1119 stops at the rate.  The short one is for
+     * a win that was not the player's own or a stage outside the fifty-two the
+     * records cover, because in neither case is there a score to show. */
+    if (won) {
+        int scored = mine >= 0 && mine < PLAYERS &&
+                     mapNumber >= 0 && mapNumber < 52;
+        dlg_say_table_fmt(scored ? 0x1105 : 0x1119, slot, 10);
+    } else {
+        dlg_say_table_fmt(0x112f, slot, 10);
+    }
+    overPending = 1;                    /* 0xb433 and 0xb2d3 */
     /* 0xb416: the extra line goes up only when [bp-2] is set, and 0xb3f0
      * clears it again when the stage was the furthest one - so it says
      * "improved" for a stage played again, not for a new one. */
@@ -2146,28 +2258,83 @@ static int orderAt;                     /* [0x3ea4], the destination */
 /* The follow-up window at 0x2241: what to do once the job is finished.  Three
  * lines from DS:0x109b, or two from DS:0x10a7 when the job is 橋を作る, and
  * "ror ah, 2" folds the answer into the top two bits of the state. */
+/* The follow-up window at 0x2241, and its wording is the game's.
+ *
+ *   DS:0x10ff  one line, "@16t@s実行後"  args 3bf4 c692
+ *   DS:0x109b  three lines               "@sにする"      c6a2  (オート)
+ *                                        "@sにする"      c692  (待機)
+ *                                        "@16t@sを継続"  3bf4 c692
+ *   DS:0x10a7  the same two without the third, for choice seven (0x225a)
+ *
+ * "@16t" is the table index: the choice in [0x3bf4] times sixteen plus 0xc692,
+ * which is the name record for that order - so the first line reads
+ * "〈order〉実行後" and the third "〈order〉を継続".  Reading it as "を行う"
+ * earlier was a guess made before the format engine could run.
+ */
 static void dlg_open_order2(void)
 {
-    char nm[DLG_TEXT], line[DLG_TEXT];
+    FmtSlot slot[3];
+    char chosen[DLG_TEXT], wait[DLG_TEXT], auto_[DLG_TEXT];
 
-    order_name(orderK, nm, sizeof nm);
+    order_name(orderK, chosen, sizeof chosen);
+    order_name(0, wait, sizeof wait);            /* 待機, record six */
+    order_name(1, auto_, sizeof auto_);          /* オート, record seven */
+
     dlg_close();
     dlg.what = DLG_ORDER2;
-    snprintf(line, sizeof line, "%s%s", nm, JP_ORDER_DO);
-    dlg_say(line);
+    /* The choice as a number for "@16t" to index with, and the three names as
+     * strings at the addresses it and the plain "@s" arrive at. */
+    slot[0].addr = 0x3bf4; slot[0].value = orderK; slot[0].isNum = 1;
+    slot[0].text = 0;
+    slot[1].addr = 0xc692 + (unsigned)orderK * 16;
+    slot[1].text = chosen; slot[1].value = 0; slot[1].isNum = 0;
+    slot[2].addr = 0xc6a2; slot[2].text = auto_; slot[2].value = 0;
+    slot[2].isNum = 0;
+    dlg_say_table_fmt(0x10ff, slot, 3);
+    if (dlg.lines == 0) dlg_say(chosen);
     dlg_say("");
-    order_name(1, nm, sizeof nm);       /* オート */
-    snprintf(line, sizeof line, "%s%s", nm, JP_ORDER_THEN);
-    dlg_choice(line, 0);
-    order_name(0, nm, sizeof nm);       /* 待機 */
-    snprintf(line, sizeof line, "%s%s", nm, JP_ORDER_THEN);
-    dlg_choice(line, 1);
-    /* 0x225a: the third line is missing for choice seven, and the table it
-     * switches to - DS:0x10a7 - is two lines rather than three. */
-    if (orderK != 7) {
-        order_name(orderK, nm, sizeof nm);
-        snprintf(line, sizeof line, "%s%s", nm, JP_ORDER_KEEP);
-        dlg_choice(line, 2);
+    /* The choices.  0xc692 is 待機 as a string and also "@16t"'s base, and the
+     * two never collide because this window only opens for choices above
+     * three. */
+    {
+        FmtSlot ch[4];
+
+        ch[0].addr = 0x3bf4; ch[0].value = orderK; ch[0].isNum = 1;
+        ch[0].text = 0;
+        ch[1].addr = 0xc692; ch[1].text = wait; ch[1].value = 0;
+        ch[1].isNum = 0;
+        ch[2].addr = 0xc6a2; ch[2].text = auto_; ch[2].value = 0;
+        ch[2].isNum = 0;
+        ch[3].addr = 0xc692 + (unsigned)orderK * 16;
+        ch[3].text = chosen; ch[3].value = 0; ch[3].isNum = 0;
+        {
+            unsigned table = orderK == 7 ? 0x10a7 : 0x109b;
+            const unsigned char *t = dat_at(table, 6);
+            int lines = t ? (t[2] & 0x7f) : 0, i;
+
+            for (i = 0; i < lines; i++) {
+                const unsigned char *p = dat_at(table + 6 + i * 2, 2);
+                unsigned at;
+                char out[DLG_TEXT];
+                int before = dlg.lines;
+
+                if (!p) break;
+                at = (unsigned)(p[0] | (p[1] << 8));
+                out[0] = 0;
+                fmt_render(at, ch, 4, out, (int)sizeof out, 0, 1, 0);
+                dlg_say(out);
+                if (dlg.lines > before) {
+                    if (!dlg.count) dlg.first = before;
+                    dlg.value[before] = i;
+                    dlg.count++;
+                }
+            }
+            if (dlg.count == 0) {
+                dlg_choice(auto_, 0);
+                dlg_choice(wait, 1);
+                if (orderK != 7) dlg_choice(chosen, 2);
+            }
+        }
     }
 }
 
@@ -2708,6 +2875,8 @@ static void dlg_cancel(void)
                  "pick another square - the unit is still yours");
         break;
     case DLG_FELL:
+    case DLG_KING:
+    case DLG_ALLYBROKE:
     case DLG_OVER:
     case DLG_REFUSED:
         dlg_confirm();              /* these only wait for a key */
@@ -2754,7 +2923,15 @@ static void dlg_confirm(void)
     case DLG_INFO:
     case DLG_REFUSED:
     case DLG_VIEW:
+    case DLG_KING:
+    case DLG_ALLYBROKE:
         dlg_close();
+        break;
+    /* 0xb1fa plays 0x0f03 once the window has been answered, the castle
+     * levelled and the units handed on - a second noise the port had not. */
+    case DLG_FELL:
+        dlg_close();
+        app_sound(0x0f03);
         break;
     case DLG_OVER:
         dlg_close();
@@ -2779,9 +2956,22 @@ static void dlg_confirm(void)
              * furthest one AND the score was worth recording (0xb3d1 and
              * 0xb3d7 guard the whole block), and then 0x6315 starts whatever
              * [0xce70] now names. */
+            int was = mapNumber;
+
             if (overImproved && mapNumber >= reached && reached + 1 < MAP_COUNT)
                 reached++;
-            if (reached < MAP_COUNT) {
+            /* 0xb455: "cmp ax, [0xce70]" against the stage just cleared plus
+             * one, and 0xb459 goes straight past sub_6315 when they differ.  So
+             * the next stage is entered ONLY when the counter has just moved
+             * past this one - clear a stage you had already beaten and nothing
+             * loads at all, and you are left at the panel with [0x3bd6] set,
+             * which is why every command then says to load a map.  The port
+             * used to jump to whatever the counter named. */
+            if (was + 1 != reached) {
+                panelIcon = ICON_GO;
+                snprintf(status, sizeof status,
+                         "stage %d cleared again - load a map to go on", was);
+            } else if (reached < MAP_COUNT) {
                 app_show_map(reached, tileSize);
                 running = 1;
             } else {
@@ -2790,8 +2980,14 @@ static void dlg_confirm(void)
                          MAP_COUNT);
             }
         } else {
-            /* sub_b28d leaves [0x3bc2] alone: the same stage, and paused. */
+            /* sub_b28d leaves [0x3bc2] alone - the same stage - and sub_6033
+             * reloads it with [0x3bd4] clear, then the carry sends the main
+             * loop back to 0x191c, which is sub_1aa6: the panel.  So a loss
+             * puts you in front of the panel with the stage set up again and
+             * GO to press, not on the map with the keys on the cursor. */
             app_show_map(mapNumber, tileSize);
+            panelIcon = ICON_GO;
+            snprintf(status, sizeof status, "panel: GO");
         }
         break;
     /* 0x4f5b only sounds and clears the carry: the rate has been in the side
@@ -3232,16 +3428,46 @@ void app_tick(void)
      * after that just carries on.  A window stops the world only because the
      * wait is blocking, which is what app_frame does now - so closing one puts
      * the game back exactly as it was, without a press of GO. */
-    if (game.fellSide >= 0) {
+    /* The order is sub_a9ca's then sub_b102's: the king, the country, and the
+     * alliance the second fall dissolves.  Each waits for a key of its own. */
+    if (game.kingSide >= 0) {
+        int who = game.kingSide;
+
+        game.kingSide = -1;
+        if (who >= 0 && who < PLAYERS) {
+            curX = game.side[who].pos & 0xff;
+            curY = (game.side[who].pos >> 8) & 0xff;
+            follow_cursor();
+        }
+        app_sound(APP_SND_FALLEN);              /* 0xaa46 */
+        dlg_open_king(who);
+    } else if (game.fellSide >= 0) {
         int who = game.fellSide;
 
         game.fellSide = -1;
+        /* 0xb163 puts the castle's own position in [0x3be4] and 0xb166 calls
+         * sub_a656, so the window comes up with the view on the country that
+         * has just gone.  The port showed it wherever the player happened to
+         * be looking. */
+        if (who >= 0 && who < PLAYERS) {
+            curX = game.side[who].pos & 0xff;
+            curY = (game.side[who].pos >> 8) & 0xff;
+            follow_cursor();
+        }
         app_sound(APP_SND_FALLEN);              /* 0xb19e */
         dlg_open_fell(who);
     } else if (game.over && !overSaid) {
         overSaid = game.over;
-        app_sound(game.over == 1 ? APP_SND_OK : APP_SND_FALLEN);
+        /* 0xb429 and 0xb2c9 both play 0x302 - a win sounds the same as a loss
+         * here, and the port used the "taken" sound for the win. */
+        app_sound(APP_SND_FALLEN);
         dlg_open_over(game.over == 1);
+    } else if (game.allyBroke[0] >= 0) {
+        int a = game.allyBroke[0], b = game.allyBroke[1];
+
+        game.allyBroke[0] = game.allyBroke[1] = -1;
+        app_sound(APP_SND_FALLEN);              /* 0xb27e */
+        dlg_open_allybroke(a, b);
     }
     for (i = 0; i < MAP_W * MAP_H; i++) live.cell[i] = game.cell[i].tile;
     ticks++;
@@ -3621,6 +3847,62 @@ void app_render(void)
     memcpy(scr.px, bg.px, sizeof scr.px);
     if (mode == APP_MODE_TITLE) {
         stars_tick();
+        /* The three lines the opening puts along the bottom, which are a
+         * readout of the machine it found.  sub_c946 walks the list at
+         * DS:0x3b4f - each record a VRAM offset, then a string, then that
+         * string's arguments, ending at 0xffff - and sub_759b writes the end of
+         * each back into the caller's own si so the loop advances by itself
+         * (0x78b4, "mov [bp+2], bx").  The three are
+         *
+         *   0x6919  "\\x11     CPU Power Level @1w"     [0x3c1e]
+         *   0x6f59  "     @? sound Driver"             [0x3b3a] -> FM or BEEP
+         *   0x7599  "     Disk Caching @4w KB\\x17"     [0xc4e8]
+         *
+         * and 0x6919 / 80 is row 336 byte 25, so they sit at x 200 on rows 336,
+         * 356 and 376.
+         *
+         * The values are this port's own answers: the power level at its
+         * highest, because 0xc95e uses 3 - [0x3c1e] as a shift for the star
+         * count and 3 is as fast as the scale goes; FM, because app_dat says
+         * [0x3b3a] is 1 - the port has the board's own driver, not the
+         * beeper's; and the whole floppy image as the cache, which is what it
+         * actually holds. */
+        {
+            FmtSlot slot[4];
+            char out[DLG_TEXT];
+            unsigned at = 0x3b4f;
+            int line;
+
+            slot[0].addr = 0x3c1e; slot[0].value = 3;
+            slot[1].addr = 0x3b3a; slot[1].value = 1;
+            slot[2].addr = 0xc4e8;
+            /* A 1.2M floppy in memory, which is what the image is. */
+            slot[2].value = 1232;
+            slot[3].addr = 0;      slot[3].value = 0;
+            for (line = 0; line < 4; line++) {
+                slot[line].text = 0;
+                slot[line].isNum = 1;
+            }
+            for (line = 0; line < 3; line++) {
+                const unsigned char *w = dat_at(at, 2);
+                unsigned di, str;
+                int len = 0, y, x;
+
+                if (!w) break;
+                di = (unsigned)(w[0] | (w[1] << 8));
+                if (di == 0xffff) break;
+                str = at + 2;
+                while (dat_at(str + len, 1) && *dat_at(str + len, 1)) len++;
+                out[0] = 0;
+                fmt_render(str, slot, 3, out, (int)sizeof out, 0, 1, 0);
+                y = (int)(di / 80);
+                x = (int)(di % 80) * 8;
+                gfx_text_sjis(&scr, &font, &fontRom, x, y, out, 7);
+                /* On to the next record: past the string, then past as many
+                 * argument words as its codes asked for. */
+                at = str + (unsigned)len + 1 + (unsigned)fmt_args(str) * 2;
+            }
+        }
         return;
     }
     /* The display question comes before anything has been read off the disk -

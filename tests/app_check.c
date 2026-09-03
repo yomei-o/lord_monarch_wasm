@@ -28,6 +28,8 @@
 #define DLG_SPEED   3
 #define DLG_SAVE    15
 #define DLG_LOAD    16
+#define DLG_KING    18
+#define DLG_ALLYBROKE 19
 #define DLG_ALLY    5
 #define DLG_FELL    7
 #define DLG_OVER    8
@@ -64,7 +66,8 @@ static void checkf(int ok, const char *fmt, int a, int b, int c)
 int main(int argc, char **argv)
 {
     long f;
-    int sawFell = 0, fellRan = 0, overAt = -1;
+    int sawFell = 0, fellRan = 0, overAt = -1, sawKing = 0, kingFirst = 0;
+    int sawAllyBroke = 0;
 
     if (!app_init(argc > 1 ? argv[1] : "tmp/monarch.fim")) {
         printf("cannot open the image: %s\n", app_status());
@@ -186,6 +189,29 @@ int main(int argc, char **argv)
         app_key(APP_KEY_MONEY);
         app_render();
         d = app_dialog();
+        /* 0xaa50 puts the king's window up and only then calls sub_b102 at
+         * 0xaa67, so the king is announced before the country.  Seeing the
+         * country's window without having seen a king's would mean the port
+         * had lost that order. */
+        if (d == DLG_KING) {
+            if (!sawKing) {
+                sawKing = 1;
+                kingFirst = !sawFell;
+                printf("      | %s\n", app_dialog_line(0));
+            }
+            app_key(APP_KEY_START);
+            continue;
+        }
+        /* 0xb230: the second fall dissolves what the two survivors had. */
+        if (d == DLG_ALLYBROKE) {
+            if (!sawAllyBroke) {
+                sawAllyBroke = 1;
+                printf("      | %s\n", app_dialog_line(0));
+                printf("      | %s\n", app_dialog_line(1));
+            }
+            app_key(APP_KEY_START);
+            continue;
+        }
         if (d == DLG_FELL && !sawFell) {
             long k;
             int stillUp = 1;
@@ -197,6 +223,7 @@ int main(int argc, char **argv)
                 app_render();
                 if (app_dialog() != DLG_FELL) { stillUp = 0; break; }
             }
+            printf("      | %s\n", app_dialog_line(0));
             check(stillUp, "the fallen-country window holds the world");
             check(fellRan, "it does not put the run flag out");
             app_key(APP_KEY_START);              /* answer it */
@@ -232,6 +259,8 @@ int main(int argc, char **argv)
                was, overAt, app_map_number());
     }
     check(sawFell, "a country fell on the way");
+    check(sawKing, "and its king was announced first");
+    check(kingFirst, "the king's window came before the country's");
 
     /* The alliance last, and on a stage of its own, because striking one cannot
      * be undone from inside the game - the menu is four countries with no
