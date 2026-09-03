@@ -273,6 +273,34 @@ static int overSaid;
  * path increments it only when the stage just cleared is at least as far
  * (0xb3e3).  So clearing stage 5 having already reached 10 puts you back on 10,
  * not on 6, and this port advancing with mapNumber + 1 was wrong for that. */
+/* The twelve bytes a stage keeps once it has been cleared, which SAVE writes
+ * out: 0x6495 hands sub_694f 0x274 bytes from DS:0xcc00, and the win path fills
+ * them at 0xb3f5 onwards with bx = stage * 12 -
+ *
+ *   [bx - 0x3400] = [0x3bcc]   the days it took
+ *   [bx - 0x33fe] = [0xc53c]   the share of the land
+ *   [bx - 0x33fc] = [0x3bca]   the days left
+ *
+ * and reads [bx - 0x33fa] and [bx - 0x3406] back as the previous best.  Only
+ * a stage below 52 is recorded (0xb398) and only when the score beat the one
+ * already there and is not nought (0xb3d1, 0xb3d7).
+ *
+ * Kept here as fields rather than as the original's byte layout, because a
+ * browser has no floppy to be byte-compatible with; what matters is that the
+ * same facts survive. */
+typedef struct {
+    unsigned short days;        /* [0x3bcc] when it was cleared */
+    unsigned short share;       /* [0xc53c], whole per cent in the low byte */
+    unsigned short daysLeft;    /* [0x3bca] */
+    unsigned short score;       /* [0xc4f0] */
+} StageRecord;
+
+static StageRecord record[GFX_MAPS];
+/* 0xb3d1 and 0xb3d7: the record is only replaced, and [0xce70] only moved,
+ * when the score beats the one already stored AND is not nought.  So clearing
+ * a stage with nothing left to your name does not open the next one. */
+static int overImproved;
+
 static int reached;
 /* [0x3bd4], the stage is under way.  sub_1afa sets it and sub_b52e refuses a
  * command while it stands: the alliance is one of those, so it can only be
@@ -1017,19 +1045,20 @@ typedef struct {
     int isNum;
 } FmtSlot;
 
-static void dlg_say_fmt(unsigned strAddr, const FmtSlot *slot, int slots)
+static int fmt_render(unsigned strAddr, const FmtSlot *slot, int slots,
+                      char *out, int max, int depth)
 {
     const unsigned char *str;
-    char out[DLG_TEXT];
     unsigned at, based = 0, pending = 0;
     int n = 0, len = 0, havePending = 0;
 
-    if (!dat_at(strAddr, 1)) return;
+    if (max <= 1 || depth > 4) return 0;
+    if (!dat_at(strAddr, 1)) return 0;
     while (dat_at(strAddr + len, 1) && *dat_at(strAddr + len, 1)) len++;
-    at = strAddr + len + 1;
+    at = strAddr + len + 1;             /* 0x75c4's repne scasb lands here */
     str = dat_at(strAddr, 1);
-    while (*str && n < (int)sizeof out - 1) {
-        if (*str < 0x20) { str++; continue; }
+    while (*str && n < max - 1) {
+        if (*str < 0x20) { str++; continue; }   /* a colour, not text */
         if (*str == '@') {
             int eats = 1, width = 0, i, found = -1;
             char pad = ' ', letter;
@@ -1052,56 +1081,79 @@ static void dlg_say_fmt(unsigned strAddr, const FmtSlot *slot, int slots)
             }
             at += (unsigned)(eats * 2);
             /* "@Nt" indexes a table: 0x779f reads the word at the first
-             * argument, multiplies it by N with "f6 e1" and adds the second,
-             * then writes the answer into the argument slot after them - so the
-             * next code reads the address it worked out and not what is in the
-             * file, which is a nought waiting to be filled in.  ("@.Nt" is the
-             * same with the line number in [0xc54c] instead of the first
-             * argument; the port builds the one window that uses it - the order
-             * menu - itself, so that form is only stepped over.)
-             */
+             * argument, multiplies it by N and adds the second, then writes the
+             * answer into the slot after them - so the next code reads what it
+             * worked out, not the nought sitting in the file.  ("@.Nt" is the
+             * same with the line number in [0xc54c]; the one window that uses
+             * that form - the order menu - the port builds itself.) */
             if (letter == 't') {
-                if (pad == '0') continue;           /* "@.Nt", not done here */
-                {
-                    const unsigned char *w2 = dat_at(at - 2, 2);
-                    unsigned base = w2 ? (unsigned)(w2[0] | (w2[1] << 8)) : 0;
-                    long idx = 0;
-                    int j;
+                const unsigned char *w2;
+                unsigned base;
+                long idx = 0;
+                int j;
 
-                    for (j = 0; j < slots; j++)
-                        if (slot[j].addr == arg && slot[j].isNum) {
-                            idx = slot[j].value;
-                            break;
-                        }
-                    pending = (unsigned)(idx * width + (long)base);
-                    havePending = 1;
-                }
+                if (pad == '0') continue;
+                w2 = dat_at(at - 2, 2);
+                base = w2 ? (unsigned)(w2[0] | (w2[1] << 8)) : 0;
+                for (j = 0; j < slots; j++)
+                    if (slot[j].addr == arg && slot[j].isNum) {
+                        idx = slot[j].value;
+                        break;
+                    }
+                pending = (unsigned)(idx * width + (long)base);
+                havePending = 1;
                 continue;
             }
-            /* "@o" is not printed: it says where the arguments after it are
+            /* "@o" is not drawn: it says where the arguments after it are
              * measured from.  0x7735 with no "@." reads the word at the
              * argument and takes that as the base, which is how DS:0x1a54 gets
              * at a side record it only knows through [0x1aa3]. */
             if (letter == 'o' || letter == 'O') { based = FMT_BASED; continue; }
+            key = based ? FMT_BASED + arg : arg;
+            /* "@?" picks one of two strings on a word being zero - 0x7763's
+             * "cmp word ptr [si], 0 / je +5" takes [bx+4] for nought and
+             * [bx+2] otherwise - and then draws it through sub_75ad, so the
+             * chosen string gets its own codes and its own arguments.  Drawing
+             * it as plain text instead left "繰越日数 @5w日(@?@5w)" as
+             * "繰越日数 日()". */
+            if (letter == '?') {
+                const unsigned char *w2 = dat_at(at - 4, 4);
+                unsigned pick;
+                long flag = 0;
+                int j;
+
+                if (!w2) continue;
+                for (j = 0; j < slots; j++)
+                    if (slot[j].addr == key && slot[j].isNum) {
+                        flag = slot[j].value;
+                        break;
+                    }
+                pick = flag ? (unsigned)(w2[0] | (w2[1] << 8))
+                            : (unsigned)(w2[2] | (w2[3] << 8));
+                n += fmt_render(pick, slot, slots, out + n, max - n, depth + 1);
+                continue;
+            }
             if (letter != 'S' && letter != 's' && letter != 'b' &&
                 letter != 'w' && letter != 'l')
                 continue;
-            key = based ? FMT_BASED + arg : arg;
             for (i = 0; i < slots; i++)
                 if (slot[i].addr == key) { found = i; break; }
             if (letter == 'S' || letter == 's') {
                 if (found >= 0 && slot[found].text) {
                     int k = 0;
-                    while (slot[found].text[k] && n < (int)sizeof out - 1)
+                    while (slot[found].text[k] && n < max - 1)
                         out[n++] = slot[found].text[k++];
                 }
                 continue;
             }
-            /* A number.  sub_c455, sub_c492 and sub_c52d all fill a buffer that
-             * ends at DS:0x32ba with the pad byte and then write the digits
-             * into its tail, so the value is right-aligned in `width`. */
+            /* A number.  sub_c455, sub_c492 and sub_c52d fill a buffer that
+             * ends at DS:0x32ba with the pad byte and write the digits into its
+             * tail, so the value is right-aligned in `width`; their defaults
+             * when cl is nought are the digits a byte, a word and a long need.
+             * An address with no answer is drawn as that many spaces, so the
+             * columns stay where the original put them. */
             if (width <= 0) width = letter == 'b' ? 3 : letter == 'w' ? 5 : 10;
-            if (width > (int)sizeof out - 1 - n) width = (int)sizeof out - 1 - n;
+            if (width > max - 1 - n) width = max - 1 - n;
             if (found >= 0 && slot[found].isNum) {
                 char num[24];
                 long v = slot[found].value;
@@ -1111,8 +1163,7 @@ static void dlg_say_fmt(unsigned strAddr, const FmtSlot *slot, int slots)
                 else if (letter == 'w') v &= 0xffff;
                 snprintf(num, sizeof num, "%ld", v);
                 for (k = (int)strlen(num); k < width; k++) out[n++] = pad;
-                for (k = 0; num[k] && n < (int)sizeof out - 1; k++)
-                    out[n++] = num[k];
+                for (k = 0; num[k] && n < max - 1; k++) out[n++] = num[k];
             } else {
                 int k;
                 for (k = 0; k < width; k++) out[n++] = ' ';
@@ -1120,7 +1171,7 @@ static void dlg_say_fmt(unsigned strAddr, const FmtSlot *slot, int slots)
             continue;
         }
         if ((*str >= 0x81 && *str <= 0x9f) || (*str >= 0xe0 && *str <= 0xef)) {
-            if (n + 2 >= (int)sizeof out - 1) break;
+            if (n + 2 >= max - 1) break;
             out[n++] = (char)*str++;
             if (*str) out[n++] = (char)*str++;
             continue;
@@ -1128,6 +1179,15 @@ static void dlg_say_fmt(unsigned strAddr, const FmtSlot *slot, int slots)
         out[n++] = (char)*str++;
     }
     out[n] = 0;
+    return n;
+}
+
+static void dlg_say_fmt(unsigned strAddr, const FmtSlot *slot, int slots)
+{
+    char out[DLG_TEXT];
+
+    if (!dat_at(strAddr, 1)) return;
+    fmt_render(strAddr, slot, slots, out, (int)sizeof out, 0);
     dlg_say(out);
 }
 
@@ -1289,36 +1349,103 @@ static int guard_not_started(void)      /* sub_b52e */
 }
 
 /* sub_b2f2 and sub_b28d, and the table DS:0x1105 puts under the first. */
+/* The end of a stage, and this one is the game's own table too.
+ *
+ * 0xb410 puts up DS:0x1105 on a win and 0xb413 DS:0x112f on a loss, and the
+ * win table's eight lines are
+ *
+ *     @Sの勝利です。              c538
+ *     ------------------------
+ *     経過日数          @5w       3bcc
+ *     残り日数          @5w       3bca
+ *     国の面積      @4w/@4w       c53a c53e
+ *     国の率            @3b.@1b%  c53c c53d
+ *     ------------------------
+ *     @?                          c4f0 1509 152a
+ *
+ * where the last line is 開拓点は @5w点(@?@5w) when there is a score and
+ * "もう一度挑戦してください" when there is none.  0xb34f onwards works the
+ * numbers out:
+ *
+ *   [0xc538]  the surviving country's name, DS:0x12ad indexed by side
+ *   [0xc53e]  sub_bc99, every country's land added up
+ *   [0xc53a]  sub_bcce, this one's
+ *   [0xc53c]  the share.  land * 1000 / total, then "div cl" by ten, so al is
+ *             the whole per cent and ah - which the template reads as
+ *             [0xc53d] - is the tenth
+ *   [0xc4f0]  the score: days left times the share in per mille, over a
+ *             thousand (0xb37d)
+ *   [0xc540]  set at 0xb3b9 when the score came out below the stage's best
+ *   [0xc542]  how far off it was, always positive (0xb3bf negates it)
+ *   [0xc544]  the same for the rate, which DS:0x1129 announces
+ *
+ * The port used to write its own lines here with a cell count for the area,
+ * which is a different number from the side records' own totals.
+ */
 static void dlg_open_over(int won)
 {
-    char buf[64];
-    int p, c, total = 0, i;
+    int mine = game.human < 0 ? 0 : game.human;
+    unsigned long total = 0, held;
+    long permille = 0, whole = 0, tenth = 0, score = 0;
+    long best = 0, diff = 0, fell = 0;
+    FmtSlot slot[10];
+    char nm[DLG_TEXT];
+    int i;
 
     dlg_close();
     dlg.what = DLG_OVER;
-    if (won) {
-        char who[24];
-
-        snprintf(buf, sizeof buf, JP_WON,
-                 country_name(game.human, who, sizeof who));
-        dlg_say(buf);
-    } else {
-        dlg_say(JP_LOST1);
-        dlg_say(JP_LOST2);
+    for (i = 0; i < PLAYERS; i++) total += game.side[i].landTotal;
+    held = game.side[mine].landTotal;
+    if (total) {
+        permille = (long)(held * 1000UL / total);
+        whole = permille / 10;
+        tenth = permille % 10;
+        score = (long)game.daysLeft * permille / 1000;
     }
-    dlg_say("");
-    snprintf(buf, sizeof buf, JP_DAYS_GONE, game.day);
-    dlg_say(buf);
-    snprintf(buf, sizeof buf, JP_DAYS_LEFT, game.daysLeft);
-    dlg_say(buf);
-    game_land_count(&game, game.human & 3, &p, &c);
-    for (i = 0; i < MAP_W * MAP_H; i++)
-        if (live.cell[i] < CELL_IMPASSABLE) total++;
-    snprintf(buf, sizeof buf, JP_HELD_AREA, p + c, total);
-    dlg_say(buf);
-    snprintf(buf, sizeof buf, JP_HELD_RATE,
-             total ? (p + c) * 100 / total : 0);
-    dlg_say(buf);
+    if (mapNumber >= 0 && mapNumber < MAP_COUNT) {
+        best = record[mapNumber].score;
+        diff = score - best;
+        if (diff < 0) { fell = 1; diff = -diff; }
+    }
+    /* 0xb3d1 onwards, in the original's order: the difference is worked out
+     * against the stored score first and the record replaced afterwards, so
+     * the window says what the improvement was. */
+    overImproved = 0;
+    if (won && mapNumber >= 0 && mapNumber < MAP_COUNT &&
+        score > best && score != 0) {
+        overImproved = 1;
+        record[mapNumber].days = (unsigned short)game.day;
+        record[mapNumber].share = (unsigned short)whole;
+        record[mapNumber].daysLeft = (unsigned short)game.daysLeft;
+        record[mapNumber].score = (unsigned short)score;
+    }
+
+    country_name(mine, nm, sizeof nm);
+    slot[0].addr = 0xc538; slot[0].text = nm;   slot[0].isNum = 0;
+    slot[0].value = 0;
+    slot[1].addr = 0x3bcc; slot[1].value = game.day;         slot[1].isNum = 1;
+    slot[2].addr = 0x3bca; slot[2].value = game.daysLeft;    slot[2].isNum = 1;
+    slot[3].addr = 0xc53a; slot[3].value = (long)held;       slot[3].isNum = 1;
+    slot[4].addr = 0xc53e; slot[4].value = (long)total;      slot[4].isNum = 1;
+    slot[5].addr = 0xc53c; slot[5].value = whole;            slot[5].isNum = 1;
+    slot[6].addr = 0xc53d; slot[6].value = tenth;            slot[6].isNum = 1;
+    slot[7].addr = 0xc4f0; slot[7].value = score;            slot[7].isNum = 1;
+    slot[8].addr = 0xc540; slot[8].value = fell;             slot[8].isNum = 1;
+    slot[9].addr = 0xc542; slot[9].value = diff;             slot[9].isNum = 1;
+    for (i = 1; i < 10; i++) slot[i].text = 0;
+
+    dlg_say_table_fmt(won ? 0x1105 : 0x112f, slot, 10);
+    /* 0xb416: the extra line goes up only when [bp-2] is set, and 0xb3f0
+     * clears it again when the stage was the furthest one - so it says
+     * "improved" for a stage played again, not for a new one. */
+    if (won && overImproved && mapNumber < reached) {
+        slot[9].addr = 0xc544;
+        slot[9].value = diff;
+        slot[9].isNum = 1;
+        slot[9].text = 0;
+        dlg_say_table_fmt(0x1129, slot, 10);
+    }
+    if (dlg.lines == 0) dlg_say(won ? "won" : "lost");
     dlg_say("");
     dlg_choice(JP_CLOSE, 0);
 }
@@ -2180,9 +2307,12 @@ static void dlg_confirm(void)
          * set, so its GO refuses at 0x1b10 until the stage is entered afresh -
          * here that reads as the map coming back up paused. */
         if (overSaid == 1) {
-            /* 0xb3e3: the counter only moves when this stage was the furthest
-             * one, and then 0x6315 starts whatever [0xce70] now names. */
-            if (mapNumber >= reached && reached + 1 < MAP_COUNT) reached++;
+            /* 0xb3e3: the counter only moves when this stage was the
+             * furthest one AND the score was worth recording (0xb3d1 and
+             * 0xb3d7 guard the whole block), and then 0x6315 starts whatever
+             * [0xce70] now names. */
+            if (overImproved && mapNumber >= reached && reached + 1 < MAP_COUNT)
+                reached++;
             if (reached < MAP_COUNT) {
                 app_show_map(reached, tileSize);
                 running = 1;
