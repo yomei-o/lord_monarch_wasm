@@ -262,6 +262,69 @@ int main(int argc, char **argv)
     check(sawKing, "and its king was announced first");
     check(kingFirst, "the king's window came before the country's");
 
+    /* And on, twice more.  Clearing one stage and being handed the next is the
+     * thing the user reported not working, and one win only shows that the
+     * first hand-off happens - not that the state it leaves behind is fit to
+     * play the next one from.  Each stage is played the same way: answer every
+     * window the world puts up and keep the purse full.
+     *
+     * What each round holds in place: the stage that comes up is the one
+     * [0xce70] names (0x6315), it arrives already running because 0x6315 does
+     * not clear [0x3bd4], and [0x3bd6] is clear again so the panel's commands
+     * work - which is sub_b509's second condition.
+     */
+    {
+        int round;
+
+        for (round = 0; round < 2 && overAt >= 0; round++) {
+            int from = app_map_number();
+            int wonAt = -1;
+            long k;
+
+            checkf(app_running(), "stage %d did not arrive running", from, 0, 0);
+            /* sub_b509's second condition: with [0x3bd6] clear a command is
+             * taken, so the tax window opens on the new stage. */
+            app_click(24, 64);                  /* ICON_TAX */
+            checkf(app_dialog() == DLG_TAX,
+                   "the tax window will not open on stage %d", from, 0, 0);
+            for (k = 0; k < 60; k++) app_key(APP_KEY_LEFT);
+            app_key(APP_KEY_START);
+            app_key(APP_KEY_RUN);
+
+            for (k = 0; k < 200000; k++) {
+                int d;
+
+                app_key(APP_KEY_MONEY);
+                app_render();
+                d = app_dialog();
+                if (d == DLG_KING || d == DLG_ALLYBROKE || d == DLG_FELL) {
+                    app_key(APP_KEY_START);
+                    continue;
+                }
+                if (d == DLG_OVER) { wonAt = (int)k; break; }
+            }
+            /* Not every stage falls to the same crude play - the tax at
+             * nought and the purse full is enough for B_000 and not for all
+             * fifty-two - so a round that does not finish is reported rather
+             * than failed.  What is being held in place here is the hand-off,
+             * and the checks above it have already done that. */
+            if (wonAt < 0) {
+                printf("stage %d not won in 200000 frames, stopping there\n",
+                       from);
+                break;
+            }
+            app_key(APP_KEY_START);             /* answer the window */
+            checkf(app_map_number() == from + 1,
+                   "stage %d handed on to %d, not %d", from,
+                   app_map_number(), from + 1);
+            checkf(app_reached() == app_map_number(),
+                   "the counter says %d and the stage is %d",
+                   app_reached(), app_map_number(), 0);
+            printf("stage %d won after %d frames, on to %d\n", from, wonAt,
+                   app_map_number());
+        }
+    }
+
     /* The alliance last, and on a stage of its own, because striking one cannot
      * be undone from inside the game - the menu is four countries with no
      * "none" line - and a stage reloaded to clear it would put the tax back to

@@ -166,6 +166,7 @@ static void dlg_say_table_fmt(unsigned tableAddr, const FmtSlot *slot,
 static void dlg_choices_table(unsigned tableAddr);
 static void dlg_clean(const char *in, char *out, int max);
 static void device_lines(void);
+static void device_palette(void);
 static void dlg_cancel(void);
 static void dlg_confirm(void);
 static void dlg_open_order2(void);
@@ -222,6 +223,24 @@ static int charsOk;
 #define ICON_PIECE_BASE 0x8a0
 static Bank icons;
 static int iconsOk;
+
+/* The panel's own cursor is a pointing hand, not a box round the icon.
+ *
+ * sub_4d4a is what draws it: it erases the old one with sub_4d86, reads the
+ * icon it has been asked for out of [0x3bee], looks its position up in
+ * DS:0x2055 - four bytes an icon, the first word a VRAM offset - saves the
+ * background with sub_97e3 (buffer 0x898) and then hands sub_8738 the piece
+ * number 0x8a0, which is C_ICON's very first: pieces 0 to 3 make a 32x32 of a
+ * fist with the index finger up.
+ *
+ * The table's positions are x 8 or 40 and y 40, 72, 136, 200, 264, 296, 328 -
+ * that is the icon's own place less eight across and plus sixteen down, which
+ * is the (-8, +16) this port measured once and could not account for.  It is
+ * accounted for now: the table says where the HAND goes, and the hand hangs off
+ * the icon's bottom left corner.
+ */
+#define HAND_AT 0x2055
+#define HAND_PIECE 0x8a0
 static Font font;
 /* The machine's font ROM, if one has been handed over.  With it the dialogs say
  * what the original says; without it they fall back to English, because the
@@ -930,6 +949,28 @@ static void app_palette(const unsigned char *t48)
     gfx_set_palette(&scr, out);
 }
 
+/* Where the display question's colour pulse has got to.  See the note by
+ * app_show_device. */
+static int devPulse = 15, devUp;
+
+/* 0x06e8 and 0x06fa between them: DS:0x249b with everything but entries 7 and
+ * 15 blacked out, and entry 15's red wherever the pulse has got to. */
+static void device_palette(void)
+{
+    const unsigned char *t = dat_at(PAL_BOOT_AT, 48);
+    unsigned char pal[48];
+    int i;
+
+    if (!t) return;
+    memcpy(pal, t, sizeof pal);
+    for (i = 0; i < 16; i++) {
+        if (i == 7 || i == 15) continue;
+        pal[i * 3 + 0] = pal[i * 3 + 1] = pal[i * 3 + 2] = 0;
+    }
+    pal[15 * 3 + 1] = (unsigned char)(devPulse & 0x0f);     /* [0x3e4e] */
+    app_palette(pal);
+}
+
 /* The message and the two choices, which is all sub_06e7 puts on the screen.
  *
  * The message is not a descriptor: 0x070e hands the raw string at DS:0x1026 -
@@ -973,10 +1014,9 @@ int app_show_device(void)
     dlg_close();
     dlg.what = DLG_DEVICE;
     device_lines();
-    /* 0x0085 copies DS:0x249b into the working table before any of this, so
-     * that is the palette the question is drawn under.  Without it every index
-     * is black and the screen comes up empty, which is what happened. */
-    app_palette(dat_at(PAL_BOOT_AT, 48));
+    devPulse = 15;
+    devUp = 0;
+    device_palette();
     snprintf(status, sizeof status, "select the display device");
     return 1;
 }
@@ -984,6 +1024,26 @@ int app_show_device(void)
 /* Where the opening has got to: the hold, then the fade, then the finished
  * title.  A key leaves at any point, which is 0xca1f's own "and al, 0x60". */
 static int titleHold, titleBlend;
+
+/* The display question's own screen, which is not a window on a black ground.
+ *
+ *   0x06e8  zeroes twenty-one bytes of the palette work area at DS:0x3e20,
+ *           skips three, and zeroes twenty-one more - so entries 0..6 and
+ *           8..14 go black and entries 7 and 15 keep what DS:0x249b gave them,
+ *           which is white and 0xfa0, an orange
+ *   0x06fa  sub_7518, which fills the whole of VRAM with 0xffff through the
+ *           GRCG in mode 15: the screen becomes index 15 everywhere
+ *   0x070e  the message, and 0x0717 the menu, drawn with [0x32a9] as the
+ *           colour - which nothing has set at this point in the boot
+ *
+ * so it is dark text on a flat orange field.  And 0x07b6, in the retrace, runs
+ * a triangle wave on [0x3e4e] - byte 46 of the table, which is entry 15's RED -
+ * stepping it every other tick, 15 down to 0 and back up.  With the whole
+ * screen on index 15 that makes the field itself change colour, which is what
+ * the bar changing colour is.  Its gate, [0x32e0], is only ever written inside
+ * the opening (0xc9fb, 0xca40), so at this point in the boot it holds whatever
+ * was in memory; on the machine this was reported from, it was running. */
+/* devPulse and devUp are declared above device_palette. */
 
 int app_show_title(void)
 {
@@ -1157,6 +1217,24 @@ static void snapshot_dim_icons(void)
                    bg.px + (size_t)(sy + y) * SCR_W + sx, ICON_SIZE);
     }
     haveDim = 1;
+}
+
+/* The hand, where DS:0x2055 says it goes for that icon. */
+static void draw_hand(int idx)
+{
+    const unsigned char *p = dat_at(HAND_AT + (unsigned)idx * 4, 2);
+    unsigned off;
+    int x, y, i;
+
+    if (!iconsOk || idx < 0 || idx >= ICON_COUNT || !p) return;
+    off = (unsigned)(p[0] | (p[1] << 8));
+    y = (int)(off / 80);
+    x = (int)(off % 80) * 8;
+    /* sub_8738's own layout: the piece, then +1 to its right, +2 below it and
+     * +3 below that. */
+    for (i = 0; i < 4; i++)
+        gfx_blit_tile(&scr, &icons, HAND_PIECE - ICON_PIECE_BASE + i,
+                      x + (i & 1) * 16, y + (i >> 1) * 16);
 }
 
 /* Which icon a screen point is on, or -1. */
@@ -3932,6 +4010,20 @@ void app_render(void)
             unsigned at = 0x3b4f;
             int line;
 
+            /* The strip the lines sit on is cleared first, which is what
+             * 0xc9b5 does: sub_7c1c with (0,326) to (639,399) is a filled box
+             * over the bottom of the screen, and the two sub_7ad3 calls after
+             * it draw the slants into the corners.  DS7TTL has its own artwork
+             * down there, so writing the text straight over it - which is what
+             * this port did - left the glyphs tangled in it.  Rows 326 to 399,
+             * index 0. */
+            {
+                int y;
+
+                for (y = 326; y < SCR_H; y++)
+                    memset(scr.px + (size_t)y * SCR_W, 0, SCR_W);
+            }
+
             slot[0].addr = 0x3c1e; slot[0].value = 3;
             slot[1].addr = 0x3b3a; slot[1].value = 1;
             slot[2].addr = 0xc4e8;
@@ -3973,18 +4065,28 @@ void app_render(void)
     if (mode == APP_MODE_DEVICE) {
         int i;
 
-        memset(scr.px, 0, sizeof scr.px);
+        /* 0x07ae: every other tick, and 0x07bd/0x07c5 make it a triangle. */
+        if (!(ticks & 1)) {
+            if (devUp) {
+                if (++devPulse >= 15) { devPulse = 15; devUp = 0; }
+            } else {
+                if (--devPulse <= 0) { devPulse = 0; devUp = 1; }
+            }
+            device_palette();
+        }
+        ticks++;
+        /* sub_7518 fills VRAM with index 15, not with nothing. */
+        memset(scr.px, 15, sizeof scr.px);
         for (i = 0; i < dlg.lines; i++) {
             int chosen = dlg.count && i == dlg.first + dlg.pick;
             int y = 12 * 16 + i * 16;
 
-            if (chosen) {
-                int j, k;
-                for (j = 0; j < 16; j++)
-                    for (k = 0; k < 34 * 8; k++)
-                        scr.px[(size_t)(y + j) * SCR_W + 2 * 16 + k] = 2;
-            }
-            gfx_text_sjis(&scr, &font, &fontRom, 2 * 16, y, dlg.line[i], 7);
+            /* Only entries 7 and 15 have a colour on this screen, so the
+             * selection is the one line drawn in 7 against the field's 15
+             * rather than a bar in some third colour the palette has blacked
+             * out. */
+            gfx_text_sjis(&scr, &font, &fontRom, 2 * 16, y, dlg.line[i],
+                          (unsigned char)(chosen ? 7 : 0));
         }
         return;
     }
@@ -4015,8 +4117,7 @@ void app_render(void)
             memset(scr.px + (size_t)(VIEW_Y + y) * SCR_W + VIEW_X, 0, VIEW_W);
         for (i = 0; i < DIM_ICONS; i++)
             if (!iconLive[i]) draw_dim_icon(i);
-        if (panelIcon >= 0)
-            outline_icon(panelIcon, iconLive[panelIcon] ? 7 : 2);
+        if (panelIcon >= 0) draw_hand(panelIcon);
         return;
     }
     /* Exactly as many squares as the window holds, and not one more: gfx_draw_map
@@ -4283,8 +4384,9 @@ void app_render(void)
             if (!iconLive[i]) draw_dim_icon(i);
         if (running) outline_icon(ICON_GO, 6);
         if (viewMode) outline_icon(ICON_VIEW, 6);
-        if (panelIcon >= 0)
-            outline_icon(panelIcon, iconLive[panelIcon] ? 7 : 2);
+        /* sub_4d4a puts the hand there; the box this used to draw was the
+         * port's own invention. */
+        if (panelIcon >= 0) draw_hand(panelIcon);
     }
 
     /* The map's name, in the window the original shows it in. */
