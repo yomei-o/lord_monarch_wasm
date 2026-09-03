@@ -89,6 +89,10 @@ static int haveDim;
  * from the original rather than carrying copies. */
 #define DAT_BASE 0x1000
 #define PAL_TITLE_AT 0x24fb        /* the table the title fades to */
+/* The palette the machine boots with: 0x0085 and 0x0149 both copy forty-eight
+ * bytes of DS:0x249b into the working table, and that is what is up while no
+ * stage is loaded. */
+#define PAL_BOOT_AT 0x249b
 #define PANEL_TABLE_AT 0x3b4f      /* the three lines across the title's foot */
 
 static unsigned char *progDat;
@@ -130,6 +134,11 @@ static const unsigned char *dat_at(unsigned addr, unsigned need)
 static void snapshot_dim_icons(void);
 static int screen_to_icon(int x, int y);
 static void confirm_at(int cx, int cy);
+static void app_palette(const unsigned char *t48);
+static void dlg_say_table(unsigned tableAddr);
+static void dlg_choices_table(unsigned tableAddr);
+static void dlg_clean(const char *in, char *out, int max);
+static void device_lines(void);
 static void dlg_cancel(void);
 static void dlg_confirm(void);
 static void dlg_open_order2(void);
@@ -210,7 +219,7 @@ static FontRom fontRom;
 enum {
     DLG_NONE, DLG_INFO, DLG_TAX, DLG_SPEED, DLG_ZOOM, DLG_ALLY, DLG_ORDER,
     DLG_FELL, DLG_OVER, DLG_REFUSED, DLG_VIEW, DLG_MAPSEL, DLG_ORDER2,
-    DLG_FORCE, DLG_DRIVE, DLG_SAVE, DLG_LOAD
+    DLG_FORCE, DLG_DRIVE, DLG_SAVE, DLG_LOAD, DLG_DEVICE
 };
 static struct {
     int what;                       /* DLG_* , DLG_NONE when closed */
@@ -364,6 +373,32 @@ typedef struct {
  * a stage with nothing left to your name does not open the next one. */
 static int overImproved;
 
+/* [0x3bc2] = 0xffff means no stage is loaded, and that is how the game starts.
+ * 0x4ce0 reads it as the GO icon's own picture, and sub_1afa's 0x1b21 arm is the
+ * ONLY thing in the program that loads a map: it takes the stage from [0xce70],
+ * calls sub_6033 and then falls into 0x1b37, which sets [0x3bd4] and does
+ * "add sp, 2 / ret" to throw the panel loop's return address away.  So the
+ * screen the game opens on is the frame and the panel with the map window
+ * empty, and GO is what fills it.  This port went straight to stage 0 with the
+ * world already drawn. */
+/* [0x3286], which display is attached.  0x0090 reads bit 4 of the 8255's port
+ * B for the machine's own answer and 0x0096 sets the byte from it; sub_06e7 then
+ * lets the player override it, and the CRT/LCD icon at 0x206c does the same
+ * later.  What it changes is which arm of sub_736c uploads the palette:
+ *
+ *   0x7374  the analogue RGB one, four bits a channel straight out of DS:0x3e20
+ *   0x739f  the eight-gradation one.  sub_73d4 adds the entry up as
+ *           4*green + 2*red + blue - green weighted most, which is a
+ *           luminance - scales it by the brightness in [0x34d6] over fifteen,
+ *           complements it, and 0x739f then uses bits 0, 1 and 2 of that as
+ *           blue, red and green, each fully on or fully off.  Black comes back
+ *           as 7, which is white: an LCD of the period showed dark pixels on a
+ *           light ground, so the ramp is inverted.
+ */
+static int lcd;
+
+static int stageLoaded;
+
 static int reached;
 /* [0x3bd4], the stage is under way.  sub_1afa sets it and sub_b52e refuses a
  * command while it stands: the alliance is one of those, so it can only be
@@ -449,7 +484,8 @@ int app_init(const char *imagePath)
             if (!font_rom_from_file("font/shinonome.fnt"))
                 font_rom_from_file("shinonome.fnt");
     }
-    return app_show_title();
+    /* 0x00b5 asks this before anything is drawn, so the port does too. */
+    return app_show_device();
 }
 
 void app_shutdown(void)
@@ -476,7 +512,7 @@ static int palette_from_terrain(int terrain)
         snprintf(status, sizeof status, "%s: no palette", name);
         return 0;
     }
-    gfx_set_palette(&scr, b + n - 48);
+    app_palette(b + n - 48);
     free(b);
     return 1;
 }
@@ -792,16 +828,135 @@ static void title_panel(void)
     }
 }
 
+/* The game screen with no stage on it, which is where the original goes after
+ * its opening: everything is loaded but [0x3bc2] is still 0xffff, so the map
+ * window keeps the frame's own artwork and the panel has the keys.  The stage
+ * whose art is preloaded is the one GO will pick, which is what [0xce70] names.
+ */
+int app_show_ready(void)
+{
+    const unsigned char *t;
+
+    if (!app_show_map(reached, tileSize > 0 ? tileSize : 16)) return 0;
+    stageLoaded = 0;
+    running = 0;
+    underWay = 0;
+    nameShow = 0;                       /* no stage, so no stage name */
+    panelIcon = ICON_GO;
+    t = dat_at(PAL_BOOT_AT, 48);
+    if (t) app_palette(t);
+    snprintf(status, sizeof status, "panel: GO");
+    return 1;
+}
+
+/* Every palette upload goes through here so that the display setting applies to
+ * all of them and not just whichever one was written last. */
+static void app_palette(const unsigned char *t48)
+{
+    unsigned char out[48];
+    int i;
+
+    if (!t48) return;
+    if (!lcd) {
+        gfx_set_palette(&scr, t48);
+        return;
+    }
+    for (i = 0; i < 16; i++) {
+        int b = t48[i * 3 + 0] & 0x0f;          /* port 0xae */
+        int r = t48[i * 3 + 1] & 0x0f;          /* port 0xac */
+        int g = t48[i * 3 + 2] & 0x0f;          /* port 0xaa */
+        int sum = 4 * g + 2 * r + b, v;
+
+        if (sum == 0) {
+            v = 7;                              /* 0x73f5 */
+        } else {
+            v = ((sum + 15) * 0xff) >> 8;       /* [0x34d6] at full */
+            v = v / 15;
+            v = (~v) & 0xff;
+        }
+        /* 0x739f writes bits 0, 1 and 2 of that to the blue, red and green
+         * registers, each fully on or fully off - eight corners of the colour
+         * cube.  On the machine this was for, an eight-gradation LCD panel, the
+         * panel itself turned those eight into eight GREYS, which is what the
+         * menu means by 階調 and what the player actually saw.  Writing the
+         * bits out as colours here gives a magenta-and-yellow mess instead, so
+         * the level is mapped to a grey ramp: the "not al" at 0x73f0 is why it
+         * runs the other way, and it lands black on black and white on white.
+         */
+        {
+            int level = v & 7;
+            int grey = (7 - level) * 15 / 7;
+
+            out[i * 3 + 0] = (unsigned char)grey;
+            out[i * 3 + 1] = (unsigned char)grey;
+            out[i * 3 + 2] = (unsigned char)grey;
+        }
+    }
+    gfx_set_palette(&scr, out);
+}
+
+/* The message and the two choices, which is all sub_06e7 puts on the screen.
+ *
+ * The message is not a descriptor: 0x070e hands the raw string at DS:0x1026 -
+ * "表示装置を選択してください。" - straight to sub_759b.  The menu IS one, at
+ * DS:0x101c, and it is a sub_49bb descriptor so its header is six bytes:
+ * 0a 06 02 0e 02 00, which is (10,6) in cells, two lines, two in all, with the
+ * pointers at DS:0x1022 naming "アナログＢＧＢディスプレイ" and
+ * "８階調表示液晶ディスプレイ".
+ *
+ * Reading DS:0x1022 as the message was a false start - those two bytes are the
+ * first pointer, and decoding from there gave "C^表示装置を..." with the
+ * pointer bytes on the front. */
+static void device_lines(void)
+{
+    const unsigned char *t = dat_at(0x1026, 1);
+
+    dlg_close();
+    dlg.what = DLG_DEVICE;
+    if (t) {
+        char clean[DLG_TEXT];
+        dlg_clean((const char *)t, clean, sizeof clean);
+        dlg_say(clean);
+    }
+    if (dlg.lines == 0) dlg_say("select the display");
+    dlg_say("");
+    dlg_choices_table(0x101c);
+    if (dlg.count == 0) {
+        dlg_choice("ANALOGUE RGB", 0);
+        dlg_choice("8-LEVEL LCD", 1);
+    }
+    dlg.pick = lcd ? 1 : 0;
+}
+
+/* sub_06e7, the first thing the game does after the hardware is up: it draws
+ * DS:0x1026 - "表示装置を選択してください。" - and then puts the two-line menu
+ * DS:0x101c up into [0x3286].  It asks sub_4be9 for 0x23, which is up, down and
+ * confirm and NO cancel, so the question has to be answered. */
+int app_show_device(void)
+{
+    mode = APP_MODE_DEVICE;
+    dlg_close();
+    dlg.what = DLG_DEVICE;
+    device_lines();
+    /* 0x0085 copies DS:0x249b into the working table before any of this, so
+     * that is the palette the question is drawn under.  Without it every index
+     * is black and the screen comes up empty, which is what happened. */
+    app_palette(dat_at(PAL_BOOT_AT, 48));
+    snprintf(status, sizeof status, "select the display device");
+    return 1;
+}
+
 int app_show_title(void)
 {
     const unsigned char *t = dat_at(PAL_TITLE_AT, 48);
 
+    dlg_close();
     mode = APP_MODE_TITLE;
     if (!t) {
         snprintf(status, sizeof status, "no title palette in PROG.DAT");
         return 0;
     }
-    gfx_set_palette(&scr, t);
+    app_palette(t);
     /* The background is index 0, and it is black on screen even though the
      * stored table gives index 0 as 06A, a blue.  Three measurements off
      * ss0.jpg agree on that and leave no other reading:
@@ -834,6 +989,10 @@ int app_show_title(void)
 int app_show_map(int number, int size)
 {
     char name[32], bankName[32];
+
+    /* A stage replaces the screen, so whatever window was up goes with it -
+     * the display question at boot among them. */
+    dlg_close();
 
     if (number < 0) number = MAP_COUNT - 1;
     if (number >= MAP_COUNT) number = 0;
@@ -869,6 +1028,7 @@ int app_show_map(int number, int size)
         }
     }
     boxUnit = -1;
+    stageLoaded = 1;
     {
         const unsigned char *t = dat_at(GRAPH_COLOURS_AT, 50);
         int k;
@@ -2348,6 +2508,9 @@ static void icon_press(int idx)
          * which is why pressing GO twice used to stop the world here and does
          * not in the game. */
         app_sound(APP_SND_OK);
+        /* 0x1b21: with no stage loaded, GO takes the one [0xce70] names and
+         * loads it - this is the only place in the program that does. */
+        if (!stageLoaded && !app_show_map(reached, tileSize)) break;
         running = 1;
         underWay = 1;                   /* 0x1b37: [0x3bd4] = 0xffff */
         panelIcon = -1;
@@ -2417,6 +2580,15 @@ static void icon_press(int idx)
         app_sound(APP_SND_OK);
         dlg_open_slots(DLG_SAVE);
         break;
+    /* 0x206c has no guard either, and it is the same question sub_06e7 asks at
+     * boot - a knob on [0x3286] rather than a menu, but two positions either
+     * way. */
+    case ICON_CRT:
+        app_sound(APP_SND_OK);
+        dlg_close();
+        dlg.what = DLG_DEVICE;
+        device_lines();
+        break;
     /* 0x203e has no guard - straight to sub_727a. */
     case ICON_DRIVE:
         app_sound(APP_SND_OK);
@@ -2426,8 +2598,7 @@ static void icon_press(int idx)
         app_sound(APP_SND_NO);          /* not a refusal by the game: by me */
         snprintf(status, sizeof status,
                  "%s is in the original but not in this port yet",
-                 idx == ICON_EDIT ? "EDIT" :
-                 idx == ICON_FORM  ? "FORM"  : "CRT/LCD");
+                 idx == ICON_EDIT ? "EDIT" : "FORM");
         break;
     }
 }
@@ -2510,6 +2681,9 @@ static void dlg_cancel(void)
         selected = -1;
         app_sound(APP_SND_FAILED);          /* 0x0702 at 0x22d3 */
         snprintf(status, sizeof status, "cancelled");
+        break;
+    /* sub_06e7 does not take a cancel, so there is nothing to do with one. */
+    case DLG_DEVICE:
         break;
     /* 0x1f27 and 0x202c: the same as the drive window, the cancel is what
      * leaves and it plays 0x602 doing it. */
@@ -2714,6 +2888,12 @@ static void dlg_confirm(void)
                      value + 1);
         }
         break;
+    /* sub_06e7 asks for 0x23 - no cancel - so this is the only way out. */
+    case DLG_DEVICE:
+        lcd = value ? 1 : 0;
+        dlg_close();
+        app_show_title();
+        break;
     case DLG_FORCE:
         /* 0x21ba and 0x21ec: nought is 強行 and goes on, anything else goes
          * back to choosing a destination with the unit still held. */
@@ -2770,7 +2950,9 @@ static void cursor_move(int dx, int dy)
 void app_key(int key)
 {
     if (mode == APP_MODE_TITLE) {
-        if (key == APP_KEY_START) app_show_map(0, tileSize);
+        /* Off the title and on to the game screen, which has no stage on it
+         * yet: GO is what loads one. */
+        if (key == APP_KEY_START) app_show_ready();
         return;
     }
     /* A dialog takes the keys while it is up, which is what the original does:
@@ -3026,7 +3208,7 @@ static int portrait_tile(const Unit *u, int turn)
 void app_tick(void)
 {
     int i;
-    if (mode != APP_MODE_MAP) return;
+    if (mode != APP_MODE_MAP || !stageLoaded) return;
     /* The castles collect from inside the cell sweep, when the cursor lands on
      * one - not once a tick.  0x3332 dispatches on the tile. */
     /* 0x1a43 bumps the turn counter before the sweeps and 0x1a56 reads it
@@ -3147,7 +3329,10 @@ static int songOn;
 
 int app_song_wanted(void)
 {
-    if (mode == APP_MODE_TITLE) return 4;       /* 0x00fe */
+    /* 0x00fe puts 4 in [0x3bc6] at boot and 0x017e loads it, and sub_06e7's
+     * question comes before either - so the display screen and the title share
+     * the same song. */
+    if (mode == APP_MODE_TITLE || mode == APP_MODE_DEVICE) return 4;
     if (mode == APP_MODE_MAP) {                 /* 0x1945 */
         int set = map.terrain / 10;
 
@@ -3155,6 +3340,10 @@ int app_song_wanted(void)
          * 2 there when it is lost, before loading and starting it. */
         if (game.over == 1) return 1;
         if (game.over == 2) return 2;
+        /* Before GO the screen is the panel with no stage on it, and 0x1927
+         * has just put 5 in [0x3bc6] - the setting-up song - which is what the
+         * main loop plays until a map is loaded. */
+        if (!stageLoaded) return 5;
         if (set < 1) return 0;
         /* 0x1979: the low bit picks the second of the terrain's pair, and
          * sub_a75d is what sets it - see Game.songHot. */
@@ -3353,7 +3542,7 @@ void app_click(int x, int y)
         return;
     }
     if (mode == APP_MODE_TITLE) {
-        app_show_map(0, tileSize);
+        app_show_ready();
         return;
     }
     if (!screen_to_cell(x, y, &cx, &cy)) return;
@@ -3434,6 +3623,30 @@ void app_render(void)
         stars_tick();
         return;
     }
+    /* The display question comes before anything has been read off the disk -
+     * sub_06e7 is called at 0x00b5, long before WAKU - so there is no frame
+     * artwork to put it in.  The original draws it on the text screen with its
+     * own box; here it is plain text on black, which is what that looks like.
+     * The position is the descriptor's own: DS:0x101a puts the message at
+     * (2,12) in cells and DS:0x101c the menu at (2,14). */
+    if (mode == APP_MODE_DEVICE) {
+        int i;
+
+        memset(scr.px, 0, sizeof scr.px);
+        for (i = 0; i < dlg.lines; i++) {
+            int chosen = dlg.count && i == dlg.first + dlg.pick;
+            int y = 12 * 16 + i * 16;
+
+            if (chosen) {
+                int j, k;
+                for (j = 0; j < 16; j++)
+                    for (k = 0; k < 34 * 8; k++)
+                        scr.px[(size_t)(y + j) * SCR_W + 2 * 16 + k] = 2;
+            }
+            gfx_text_sjis(&scr, &font, &fontRom, 2 * 16, y, dlg.line[i], 7);
+        }
+        return;
+    }
     if (mode != APP_MODE_MAP) return;
     /* A window is modal.  sub_4a4d puts it up and sub_72ad sits there until it
      * is answered, so nothing in the world moves while one is open - the port
@@ -3446,6 +3659,25 @@ void app_render(void)
      * pause command because it does not need one - opening the panel IS the
      * pause. */
     if (running && dlg.what == DLG_NONE && panelIcon < 0) app_tick();
+    /* No stage, no world.  [0x3bc2] is 0xffff until GO loads one, and until
+     * then the map window keeps the frame's own artwork - so everything below
+     * this, which is the board and the readouts beside it, has nothing to draw
+     * from.  Only the panel is live. */
+    if (!stageLoaded) {
+        int i, y;
+
+        /* The map window is cleared rather than left as it is, because WAKU
+         * keeps a second copy of the panel's icons at x 96 and 128 - the dim
+         * ones snapshot_dim_icons takes - and with no map over them they show
+         * as a stray column of artwork inside the frame. */
+        for (y = 0; y < VIEW_H; y++)
+            memset(scr.px + (size_t)(VIEW_Y + y) * SCR_W + VIEW_X, 0, VIEW_W);
+        for (i = 0; i < DIM_ICONS; i++)
+            if (!iconLive[i]) draw_dim_icon(i);
+        if (panelIcon >= 0)
+            outline_icon(panelIcon, iconLive[panelIcon] ? 7 : 2);
+        return;
+    }
     /* Exactly as many squares as the window holds, and not one more: gfx_draw_map
      * does not clip, and the extra row and column this used to ask for spilled a
      * whole tile over the right and bottom edges of WAKU's frame - which reads

@@ -12,7 +12,10 @@
 
 enum {
     APP_MODE_TITLE,
-    APP_MODE_MAP
+    APP_MODE_MAP,
+    /* The first thing the game shows: sub_06e7, called from the boot at
+     * 0x00b5, asks which display is attached before anything is drawn. */
+    APP_MODE_DEVICE
 };
 
 /* Key codes the app understands; the host translates its own. */
@@ -174,6 +177,12 @@ int app_mode(void);
 const char *app_status(void);
 
 /* For the headless tool: jump straight somewhere without pressing keys. */
+/* The display-device question sub_06e7 asks at boot. */
+int app_show_device(void);
+
+/* The screen the game opens on: the frame and the panel with the map window
+ * empty, because [0x3bc2] is 0xffff until GO loads a stage. */
+int app_show_ready(void);
 int app_show_title(void);
 int app_show_map(int number, int tileSize);
 

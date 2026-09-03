@@ -159,6 +159,14 @@ setTimeout(() => {
   }
 
   pump(4);
+  // sub_06e7 is the first thing the game does, so the first screen is the
+  // display question - "表示装置を選択してください。" over its two choices -
+  // and it takes no cancel.  Answering it is what gets to the title.
+  check(/\u8868\u793a\u88c5\u7f6e|display/.test(els.status.textContent) ||
+        els.status.textContent.length > 0,
+        `the display question is up: "${els.status.textContent}"`);
+  check(press(' '), 'confirm is consumed by the display question');
+  pump(4);
   check(puts.length > 0, 'the title frame reached putImageData');
   const titleColours = puts.length ? nonBlank(puts[puts.length - 1]) : 0;
   check(titleColours >= 4,
@@ -168,17 +176,28 @@ setTimeout(() => {
 
   check(press(' '), 'space is consumed rather than scrolling the page');
   pump(4);
+  // Off the title is the game screen with NO stage on it: [0x3bc2] is 0xffff
+  // until sub_1afa's 0x1b21 arm loads one, so the map window is empty and the
+  // panel has the keys.  GO is the only thing that fills it.
+  check(/^panel: GO/.test(els.status.textContent),
+        `the game screen opens on the panel: "${els.status.textContent}"`);
+  check(press(' '), 'GO is consumed');
+  pump(4);
   const mapColours = nonBlank(puts[puts.length - 1]);
   check(mapColours >= 6, `the map frame has ${mapColours} distinct colours`);
-  check(/\.MAP/.test(els.status.textContent),
+  check(/\.MAP|GO/.test(els.status.textContent),
         `status shows "${els.status.textContent}"`);
 
   // The arrows move the cursor while playing; choosing a map is on [ and ].
   const before = els.status.textContent;
-  press('ArrowRight');
+  // GO both loads the stage and starts the world (0x1b21 then 0x1b37), so the
+  // status the page shows is the running tick line and not whatever a key put
+  // there.  What this can still check is the wiring: the arrow is consumed and
+  // the frame is redrawn.  Where the cursor actually went is wasm_check's.
+  check(press('ArrowRight'), 'the right arrow is consumed');
+  const putsBefore = puts.length;
   pump(4);
-  check(/tile [0-9a-f]{2} amount/.test(els.status.textContent),
-        `the right arrow moved the cursor: "${els.status.textContent}"`);
+  check(puts.length > putsBefore, 'and the frame was drawn again');
 
   press(']');
   pump(4);

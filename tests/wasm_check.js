@@ -44,6 +44,16 @@ LordMonarch().then((m) => {
   // terrain 10 and asks for 16.  Getting these wrong is silent in the sense
   // that something still plays, which is why they are checked by number.
   let songFailed = 0;
+  // sub_06e7's display question is the first screen, and it shares the boot's
+  // song - 0x00fe puts 4 in [0x3bc6] before either.  Answering it reaches the
+  // title, which 0x017e leaves on the same 4.
+  {
+    const n = m._lm_song_wanted();
+    console.log(`${n === 4 ? 'ok  ' : 'FAIL'}  the display screen asks for ` +
+                `song ${n}`);
+    if (n !== 4) songFailed++;
+    m._lm_key(KEY.START);               // answer it
+  }
   {
     const n = m._lm_song_wanted();
     console.log(`${n === 4 ? 'ok  ' : 'FAIL'}  the title asks for song ${n}`);
@@ -62,7 +72,15 @@ LordMonarch().then((m) => {
     if (loud <= 4096) songFailed++;
   }
 
-  m._lm_key(KEY.START);          // title -> map view
+  m._lm_key(KEY.START);          // title -> the game screen, no stage yet
+  // 0x1927 puts 5 in [0x3bc6] for the screen with no map on it.
+  {
+    const n = m._lm_song_wanted();
+    console.log(`${n === 5 ? 'ok  ' : 'FAIL'}  the empty game screen asks ` +
+                `for song ${n}`);
+    if (n !== 5) songFailed++;
+  }
+  m._lm_key(KEY.START);          // GO: 0x1b21 loads the stage
   m._lm_key(KEY.TILE8);
   {
     const n = m._lm_song_wanted();
