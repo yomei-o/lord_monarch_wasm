@@ -169,6 +169,44 @@ int main(int argc, char **argv)
                was, overAt, app_map_number());
     }
     check(sawFell, "a country fell on the way");
+
+    /* The alliance last, and on a stage of its own, because striking one cannot
+     * be undone from inside the game - the menu is four countries with no
+     * "none" line - and a stage reloaded to clear it would put the tax back to
+     * ten and stop the run above from being the run that was measured. */
+    app_show_map(0, 16);
+    app_click(24, 200);                         /* ICON_ALLY */
+    check(app_dialog() == DLG_ALLY, "the alliance opens again on a fresh stage");
+    /* Four countries are listed, by their own names, and 0x1ccb has already
+     * moved the selection off your own before the window opened. */
+    check(app_dialog_lines() == 2 + 4,
+          "the alliance lists all four countries");
+    /* 0x1d0c: choosing your own country does nothing at all - no sound, no
+     * message, the window stays.  The selection starts on country 1, so
+     * walking up to 0 and confirming is choosing yourself. */
+    app_key(APP_KEY_UP);
+    app_key(APP_KEY_START);
+    check(app_dialog() == DLG_ALLY, "choosing your own country changes nothing");
+    /* And a real one is struck.  At the start of a stage every country holds
+     * the same, and 0x1d2d accepts equal - "jae" - so this one goes through
+     * and the message names two pairs, not one. */
+    app_key(APP_KEY_DOWN);
+    app_key(APP_KEY_START);
+    check(app_dialog() != DLG_ALLY, "an alliance with country 1 is struck");
+    {
+        int k, said = 0;
+        for (k = 0; k < app_dialog_lines(); k++) {
+            const char *l = app_dialog_line(k);
+            if (l[0]) said++;
+            printf("      | %s\n", l);
+        }
+        check(said >= 4, "the alliance message names both pairs");
+    }
+    app_key(APP_KEY_BACK);
+    /* The alliance sticks, and there is no way in the game to undo one - the
+     * menu has four countries and no "none" line.  So the stage is loaded again
+     * before the rest of this runs, which is what game_init does to the side
+     * records anyway. */
     app_shutdown();
     printf(failures ? "%d failed\n" : "all passed\n", failures);
     return failures != 0;

@@ -348,6 +348,12 @@ void game_kill(Game *g, int slot, int killerSide);
  * slot, which is how the original addresses the buffer. */
 int game_path_to(Game *g, int slot, int x, int y);
 
+/* How clear the way to a square is: 2 clear, 1 only past a dangerous enemy,
+ * 0 only through our own allies, -1 no way at all.  sub_20f0 asks this three
+ * times - sub_bd84, then sub_bd3b, then no blocker at all - and the answer
+ * decides whether the player is warned and offered 強行 or 再選択. */
+int game_route_tier(Game *g, int slot, int x, int y);
+
 /* The direction the path wants next (0..7), or -1 when there is none left.
  * game_move consumes it; game_path_advance moves the cursor on and drops the
  * path when it runs out, the way 0xc2c0 does. */

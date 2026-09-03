@@ -301,6 +301,118 @@ static unsigned short *fill_distances(Game *g, int from)
     return dist;
 }
 
+/* How clear the way to a square is, which sub_20f0 asks three times over
+ * before it lets an order stand.
+ *
+ * The original keeps two copies of the distance field in its own segment:
+ * 2000:1200 is the one the terrain alone gives, and sub_bd1e copies it down
+ * over the working one at 2000:0000.  On top of that it runs one of two
+ * blockers, each of which walks the sixty-four unit records at 2000:c800 and
+ * writes 0xffff - impassable - into the cell of every unit that is in the way.
+ * A unit is considered at all only if its slot is in use (bit 7 of [di] clear),
+ * it is not the one being ordered, and its link is 0xff.  Then, with sub_a61d
+ * putting the mover's own ally in ah:
+ *
+ *   [di+0xc] == ah   an ALLY.  Blocks, in both blockers - which is what the
+ *                    message at DS:0x113f says: the route is
+ *                    blocked by 仲間 - our own allies.
+ *   [di+0xc] == al   our own.  Blocks only if the two carries added together
+ *                    overflow sixteen bits, so in practice never.
+ *   anything else    an enemy.  sub_bd84 blocks it unless we are carrying more
+ *                    than one and a half times what it is (0xbdc7: bx = theirs
+ *                    + theirs / 2, then "cmp bp, bx / ja skip"); sub_bd3b does
+ *                    not test at all and lets us through.
+ *
+ * So the three attempts are: with sub_bd84, which is the careful route; with
+ * sub_bd3b, which walks past enemies it should not; and with no blocker, which
+ * walks through our own allies as well.  Whichever one first reaches the square
+ * decides what the player is told.  Returns
+ *
+ *   2  clear the careful way
+ *   1  only by walking past a dangerous enemy   -> DS:0x1147
+ *   0  only by pushing through friends          -> DS:0x113f
+ *  -1  no way at all
+ *
+ * This has its own distance buffer rather than the cached one, because the
+ * cache is what every unit's own decision reads and poisoning it with a
+ * one-off question would change how the world runs. */
+static int route_reaches(Game *g, int slot, int to, int mode)
+{
+    static unsigned short dist[MAP_W * MAP_H];
+    static int queue[MAP_W * MAP_H];
+    Unit *u = &g->unit[slot];
+    int from = game_cell_index(u->pos & 0xff, u->pos >> 8);
+    int head = 0, tail = 0, i;
+    int mine = u->side;
+    int ally = mine >= 0 && mine < SIDES ? g->side[mine].ally : 0x80;
+
+    for (i = 0; i < MAP_W * MAP_H; i++)
+        dist[i] = g->cell[i].tile >= CELL_IMPASSABLE ? DIST_WALL : DIST_OPEN;
+    /* sub_c316, called with the destination at 0x213d before the fill runs.
+     * If the square is water (0x30..0x5f), rock (0x7a) or a fence (0x7b) it
+     * writes 0x4000 into the distance grid - not a distance, since sub_aaae
+     * counts anything from 0x1f0 up as no answer, but not the 0xffff that means
+     * a wall either.  So the fill is allowed to walk into it and give it a real
+     * distance.  That is what lets a square be named as a destination that a
+     * unit could never stand on: without it no bridge could ever be ordered,
+     * which is exactly what happened here when the route test first went in. */
+    {
+        unsigned char t = g->cell[to].tile;
+
+        if (t == CELL_ROCK || t == CELL_WOOD ||
+            (t >= CELL_IMPASSABLE && t < CELL_WATER_END))
+            dist[to] = DIST_OPEN;
+    }
+    if (mode > 0) {
+        for (i = 0; i < UNIT_SLOTS; i++) {
+            Unit *o = &g->unit[i];
+            int at, block;
+
+            if (i == slot || game_unit_free(g, i)) continue;
+            if (o->link != 0xff) continue;              /* 0xbda5 */
+            at = game_cell_index(o->pos & 0xff, o->pos >> 8);
+            if (at < 0) continue;
+            if (o->side == ally) block = 1;             /* 0xbdaa */
+            else if (o->side == mine) block = 0;        /* 0xbdb4, never */
+            else block = mode > 1 &&
+                         !((long)u->carrying >
+                           (long)o->carrying + o->carrying / 2);
+            if (block) dist[at] = DIST_WALL;
+        }
+    }
+    dist[from] = 1;
+    queue[tail++] = from;
+    while (head < tail) {
+        int c = queue[head++];
+        int x = c % MAP_W, y = c / MAP_W, k;
+        static const int dx[4] = {0, 1, 0, -1};
+        static const int dy[4] = {1, 0, -1, 0};
+        for (k = 0; k < 4; k++) {
+            int nx = x + dx[k], ny = y + dy[k], n;
+            if (nx < MAP_MIN || nx > MAP_MAX || ny < MAP_MIN || ny > MAP_MAX)
+                continue;
+            n = ny * MAP_W + nx;
+            if (dist[n] != DIST_OPEN) continue;
+            dist[n] = (unsigned short)(dist[c] + 1);
+            queue[tail++] = n;
+        }
+    }
+    /* sub_aaae: the answer is the distance, and 0x1f0 or more counts as no. */
+    return dist[to] != DIST_WALL && dist[to] != DIST_OPEN &&
+           dist[to] < PATH_STEPS;
+}
+
+int game_route_tier(Game *g, int slot, int x, int y)
+{
+    int to = game_cell_index(x, y);
+
+    if (to < 0 || game_unit_free(g, slot)) return -1;
+    if (route_reaches(g, slot, to, 2)) return 2;
+    if (route_reaches(g, slot, to, 1)) return 1;
+    if (route_reaches(g, slot, to, 0)) return 0;
+    return -1;
+}
+
 static void put_step(Path *p, int index, int code)
 {
     int byte = index >> 2, shift = (index & 3) * 2;
@@ -1901,7 +2013,13 @@ int game_job_for(const Game *g, int x, int y)
 
 int game_order_job(Game *g, int slot, int x, int y)
 {
-    return game_order(g, slot, x, y, game_job_for(g, x, y));
+    /* The state byte, not the bare nibble.  0x227b sets 0x10 on every choice
+     * but オート, and that bit is not decoration: 0x1657 uses it to settle who
+     * takes a square when two units meet on it, so a job stored without it
+     * loses every contest it should win. */
+    int job = game_job_for(g, x, y);
+
+    return game_order(g, slot, x, y, job ? (job | 0x10) : 0);
 }
 
 /* 0x22a2: the five orders that work on the square in front of them. */

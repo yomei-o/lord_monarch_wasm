@@ -132,6 +132,9 @@ static void confirm_at(int cx, int cy);
 static void dlg_cancel(void);
 static void dlg_confirm(void);
 static void dlg_open_order2(void);
+static void dlg_open_force(unsigned tableAddr);
+static void dlg_open_order(int cx, int cy);
+static void order_chosen(void);
 static void order_apply(int after);
 static void order_name(int k, char *out, int max);
 static void cursor_move(int dx, int dy);
@@ -183,7 +186,8 @@ static FontRom fontRom;
 #define DLG_TEXT 34
 enum {
     DLG_NONE, DLG_INFO, DLG_TAX, DLG_SPEED, DLG_ZOOM, DLG_ALLY, DLG_ORDER,
-    DLG_FELL, DLG_OVER, DLG_REFUSED, DLG_VIEW, DLG_MAPSEL, DLG_ORDER2
+    DLG_FELL, DLG_OVER, DLG_REFUSED, DLG_VIEW, DLG_MAPSEL, DLG_ORDER2,
+    DLG_FORCE
 };
 static struct {
     int what;                       /* DLG_* , DLG_NONE when closed */
@@ -973,6 +977,95 @@ static void dlg_clean(const char *in, char *out, int max)
     out[n] = 0;
 }
 
+/* The one format code the port fills in so far.
+ *
+ * sub_759b reads the words sitting immediately after a string's terminator as
+ * its arguments - a repne scasb at 0x75c4 finds them - and "@S" means "the next
+ * argument is the address of a pointer to a string; draw that string".  The
+ * game uses it for names it works out at run time: the alliance messages at
+ * DS:0x11c7, DS:0x11d5 and DS:0x11dd all put the country names into 0xc52e,
+ * 0xc530, 0xc532 and 0xc534 first and then let "@S" pick them up.
+ *
+ * `slot` and `text` are the port's answers for those addresses.  Every other
+ * code is still dropped the way dlg_clean drops it, and the argument stream is
+ * walked past so that later codes on the same line keep their place: a code
+ * that is not understood costs one word, "@?" three and "@Nt" two, which is
+ * what sub_759b's own handlers consume.
+ */
+typedef struct { unsigned addr; const char *text; } FmtSlot;
+
+static void dlg_say_fmt(unsigned strAddr, const FmtSlot *slot, int slots)
+{
+    const unsigned char *str = dat_at(strAddr, 1);
+    char out[DLG_TEXT];
+    unsigned args, at;
+    int n = 0, len = 0;
+
+    if (!str) return;
+    while (dat_at(strAddr + len, 1) && *dat_at(strAddr + len, 1)) len++;
+    args = strAddr + len + 1;
+    at = args;
+    str = dat_at(strAddr, 1);
+    while (*str && n < (int)sizeof out - 1) {
+        if (*str < 0x20) { str++; continue; }
+        if (*str == '@') {
+            int eats = 1, i;
+            unsigned arg = 0;
+            const unsigned char *w;
+            char letter;
+
+            str++;
+            if (*str == '.') str++;
+            while (*str >= '0' && *str <= '9') str++;
+            letter = (char)*str;
+            if (*str) str++;
+            if (letter == '?') eats = 3;
+            else if (letter == 't') eats = 2;
+            w = dat_at(at, 2);
+            if (w) arg = (unsigned)(w[0] | (w[1] << 8));
+            at += (unsigned)(eats * 2);
+            if (letter != 'S' && letter != 's') continue;
+            for (i = 0; i < slots; i++)
+                if (slot[i].addr == arg && slot[i].text) {
+                    int k = 0;
+                    while (slot[i].text[k] && n < (int)sizeof out - 1)
+                        out[n++] = slot[i].text[k++];
+                    break;
+                }
+            continue;
+        }
+        if ((*str >= 0x81 && *str <= 0x9f) || (*str >= 0xe0 && *str <= 0xef)) {
+            if (n + 2 >= (int)sizeof out - 1) break;
+            out[n++] = (char)*str++;
+            if (*str) out[n++] = (char)*str++;
+            continue;
+        }
+        out[n++] = (char)*str++;
+    }
+    out[n] = 0;
+    dlg_say(out);
+}
+
+/* Every line of one of sub_4a4d's tables, with "@S" filled in. */
+static void dlg_say_table_fmt(unsigned tableAddr, const FmtSlot *slot,
+                              int slots)
+{
+    const unsigned char *t = dat_at(tableAddr, 4);
+    int lines, i;
+
+    if (!t) return;
+    lines = t[2] & 0x7f;
+    if (lines > DLG_LINES - 2) lines = DLG_LINES - 2;
+    for (i = 0; i < lines; i++) {
+        const unsigned char *p = dat_at(tableAddr + 4 + i * 2, 2);
+        unsigned addr;
+
+        if (!p) break;
+        addr = (unsigned)(p[0] | (p[1] << 8));
+        dlg_say_fmt(addr, slot, slots);
+    }
+}
+
 /* Says every line of one of sub_4a4d's tables. */
 static void dlg_say_table(unsigned tableAddr)
 {
@@ -995,6 +1088,39 @@ static void dlg_say_table(unsigned tableAddr)
                 dlg_say(clean);
             }
         }
+    }
+}
+
+/* The same table, but every line is choosable: that is the difference between
+ * sub_4a4d and sub_49bb, and DS:0x10e7 is one of these - two lines, 強行 at
+ * DS:0x1de0 and 再選択 at DS:0x1de7.
+ *
+ * The two descriptors are not the same shape, which cost a false start here.
+ * sub_4a4d reads four bytes and then the pointers; sub_49bb does "add si, 6"
+ * at 0x49e6, so its header is six - x, y, how many lines are visible with 0x80
+ * meaning "one template indexed by line number", a width, the whole list's
+ * length, and a spare.  Reading DS:0x10e7 as a four-byte header gave 0x0002 as
+ * the first pointer and the window came up with no choices in it at all. */
+static void dlg_choices_table(unsigned tableAddr)
+{
+    const unsigned char *t = dat_at(tableAddr, 6);
+    int lines, i;
+
+    if (!t) return;
+    lines = t[2] & 0x7f;
+    if (lines > DLG_LINES - dlg.lines) lines = DLG_LINES - dlg.lines;
+    for (i = 0; i < lines; i++) {
+        const unsigned char *p = dat_at(tableAddr + 6 + i * 2, 2);
+        unsigned at;
+        const unsigned char *text;
+        char clean[DLG_TEXT];
+
+        if (!p) break;
+        at = p[0] | (p[1] << 8);
+        text = dat_at(at, 1);
+        if (!text) break;
+        dlg_clean((const char *)text, clean, sizeof clean);
+        dlg_choice(clean, i);
     }
 }
 
@@ -1216,25 +1342,102 @@ static void dlg_open_zoom(void)
     dlg_choice(JP_ZOOM8, 8);
 }
 
+/* 0x1cb0.  The window lists the countries by their own names - the five
+ * records at 0xc642 that gfx_load_names reads, which is what DS:0x12ad points
+ * at - and 0x1cc2 nudges the selection off your own country before it opens,
+ * because 0x1d0c sends a choice of yourself straight back to the menu.  So does
+ * a country whose flag word is not zero (0x1d18), which is one that has
+ * fallen. */
 static void dlg_open_ally(void)
 {
-    int i;
+    int i, mine = game.human < 0 ? 0 : game.human;
+
     dlg_close();
     dlg.what = DLG_ALLY;
     dlg_say(JP_ALLY_TITLE);
     dlg_say("");
     for (i = 0; i < PLAYERS; i++) {
-        char buf[DLG_TEXT];
-        if (i == game.human || !game.side[i].alive) continue;
-        {
-            char head[DLG_TEXT];
-            snprintf(head, sizeof head, JP_ALLY_ITEM, i);
-            snprintf(buf, sizeof buf, "%s%s", head,
-                     game.side[game.human].ally == i ? JP_ALLY_NOW : "");
-        }
+        char buf[DLG_TEXT], nm[DLG_TEXT];
+
+        country_name(i, nm, sizeof nm);
+        snprintf(buf, sizeof buf, "%s%s", nm,
+                 game.side[mine].ally == i ? JP_ALLY_NOW : "");
         dlg_choice(buf, i);
+        /* Your own country and a fallen one are refused, so they are drawn the
+         * way the order menu draws a choice that means nothing. */
+        if (i == mine || !game.side[i].alive || game.side[i].flag)
+            dlg.colour[dlg.lines - 1] = 2;
     }
-    dlg_choice(JP_ALLY_NONE, 0x80);
+    if (mine >= 0 && mine < PLAYERS && dlg.count > 0) {
+        dlg.pick = mine + 1 < PLAYERS ? mine + 1 : 0;   /* 0x1ccb */
+    }
+}
+
+/* 0x1d61: the alliance is struck, and it is not one pair but two.  sub_1de2
+ * finds the two countries that are neither you nor your new ally - "cl = 0;
+ * while (cl is one of al, ah, dh) cl++", twice - and sub_1df5 then writes
+ * side[cl].ally = ch for all four, so you pair with your choice and the other
+ * two pair with each other.  The message at DS:0x11c7 names both pairs, which
+ * is how it was noticed: it has two "@Sと@Sの" lines, not one.
+ */
+static void ally_strike(int with)
+{
+    int mine = game.human < 0 ? 0 : game.human;
+    int other[2], n = 0, i;
+    FmtSlot slot[4];
+    char nm[4][DLG_TEXT];
+
+    for (i = 0; i < PLAYERS && n < 2; i++)
+        if (i != mine && i != with) other[n++] = i;
+
+    game.side[mine].ally = (unsigned char)with;
+    game.side[with].ally = (unsigned char)mine;
+    if (n == 2) {
+        game.side[other[0]].ally = (unsigned char)other[1];
+        game.side[other[1]].ally = (unsigned char)other[0];
+    }
+
+    /* The four name slots the message reads through "@S", in the order
+     * 0x1d83 onwards fills them. */
+    country_name(mine, nm[0], DLG_TEXT);
+    country_name(with, nm[1], DLG_TEXT);
+    country_name(n == 2 ? other[1] : mine, nm[2], DLG_TEXT);
+    country_name(n == 2 ? other[0] : mine, nm[3], DLG_TEXT);
+    slot[0].addr = 0xc52e; slot[0].text = nm[0];
+    slot[1].addr = 0xc530; slot[1].text = nm[1];
+    slot[2].addr = 0xc532; slot[2].text = nm[2];
+    slot[3].addr = 0xc534; slot[3].text = nm[3];
+
+    dlg_close();
+    dlg.what = DLG_REFUSED;             /* a message with one way out */
+    dlg_say_table_fmt(0x11c7, slot, 4);
+    if (dlg.lines == 0) dlg_say("allied");
+    dlg_say("");
+    dlg_choice(JP_CLOSE, 0);
+    app_sound(0x0302);                  /* 0x1d6b */
+    snprintf(status, sizeof status, "allied with %s", nm[1]);
+}
+
+/* 0x1d2d: the other side refuses if it holds more land than you do.  sub_ab2b
+ * reads the 32-bit total at +8 of each side record and the comparison is
+ * "sub ax, bx / sbb cx, dx / jae accept", so equal is accepted and only
+ * strictly more is refused.  DS:0x11dd is "@Sは同盟を拒否しました。" */
+static void ally_refuse(int with)
+{
+    FmtSlot slot[1];
+    char nm[DLG_TEXT];
+
+    country_name(with, nm, sizeof nm);
+    slot[0].addr = 0xc52e;
+    slot[0].text = nm;
+    dlg_close();
+    dlg.what = DLG_REFUSED;
+    dlg_say_table_fmt(0x11dd, slot, 1);
+    if (dlg.lines == 0) dlg_say("refused");
+    dlg_say("");
+    dlg_choice(JP_CLOSE, 0);
+    app_sound(APP_SND_FAILED);          /* 0x702 at 0x1d3f */
+    snprintf(status, sizeof status, "%s refused the alliance", nm);
 }
 
 /* The order menu, which is what sub_20f0 puts up once a destination has been
@@ -1402,6 +1605,52 @@ static void order_apply(int after)
                  cx, cy, nm);
 }
 
+/* The warning at 0x2191 and 0x21c3, and the two-line menu at DS:0x10e7 that
+ * follows both of them.  0x21ba and 0x21ec read the answer the same way: nought
+ * - 強行 - falls through to 0x21f5 and the order stands, and anything else goes
+ * back to 0x211a, which is the destination loop again.  A cancel does the same,
+ * so the unit stays in your hand either way.
+ *
+ *   DS:0x1147  目標までの経路に危険な敵がいます
+ *   DS:0x113f  目標までの経路が仲間によってふさがれています
+ */
+#define GUARD_ENEMY_ON_WAY 0x1147
+#define GUARD_FRIENDS_ON_WAY 0x113f
+
+static void dlg_open_force(unsigned tableAddr)
+{
+    dlg_close();
+    dlg.what = DLG_FORCE;
+    dlg_say_table(tableAddr);
+    if (dlg.lines == 0) dlg_say("the way is not clear");
+    dlg_say("");
+    dlg_choices_table(0x10e7);
+    if (dlg.count == 0) { dlg_choice(JP_CLOSE, 1); }
+    app_sound(APP_SND_FAILED);          /* 0x402 at 0x2193 and 0x21c5 */
+}
+
+/* 0x21f5: the destination is settled.  The confirm sound goes here rather than
+ * with the pick-up, because this is where the original plays 0x602, and then
+ * the lord skips the menu - 0x2208 tests bit 0x20 and stores 0x2d - while
+ * everyone else is asked. */
+static void order_chosen(void)
+{
+    int cx = orderAt & 0xff, cy = (orderAt >> 8) & 0xff;
+
+    app_sound(APP_SND_OK);                      /* 0x2201 */
+    if (selected >= 0 && (game.unit[selected].state & 0x20)) {
+        int len = game_order(&game, selected, cx, cy, UNIT_STATE_LORD);
+        snprintf(status, sizeof status, len
+                 ? "the lord is walking to %d,%d, %d squares"
+                 : "no way for the lord to reach %d,%d",
+                 cx, cy, len);
+        if (!len) app_sound(APP_SND_FAILED);
+        selected = -1;
+        return;
+    }
+    dlg_open_order(cx, cy);
+}
+
 static void dlg_open_order(int cx, int cy)
 {
     unsigned char t = game.cell[game_cell_index(cx, cy)].tile;
@@ -1468,16 +1717,26 @@ static void icon_press(int idx)
         app_sound(APP_SND_OK);
         dlg_open_view();
         break;
-    /* Each of these opens with sub_b509 and nothing else - 0x1c06, 0x1c36,
-     * 0x1c21 and 0x1c4d all call it and return on the carry. */
+    /* The guards are not all the same, which is worth reading off each handler
+     * rather than assuming:
+     *
+     *   0x1c06  TAX    sub_b509 AND sub_b571 - it changes your own rate, so it
+     *                  needs a country as well as a stage
+     *   0x1c36  INFO   sub_b509
+     *   0x1c4d  ZOOM   sub_b509
+     *   0x1c21  SPEED  nothing at all.  It goes straight to sub_727a, so the
+     *                  speed can be set on the title screen before a stage is
+     *                  even loaded, and this port refusing it was its own idea.
+     *   0x1cb0  ALLY   all three
+     */
     case ICON_TAX:
         if (!guard_stage()) break;
+        if (!guard_has_land()) break;
         app_sound(APP_SND_OK); dlg_open_tax();   break;
     case ICON_INFO:
         if (!guard_stage()) break;
         app_sound(APP_SND_OK); dlg_open_info();  break;
     case ICON_SPEED:
-        if (!guard_stage()) break;
         app_sound(APP_SND_OK); dlg_open_speed(); break;
     case ICON_ZOOM:
         if (!guard_stage()) break;
@@ -1543,6 +1802,13 @@ static void dlg_cancel(void)
         selected = -1;
         app_sound(APP_SND_FAILED);          /* 0x0702 at 0x22d3 */
         snprintf(status, sizeof status, "cancelled");
+        break;
+    /* 0x21b7 sends the warning's cancel back to 0x211a, not to 0x22ce: the
+     * unit stays in your hand and you pick a different square. */
+    case DLG_FORCE:
+        dlg_close();
+        snprintf(status, sizeof status,
+                 "pick another square - the unit is still yours");
         break;
     case DLG_FELL:
     case DLG_OVER:
@@ -1626,19 +1892,17 @@ static void dlg_confirm(void)
         break;
     }
     case DLG_ALLY: {
-        /* An alliance holds from both ends, and sub_b102 breaks it from both
-         * ends when a country falls, so it is set the same way. */
-        Side *me = &game.side[game.human < 0 ? 0 : game.human];
-        if (me->ally < PLAYERS) game.side[me->ally].ally = 0x80;
-        if (value < PLAYERS) {
-            me->ally = (unsigned char)value;
-            game.side[value].ally = (unsigned char)game.human;
-            snprintf(status, sizeof status, "allied with country %d", value);
-        } else {
-            me->ally = 0x80;
-            snprintf(status, sizeof status, "no alliance");
-        }
-        dlg_close();
+        int mine = game.human < 0 ? 0 : game.human;
+
+        /* 0x1d0c and 0x1d18: your own country and a fallen one send the menu
+         * straight back to waiting, with no sound and no message. */
+        if (value == mine || value < 0 || value >= PLAYERS ||
+            !game.side[value].alive || game.side[value].flag)
+            break;                      /* the window stays up */
+        if (game.side[value].landTotal > game.side[mine].landTotal)
+            ally_refuse(value);
+        else
+            ally_strike(value);
         break;
     }
     case DLG_ORDER: {
@@ -1655,6 +1919,17 @@ static void dlg_confirm(void)
     }
     case DLG_ORDER2:
         order_apply(value);
+        break;
+    case DLG_FORCE:
+        /* 0x21ba and 0x21ec: nought is 強行 and goes on, anything else goes
+         * back to choosing a destination with the unit still held. */
+        dlg_close();
+        if (value == 0) {
+            order_chosen();
+        } else {
+            snprintf(status, sizeof status,
+                     "pick another square - the unit is still yours");
+        }
         break;
     default:
         dlg_close();
@@ -2151,6 +2426,16 @@ static void confirm_at(int cx, int cy)
                      "%d,%d: none of yours there", cx, cy);
             return;
         }
+        /* 0x210e: "test byte ptr [si], 2" and a dying unit is refused with
+         * the same 0x402 as an empty square.  Nothing in this port stopped
+         * you picking one up, and then the order was stored on a unit that
+         * was about to be freed. */
+        if (game.unit[who].flags & 2) {
+            app_sound(APP_SND_NO);
+            snprintf(status, sizeof status,
+                     "%d,%d: that one is dying", cx, cy);
+            return;
+        }
         app_sound(APP_SND_OK);                  /* 0x2201 */
         selected = who;
         snprintf(status, sizeof status,
@@ -2159,22 +2444,29 @@ static void confirm_at(int cx, int cy)
                  cx, cy, game.unit[who].carrying);
         return;
     }
-    /* A destination has been named, so the order menu goes up - which is what
-     * sub_20f0 does, rather than deciding for the player from the terrain.  The
-     * one exception is the lord, for which sub_20f0 skips the menu (0x2208
-     * tests bit 0x20 and jumps straight to storing the destination): it has one
-     * thing it can do, which is walk. */
-    if (game.unit[selected].state & 0x20) {
-        int len = game_order_move(&game, selected, cx, cy);
-        app_sound(len ? APP_SND_OK : APP_SND_FAILED);
-        snprintf(status, sizeof status, len
-                 ? "the lord is walking to %d,%d, %d squares"
-                 : "no way for the lord to reach %d,%d",
-                 cx, cy, len);
-        selected = -1;
+    /* A destination has been named.  Before anything else 0x2136 asks how
+     * clear the way is, three times over, and only the careful answer goes
+     * straight through - see game_route_tier.  A route that needs walking past
+     * a dangerous enemy or through our own allies puts up the warning and the
+     * 強行 / 再選択 menu; no route at all just plays 0x402 and leaves the unit
+     * in your hand to be sent somewhere else. */
+    orderAt = (cy << 8) | cx;
+    switch (game_route_tier(&game, selected, cx, cy)) {
+    case 2:
+        break;
+    case 1:
+        dlg_open_force(GUARD_ENEMY_ON_WAY);
+        return;
+    case 0:
+        dlg_open_force(GUARD_FRIENDS_ON_WAY);
+        return;
+    default:
+        app_sound(APP_SND_FAILED);              /* 0x2188, then back to 0x211a */
+        snprintf(status, sizeof status, "no way to %d,%d at all - pick another",
+                 cx, cy);
         return;
     }
-    dlg_open_order(cx, cy);
+    order_chosen();
 }
 
 /* Where the dialog is drawn, so a click can be turned back into a line. */

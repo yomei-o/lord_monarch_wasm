@@ -92,7 +92,15 @@ LordMonarch().then((m) => {
   // the geometry in app.c.  What a command answers has to appear in a dialog on
   // the game's own screen, not in the host's status line, so these check
   // lm_dialog rather than the text under the canvas.
-  const DLG = {NONE: 0, INFO: 1, TAX: 2, SPEED: 3, ZOOM: 4, ALLY: 5, ORDER: 6};
+  const DLG = {NONE: 0, INFO: 1, TAX: 2, SPEED: 3, ZOOM: 4, ALLY: 5, ORDER: 6,
+               MAPSEL: 11, ORDER2: 12};
+  // sub_20f0's menu is the game's own twelve, in the order the name records
+  // come off the floppy, and the choice IS the low nibble of the state:
+  //   0 wait 1 auto 2 hold 3 reinforce 4 raze 5 village 6 fence
+  //   7 bridge 8 cultivate 9 unfence 10 unbridge 11 seal
+  // Anything above three opens the follow-up window at 0x2241, so an order
+  // takes two confirms.
+  const ORDER = {WAIT: 0, AUTO: 1, BRIDGE: 7, UNBRIDGE: 10};
   m._lm_key(KEY.TILE16);
   const icon = (idx) => {
     const col = [8, 40][idx % 2], row = [24, 56, 120, 184, 248, 280, 312][idx >> 1];
@@ -189,14 +197,26 @@ LordMonarch().then((m) => {
   // The wording depends on whether a font image is present, so this checks the
   // shape of the menu rather than its text: a heading, a blank, and then walk,
   // bridge and nothing.
-  const menuOk = m._lm_dialog() === DLG.ORDER && m._lm_dialog_lines() === 5;
-  console.log(`${menuOk ? 'ok  ' : 'FAIL'}  the order menu has the three ` +
-              `choices water allows (${m._lm_dialog_lines()} lines)`);
+  const menuOk = m._lm_dialog() === DLG.ORDER && m._lm_dialog_lines() === 12;
+  console.log(`${menuOk ? 'ok  ' : 'FAIL'}  the order menu is the game's own ` +
+              `twelve (${m._lm_dialog_lines()} lines)`);
   if (!menuOk) process.exit(1);
-  m._lm_key(KEY.DOWN);            // WALK THERE -> BRIDGE IT
-  m._lm_key(KEY.START);
-  const bridged = m.UTF8ToString(m._lm_status());
-  const bridgeOk = /^bridge 12,4/.test(bridged);
+  // Pick a choice by walking to it, the way the keys do, and answer the
+  // follow-up window that anything above three brings up.
+  const chooseOrder = (k) => {
+    for (let i = 0; i < 12; i++) m._lm_key(KEY.UP);
+    for (let i = 0; i < k; i++) m._lm_key(KEY.DOWN);
+    m._lm_key(KEY.START);
+    if (k > 3) {
+      if (m._lm_dialog() !== DLG.ORDER2) return 'no follow-up window';
+      m._lm_key(KEY.START);           // "auto afterwards", the first line
+    }
+    return m.UTF8ToString(m._lm_status());
+  };
+  const bridged = chooseOrder(ORDER.BRIDGE);
+  // The name is the floppy's, so this checks the square and the state byte:
+  // 7 | 0x10, with the follow-up nought in the top two bits.
+  const bridgeOk = /12,4 - state 17/.test(bridged);
   console.log(`${bridgeOk ? 'ok  ' : 'FAIL'}  and choosing it gives the order: ` +
               `${bridged}`);
   if (!bridgeOk) process.exit(1);
@@ -223,10 +243,8 @@ LordMonarch().then((m) => {
   console.log(`${keyMenuOk ? 'ok  ' : 'FAIL'}  confirm put the order menu up: ` +
               `${dlgText().slice(0, 60)}`);
   if (!keyMenuOk) process.exit(1);
-  m._lm_key(KEY.DOWN);
-  m._lm_key(KEY.START);
-  st = m.UTF8ToString(m._lm_status());
-  const bridgedByKey = /^bridge 12,4/.test(st);
+  st = chooseOrder(ORDER.BRIDGE);
+  const bridgedByKey = /12,4 - state 17/.test(st);
   console.log(`${bridgedByKey ? 'ok  ' : 'FAIL'}  and the order was given: ${st}`);
   if (!bridgedByKey) process.exit(1);
 
@@ -282,9 +300,7 @@ LordMonarch().then((m) => {
     }
     move(12, 4);
     m._lm_key(KEY.START);                 // the order menu
-    m._lm_key(KEY.DOWN);                  // walk -> bridge
-    m._lm_key(KEY.START);
-    console.log(`ok    ordered: ${m.UTF8ToString(m._lm_status())}`);
+    console.log(`ok    ordered: ${chooseOrder(ORDER.BRIDGE)}`);
 
     let built = -1;
     for (let i = 0; i < 400 && built < 0; i++) {
@@ -306,11 +322,9 @@ LordMonarch().then((m) => {
     move(12, 4);
     m._lm_key(KEY.START);
     const lines = m._lm_dialog_lines();
-    console.log(`${lines === 5 ? 'ok  ' : 'FAIL'}  a bridge offers walk, break ` +
-                `and nothing (${lines} lines)`);
-    m._lm_key(KEY.DOWN);                  // walk -> break
-    m._lm_key(KEY.START);
-    console.log(`ok    ordered: ${m.UTF8ToString(m._lm_status())}`);
+    console.log(`${lines === 12 ? 'ok  ' : 'FAIL'}  a bridge still offers all ` +
+                `twelve, coloured (${lines} lines)`);
+    console.log(`ok    ordered: ${chooseOrder(ORDER.UNBRIDGE)}`);
 
     let broke = -1;
     for (let i = 0; i < 800 && broke < 0; i++) {

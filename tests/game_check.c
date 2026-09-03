@@ -988,6 +988,113 @@ int main(int argc, char **argv)
         printf("the tileset names: 22 records, and the states line up\n");
     }
 
+    /* The three route tiers of sub_20f0.  The three blockers are nested - no
+     * blocker at all lets through everything sub_bd3b does, which lets through
+     * everything sub_bd84 does - so a square that answers at any tier has to be
+     * reachable on the terrain alone, which is what game_path_to measures.  A
+     * tier that claimed more than the plain fill would mean the blocking had
+     * gone the wrong way round somewhere. */
+    {
+        Map m;
+        int seen[4];
+        int i, t, bad = 0, asked = 0;
+
+        memset(seen, 0, sizeof seen);
+        if (gfx_load_map(&m, d, "B_051.MAP")) {
+            game_init(g, &m);
+            for (t = 0; t < 4000; t++) game_step(g);
+            for (i = 0; i < UNIT_SLOTS; i++) {
+                int x, y;
+
+                if (game_unit_free(g, i)) continue;
+                for (y = 2; y < MAP_H - 2; y += 3)
+                    for (x = 2; x < MAP_W - 2; x += 3) {
+                        int tier = game_route_tier(g, i, x, y);
+                        int plain;
+
+                        asked++;
+                        seen[tier < 0 ? 3 : tier]++;
+                        if (tier < 0) continue;
+                        plain = game_path_to(g, i, x, y);
+                        if (plain <= 0) bad++;
+                    }
+            }
+        }
+        /* The two branches that only fire under the right circumstances, made
+         * to fire, because in an ordinary game they need a weak unit standing
+         * beside a strong stranger and that is not something a fixed number of
+         * ticks can be relied on to produce.
+         *
+         * The castle's only way out is the gate below its middle, so a unit put
+         * there is on the route to everything.  With our own carry at nought,
+         * 0xbdc7's "cmp bp, bx / ja skip" cannot succeed and sub_bd84 blocks
+         * while sub_bd3b does not: tier 1.  Name that unit's side as our ally
+         * and 0xbdaa matches instead, which both blockers refuse, so only the
+         * attempt with no blocker at all gets through: tier 0.  And a stranger
+         * we outcarry by more than half again is walked over: tier 2.
+         */
+        {
+            Map m2;
+            int lord, cx, cy, gate, beyond, slot = -1;
+
+            gfx_load_map(&m2, d, "B_000.MAP");
+            game_init(g, &m2);
+            lord = g->side[0].lord;
+            cx = g->side[0].pos & 0xff;
+            cy = g->side[0].pos >> 8;
+            gate = game_cell_index(cx, cy + 1);
+            beyond = game_cell_index(cx, cy + 3);
+            /* Whoever the initialiser put in the gate has to move aside. */
+            if (g->occupant[gate] >= 0) {
+                int had = g->occupant[gate];
+                g->unit[had].flags |= 0x80;
+                g->occupant[gate] = -1;
+            }
+            for (i = 0; i < UNIT_SLOTS; i++)
+                if (game_unit_free(g, i)) { slot = i; break; }
+            checkf(slot >= 0, "no free unit slot to stand in the gate", 0, 0, 0);
+            if (slot >= 0) {
+                memset(&g->unit[slot], 0, sizeof g->unit[slot]);
+                g->unit[slot].pos = (unsigned short)(((cy + 1) << 8) | cx);
+                g->unit[slot].at = (unsigned short)(gate * 2);
+                g->unit[slot].side = 1;
+                g->unit[slot].link = 0xff;
+                g->unit[slot].carrying = 100;
+                g->occupant[gate] = (short)slot;
+                g->stamp++;
+
+                g->unit[lord].carrying = 1000;      /* ten times over */
+                check(game_route_tier(g, lord, cx, cy + 3) == 2,
+                      "a stranger we outcarry should not stop us");
+                g->unit[lord].carrying = 0;
+                check(game_route_tier(g, lord, cx, cy + 3) == 1,
+                      "an empty-handed unit should be stopped by a stranger");
+                g->side[0].ally = 1;
+                check(game_route_tier(g, lord, cx, cy + 3) == 0,
+                      "an ally should block both blockers");
+                g->unit[lord].carrying = 1000;
+                check(game_route_tier(g, lord, cx, cy + 3) == 0,
+                      "an ally blocks however much we carry");
+                g->side[0].ally = 0x80;
+                /* And with the gate walled off there is no way at all. */
+                g->cell[gate].tile = CELL_IMPASSABLE;
+                g->stamp++;
+                checkf(game_route_tier(g, lord, cx, cy + 3) == -1,
+                       "a walled gate should leave no route, cell %d",
+                       beyond, 0, 0);
+                printf("the blockers: 2 past a stranger, 1 empty-handed, "
+                       "0 through an ally, -1 walled in\n");
+            }
+        }
+
+        checkf(asked > 0, "no route questions could be asked", 0, 0, 0);
+        checkf(!bad, "%d of %d routes answered a tier the plain fill denies",
+               bad, asked, 0);
+        printf("route tiers over %d questions: clear %d, "
+               "past an enemy %d, through friends %d, none %d\n",
+               asked, seen[2], seen[1], seen[0], seen[3]);
+    }
+
     disk_close(d);
     free(g);
     if (failures) {
