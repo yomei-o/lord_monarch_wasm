@@ -169,6 +169,20 @@ static Bank bank;
  * to a square in the country's colour, which at least says where a unit is. */
 static Bank chars;
 static int charsOk;
+/* C_ICON.DAT, the sheet the windows' own furniture comes off.
+ *
+ * sub_8789 draws one 16x16 from segment 0x3000 + piece * 8, which is 128 bytes
+ * a piece - sixteen rows of two bytes in each of four planes, and its own reads
+ * take the planes at +0, +0x20, +0x40 and +0x60, which is exactly the order
+ * gfx_load_bank unpacks a .CH4 in.  0x5cef reads the file to 0x7000:5000, so
+ * piece 0x8a0 is its first: 0x30000 + 0x8a0 * 128 is 0x70000 + 0x5000.
+ *
+ * 3956 bytes of BZ come out as 8704, which is 68 pieces.  What is on it:
+ * 0..3 are odds and ends, 4..7 the slider's rail and knob, then the panel's
+ * own icons as 2x2 groups, then the editor's key caps and four kanji. */
+#define ICON_PIECE_BASE 0x8a0
+static Bank icons;
+static int iconsOk;
 static Font font;
 /* The machine's font ROM, if one has been handed over.  With it the dialogs say
  * what the original says; without it they fall back to English, because the
@@ -822,6 +836,9 @@ int app_show_map(int number, int size)
         snprintf(status, sizeof status, "%s: %s", bankName, disk_error());
         return 0;
     }
+    /* The window furniture, which does not depend on the tileset. */
+    if (!iconsOk) iconsOk = gfx_load_bank(&icons, disk, "C_ICON.DAT", 16);
+
     /* The character bank, when there is one for this size. */
     gfx_free_bank(&chars);
     charsOk = 0;
@@ -3365,7 +3382,44 @@ void app_render(void)
      *
      * The width here is taken from the longest line rather than fixed, which
      * is what those descriptors do by carrying their own. */
-    if (dlg.what != DLG_NONE && frameOk) {
+    /* The tax window is not a box of text: sub_4e49 builds a bar out of the
+     * icon sheet and puts two knobs on it.
+     *
+     *   0x4b61   the frame, bx = 0x0101 and cx = 0x1302 - cell (1,1) off the
+     *            map frame's corner at (96,8), so (112,24), nineteen cells
+     *            wide and two lines deep
+     *   0x4e53   the rail at VRAM 0xc8f, which is row 40 byte 15 = (120,40):
+     *            piece 0x8a4, then fifteen of 0x8a5, then one 0x8a6
+     *   0x4e94   a knob, piece 0x8a7, at 0xc90 + (0x14 - (purse >> 8)) - the
+     *            purse, clamped at nought, not the rate
+     *   0x4eca   the rate's knob, same piece, at 0xc90 + [bx+0x12]
+     *   0x4ed3   DS:0x1ae4 - "@2t@o@2b%" - at 0xcb1, which is (392,40)
+     *
+     * 0xc90 is row 40 byte 16, so a step of the rate is eight pixels and the
+     * rate's thirty-one positions cover 128..368 inside a rail that runs
+     * 120..392.
+     */
+    if (dlg.what == DLG_TAX && frameOk && iconsOk) {
+        int mine = game.human < 0 ? 0 : game.human;
+        unsigned long purse = game.side[mine].funds;
+        int rate = game.side[mine].rate;
+        long knob = purse >> 16 ? 0 : 0x14 - (long)((purse >> 8) & 0xff);
+        char buf[16];
+        int i;
+
+        if (knob < 0) knob = 0;
+        gfx_window(&scr, frameArt, 112, 24, 19, 2);
+        gfx_blit_tile(&scr, &icons, 0x8a4 - ICON_PIECE_BASE, 120, 40);
+        for (i = 0; i < 15; i++)
+            gfx_blit_tile(&scr, &icons, 0x8a5 - ICON_PIECE_BASE,
+                          120 + 16 + i * 16, 40);
+        gfx_blit_tile(&scr, &icons, 0x8a6 - ICON_PIECE_BASE, 120 + 16 * 16, 40);
+        gfx_blit_tile(&scr, &icons, 0x8a7 - ICON_PIECE_BASE,
+                      128 + (int)knob * 8, 40);
+        gfx_blit_tile(&scr, &icons, 0x8a7 - ICON_PIECE_BASE, 128 + rate * 8, 40);
+        snprintf(buf, sizeof buf, "%2d%%", rate);
+        gfx_text_sjis(&scr, &font, &fontRom, 392, 40, buf, 7);
+    } else if (dlg.what != DLG_NONE && frameOk) {
         int i, longest = 0, cellsW, x, y;
 
         for (i = 0; i < dlg.lines; i++) {
