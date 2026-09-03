@@ -54,6 +54,14 @@
 #define JP_ALLY_NONE     JP2("NO ALLIANCE", "\x93\xaf\x96\xbf\x82\xb5\x82\xc8\x82\xa2")
 #define JP_CLOSE         JP2("CLOSE", "\x95\xc2\x82\xb6\x82\xe9")
 #define JP_ORDER_TITLE   JP2("SQUARE %d,%d - TILE %02x", "\x8d\xc0\x95W : %d , %d   %02x")
+/* The three tails the follow-up window at 0x2241 builds its lines out of, and
+ * they are the game's own bytes: DS:0x1dee is "@16t@s\x82\xf0\x8d\x73\x82\xa4"
+ * - the chosen order, then "を行う" - DS:0x15cd ends "にする" and DS:0x15e7
+ * ends "を継続".  The names themselves come off the floppy, so only the tails
+ * need to be here. */
+#define JP_ORDER_DO      JP2(" - DO IT", "\x82\xf0\x8d\x73\x82\xa4")
+#define JP_ORDER_THEN    JP2(" AFTERWARDS", "\x82\xc9\x82\xb7\x82\xe9")
+#define JP_ORDER_KEEP    JP2(" AGAIN", "\x82\xf0\x8c\x70\x91\xb1")
 #define JP_WALK          JP2("WALK THERE", "\x82\xb1\x82\xb1\x82\xdc\x82\xc5\x90i\x8cR")
 #define JP_BRIDGE        JP2("BRIDGE IT  30 A DEPTH", "\x8b\xb4\x82\xf0\x8a|\x82\xaf\x82\xe9")
 #define JP_FELL          JP2("CLEAR THE WOOD", "\x97\xd1\x82\xf0\x94\xb0\x82\xe9")

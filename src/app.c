@@ -131,6 +131,9 @@ static int screen_to_icon(int x, int y);
 static void confirm_at(int cx, int cy);
 static void dlg_cancel(void);
 static void dlg_confirm(void);
+static void dlg_open_order2(void);
+static void order_apply(int after);
+static void order_name(int k, char *out, int max);
 static void cursor_move(int dx, int dy);
 static void dlg_follow(void);
 static void follow_cursor(void);
@@ -180,7 +183,7 @@ static FontRom fontRom;
 #define DLG_TEXT 34
 enum {
     DLG_NONE, DLG_INFO, DLG_TAX, DLG_SPEED, DLG_ZOOM, DLG_ALLY, DLG_ORDER,
-    DLG_FELL, DLG_OVER, DLG_REFUSED, DLG_VIEW, DLG_MAPSEL
+    DLG_FELL, DLG_OVER, DLG_REFUSED, DLG_VIEW, DLG_MAPSEL, DLG_ORDER2
 };
 static struct {
     int what;                       /* DLG_* , DLG_NONE when closed */
@@ -200,25 +203,27 @@ static struct {
     int window;                     /* cl + 1 */
     int total;                      /* ch + 1, when it is longer than `count` */
     char item[GFX_MAPS][DLG_TEXT];  /* the whole list, when there is one */
+    /* The colour of each line.  The original carries it in the text itself:
+     * bytes 0x10..0x1f are a control that sub_759b turns into "[0x32a9] = byte
+     * - 0x10", and the order menu picks between DS:0x1306 and DS:0x1308 - a
+     * lone 0x16 and a lone 0x17 - to say whether a line is available.  Here the
+     * colour is kept beside the text instead, because dlg_clean has already
+     * thrown the controls away by the time the line is drawn. */
+    unsigned char colour[DLG_LINES];
 } dlg;
 
 static void dlg_close(void)
 {
     dlg.what = DLG_NONE;
     dlg.lines = dlg.count = dlg.pick = 0;
+    dlg.window = dlg.top = dlg.total = 0;
 }
 
 static void dlg_say(const char *t)
 {
     if (dlg.lines >= DLG_LINES) return;
     snprintf(dlg.line[dlg.lines], DLG_TEXT, "%s", t);
-    dlg.lines++;
-}
-
-static void dlg_sayf(const char *fmt, int a, int b, int c)
-{
-    if (dlg.lines >= DLG_LINES) return;
-    snprintf(dlg.line[dlg.lines], DLG_TEXT, fmt, a, b, c);
+    dlg.colour[dlg.lines] = 7;
     dlg.lines++;
 }
 
@@ -1234,33 +1239,195 @@ static void dlg_open_ally(void)
 
 /* The order menu, which is what sub_20f0 puts up once a destination has been
  * named: the choices are the ones the square allows. */
+/* The order menu, and every line of it is the game's own.
+ *
+ * sub_20f0 does not work the choices out from the terrain, which is what this
+ * port used to do.  It puts up the descriptor at DS:0x1093, which is a
+ * twelve-line window whose single template lives at DS:0x15a5:
+ *
+ *     "@.2t" "@?" "@.2t" "@?" "@.2t" "@S" 0x17
+ *
+ * with the words c4f8 0000 1308 1306 c512 0000 12f9 12fe 12b7 0000 after its
+ * terminator.  sub_759b keeps the line number in [0xc54c], and "@.2t" means
+ * "take that line number, multiply by two, add the next argument and write the
+ * answer into the argument after it" - so line k indexes three parallel
+ * tables.  "@?" then reads the word it just addressed and draws one of two
+ * strings depending on whether it is zero, and "@S" draws the string a pointer
+ * points at.  Written out, line k is
+ *
+ *     colour   [0xc4f8 + k*2] ? DS:0x1308 (0x17) : DS:0x1306 (0x16)
+ *     colour   [0xc512 + k*2] ? nothing          : DS:0x12fe (0x12)
+ *     the name *(word *)(DS:0x12b7 + k*2), which is 0xc692 + k*16
+ *
+ * and 0xc692 is record six of the twenty-two that gfx_load_names already
+ * pulls out of the tail of B_0n0L.CH4.  So the twelve names are on the floppy,
+ * different for every tileset, and the demo disk reads:
+ *
+ *     0 待機      1 オート    2 拠点防衛  3 援軍
+ *     4 村を壊す  5 村を作る  6 柵を作る  7 橋を作る
+ *     8 開墾      9 柵を壊す 10 橋を壊す 11 洞窟封鎖
+ *
+ * The two masks come from sub_ab3e, which is called with the destination at
+ * 0x2215 just before the window goes up.  It reads the destination's terrain
+ * byte, sorts it into one of eleven buckets by a ladder of ranges, and expands
+ * two twelve-bit masks out of the four bytes at DS:0x22f5 + bucket * 4 - one
+ * word a line, 0xffff or 0.  The buckets say what the terrain bytes mean:
+ *
+ *     0x08..0x0b  a village   - 村を壊す and 村を作る
+ *     0x01..0x04  waste       - 開墾 only
+ *     0x7b        a fence     - 柵を作る and 柵を壊す
+ *     0x7a        rock        - 橋を作る and 橋を壊す
+ *     0x20..0x2f  a bridge    - 橋を壊す
+ *     0x30..0x5f  water       - 橋を作る, and nothing else at all
+ *     0x05        a cave      - 洞窟封鎖
+ *     0x14..0x17  a castle    - 村を作る
+ *
+ * The low nibble of the state byte is the choice itself, which is how the five
+ * job handlers this port already had line up: 6 is sub_3f62, 7 sub_4040, 9
+ * sub_41dc, 10 sub_4247 and 11 sub_4304.
+ */
+#define ORDER_MASKS 0x22f5
+
+static int order_bucket(unsigned char t)
+{
+    /* sub_ab3e, 0xab4a onwards.  The ladder tests in this order and the first
+     * range that matches wins, so it is written out the same way. */
+    if (t == 0) return 0;
+    if (t >= 8 && t < 0x0c) return 1;
+    if (t >= 0x0c && t < 0x10) return 2;
+    if (t >= 1 && t < 5) return 3;
+    if (t == 0x7b) return 4;
+    if (t >= 0x20 && t < 0x30) return 5;
+    if (t == 5) return 6;
+    if (t == 0x7a) return 7;
+    if (t >= 0x30 && t < 0x60) return 8;
+    if (t >= 0x14 && t < 0x18) return 9;
+    return 10;
+}
+
+/* The pair of masks for a square, straight out of PROG.DAT so they stay the
+ * game's numbers.  Returns 0 if the table cannot be read, and then everything
+ * is treated as allowed. */
+static int order_masks(unsigned char t, unsigned *m1, unsigned *m2)
+{
+    const unsigned char *p = dat_at(ORDER_MASKS + order_bucket(t) * 4, 4);
+
+    if (!p) { *m1 = 0xfff; *m2 = 0xfff; return 0; }
+    *m1 = (unsigned)(p[0] | (p[1] << 8)) & 0xfff;
+    *m2 = (unsigned)(p[2] | (p[3] << 8)) & 0xfff;
+    return 1;
+}
+
+/* One of the twelve names, cleaned of its controls and its padding. */
+static void order_name(int k, char *out, int max)
+{
+    if (!namesOk || k < 0 || k >= 12) {
+        snprintf(out, max, "order %d", k);
+        return;
+    }
+    dlg_clean((const char *)names[6 + k], out, max);
+}
+
+/* Which choice the first window took, kept while the second is up.  The
+ * original keeps it in [0x3bf4] and reads it back at 0x227b, which is why the
+ * second window can name it: DS:0x1dee is "@16t@sを行う" with 0x3bf4 and
+ * 0xc692 as its arguments. */
+static int orderK;
+static int orderAt;                     /* [0x3ea4], the destination */
+
+/* The follow-up window at 0x2241: what to do once the job is finished.  Three
+ * lines from DS:0x109b, or two from DS:0x10a7 when the job is 橋を作る, and
+ * "ror ah, 2" folds the answer into the top two bits of the state. */
+static void dlg_open_order2(void)
+{
+    char nm[DLG_TEXT], line[DLG_TEXT];
+
+    order_name(orderK, nm, sizeof nm);
+    dlg_close();
+    dlg.what = DLG_ORDER2;
+    snprintf(line, sizeof line, "%s%s", nm, JP_ORDER_DO);
+    dlg_say(line);
+    dlg_say("");
+    order_name(1, nm, sizeof nm);       /* オート */
+    snprintf(line, sizeof line, "%s%s", nm, JP_ORDER_THEN);
+    dlg_choice(line, 0);
+    order_name(0, nm, sizeof nm);       /* 待機 */
+    snprintf(line, sizeof line, "%s%s", nm, JP_ORDER_THEN);
+    dlg_choice(line, 1);
+    /* 0x225a: the third line is missing for choice seven, and the table it
+     * switches to - DS:0x10a7 - is two lines rather than three. */
+    if (orderK != 7) {
+        order_name(orderK, nm, sizeof nm);
+        snprintf(line, sizeof line, "%s%s", nm, JP_ORDER_KEEP);
+        dlg_choice(line, 2);
+    }
+}
+
+/* 0x227b onwards: build the state byte and hand it to the engine.
+ *
+ *     al = the first window's choice
+ *     if al != 1 then al |= 0x10           ; 0x227e
+ *     ror ah, 2                            ; the follow-up, into bits 6 and 7
+ *     al |= ah
+ *     [si+0xa] = al                        ; the unit's state
+ *     [si+8]   = the destination
+ *     [si+0xb] = 0xff
+ *
+ * so choice one - オート - is state 1 and every other choice carries 0x10.
+ * That is why the low nibble lines up with the sixteen handlers at CS:0x3a47.
+ */
+static void order_apply(int after)
+{
+    int cx = orderAt & 0xff, cy = (orderAt >> 8) & 0xff;
+    int who = selected, k = orderK, state, len;
+    char nm[DLG_TEXT];
+
+    dlg_close();
+    selected = -1;
+    if (who < 0 || game_unit_free(&game, who)) {
+        app_sound(APP_SND_FAILED);
+        snprintf(status, sizeof status, "the unit is gone");
+        return;
+    }
+    state = k == 1 ? 1 : (k | 0x10);
+    state |= (after & 3) << 6;
+    order_name(k, nm, sizeof nm);
+    len = game_order(&game, who, cx, cy, state);
+    app_sound(len ? APP_SND_OK : APP_SND_FAILED);
+    if (len)
+        snprintf(status, sizeof status, "%s at %d,%d - state %02x, %d to walk",
+                 nm, cx, cy, state, len);
+    else
+        snprintf(status, sizeof status, "cannot reach %d,%d for %s",
+                 cx, cy, nm);
+}
+
 static void dlg_open_order(int cx, int cy)
 {
     unsigned char t = game.cell[game_cell_index(cx, cy)].tile;
-    int mine = game.human;
+    unsigned m1, m2;
+    int k;
 
+    order_masks(t, &m1, &m2);
     dlg_close();
     dlg.what = DLG_ORDER;
-    dlg.value[0] = (cy << 8) | cx;              /* remembered in value[0] */
-    dlg_sayf(JP_ORDER_TITLE, cx, cy, t);
-    dlg_say("");
-    dlg_choice(JP_WALK, 2);
-    if (t == CELL_ROCK || (t >= CELL_IMPASSABLE && t < CELL_WATER_END))
-        dlg_choice(JP_BRIDGE, UNIT_STATE_BRIDGE);
-    if (t == CELL_WOOD) {
-        dlg_choice(JP_FELL, UNIT_STATE_FELL);
-        dlg_choice(JP_THICKEN, UNIT_STATE_PLANT);
+    orderAt = (cy << 8) | cx;
+    dlg.value[0] = orderAt;
+    for (k = 0; k < 12; k++) {
+        char nm[DLG_TEXT];
+
+        order_name(k, nm, sizeof nm);
+        dlg_choice(nm, k);
+        /* 0x1308 is white and 0x1306 dark; then a clear bit in the second mask
+         * overrides both with DS:0x12fe, which is red.  Read together: white is
+         * what this square is for, dark is possible but not the point, and red
+         * is a square the order means nothing on. */
+        dlg.colour[dlg.lines - 1] =
+            (unsigned char)(!((m2 >> k) & 1) ? 2 : ((m1 >> k) & 1) ? 7 : 6);
     }
-    if (t == 0 || (t >= CELL_TERRITORY0 + 4 && t < CELL_TERRITORY0 + 8))
-        dlg_choice(JP_PLANT, UNIT_STATE_PLANT);
-    if (t >= CELL_TERRITORY0 && t < CELL_TERRITORY0 + PLAYERS &&
-        t - CELL_TERRITORY0 != mine)
-        dlg_choice(JP_ATTACK, UNIT_STATE_PLANT);
-    if (t >= CELL_BRIDGE && t < CELL_BRIDGE_END)
-        dlg_choice(JP_BREAK, UNIT_STATE_BREAK);
-    if (t == CELL_NEST)
-        dlg_choice(JP_NEST, UNIT_STATE_NEST);
-    dlg_choice(JP_NOTHING, 0);
+    /* The selection is remembered between windows, which is what [0x3bf4]
+     * being a static is for. */
+    if (orderK >= 0 && orderK < dlg.count) dlg.pick = orderK;
 }
 
 /* Press one of the panel's fourteen.  The ones this port cannot do say so
@@ -1365,11 +1532,18 @@ static void dlg_follow(void)
 static void dlg_cancel(void)
 {
     switch (dlg.what) {
+    /* 0x2236 sends a cancel to 0x22ce, which is the same place the
+     * destination loop's cancel goes: it plays 0x0702 and drops the whole
+     * thing.  An earlier note here said the unit stayed in your hand, which
+     * came from misreading "jae 0x223b" as the cancel arm rather than the
+     * confirm one. */
     case DLG_ORDER:
+    case DLG_ORDER2:
         dlg_close();
-        snprintf(status, sizeof status,
-                 "still holding the unit - say where it should go");
-        break;                      /* selected is left alone: choose again */
+        selected = -1;
+        app_sound(APP_SND_FAILED);          /* 0x0702 at 0x22d3 */
+        snprintf(status, sizeof status, "cancelled");
+        break;
     case DLG_FELL:
     case DLG_OVER:
     case DLG_REFUSED:
@@ -1468,43 +1642,20 @@ static void dlg_confirm(void)
         break;
     }
     case DLG_ORDER: {
-        int cx = dlg.value[0] & 0xff, cy = dlg.value[0] >> 8;
-        int who = selected, len = 0;
-        dlg_close();
-        selected = -1;
-        if (who < 0 || game_unit_free(&game, who)) {
-            snprintf(status, sizeof status, "the unit is gone");
+        /* 0x223b: choices nought to three go straight through, and anything
+         * above opens the follow-up window before the order is stored. */
+        orderK = value;
+        if (value > 3) {
+            app_sound(APP_SND_OK);
+            dlg_open_order2();
             break;
         }
-        if (value == 0) {
-            app_sound(APP_SND_NO);
-            snprintf(status, sizeof status, "no order given");
-            break;
-        }
-        if (value == 2) {
-            len = game_order_move(&game, who, cx, cy);
-            app_sound(len ? APP_SND_OK : APP_SND_FAILED);
-            snprintf(status, sizeof status, len ? "walking to %d,%d, %d squares"
-                                                : "no way to %d,%d",
-                     cx, cy, len);
-        } else {
-            static const char *what[16] = {
-                0, 0, 0, 0, 0, 0, "plant", "bridge", 0, "clear",
-                "break", "nest", 0, 0, 0, 0
-            };
-            const char *name = what[value & 15] ? what[value & 15] : "order";
-            len = game_order(&game, who, cx, cy, value);
-            app_sound(len ? APP_SND_OK : APP_SND_FAILED);
-            if (len)
-                snprintf(status, sizeof status,
-                         "%s %d,%d - %d squares to walk first", name, cx, cy,
-                         len);
-            else
-                snprintf(status, sizeof status, "cannot reach %d,%d for %s",
-                         cx, cy, name);
-        }
+        order_apply(0);
         break;
     }
+    case DLG_ORDER2:
+        order_apply(value);
+        break;
     default:
         dlg_close();
         break;
@@ -2475,7 +2626,7 @@ void app_render(void)
                         scr.px[(size_t)(ly + j) * SCR_W + x + 16 + k] = 2;
             }
             gfx_text_sjis(&scr, &font, &fontRom, x + 16, ly, dlg.line[i],
-                          (unsigned char)(chosen ? 7 : 7));
+                          dlg.colour[i] ? dlg.colour[i] : 7);
         }
     }
 }

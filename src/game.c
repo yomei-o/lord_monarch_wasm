@@ -1904,6 +1904,14 @@ int game_order_job(Game *g, int slot, int x, int y)
     return game_order(g, slot, x, y, game_job_for(g, x, y));
 }
 
+/* 0x22a2: the five orders that work on the square in front of them. */
+static int order_works_on_square(int order)
+{
+    int n = order & 0x0f;
+
+    return n == 6 || n == 7 || n == 9 || n == 0x0a || n == 0x0b;
+}
+
 int game_order(Game *g, int slot, int x, int y, int order)
 {
     static const signed char dx[4] = {0, 1, 0, -1};
@@ -1917,8 +1925,17 @@ int game_order(Game *g, int slot, int x, int y, int order)
      * target; here that is done by pathing to a neighbour instead, which comes
      * to the same thing and also works when the target cannot be entered at
      * all.  Measuring means asking game_path_to, which leaves its answer on the
-     * unit, so the winner has to be asked for again. */
-    {
+     * unit, so the winner has to be asked for again.
+     *
+     * 0x22a2 is exact about which orders get that treatment: after storing the
+     * state it masks the low nibble and calls sub_c2e7 only for 6, 7, 9, 10 and
+     * 11 - the five that work on a square.  The other seven walk onto the
+     * square itself, so shortening them put every unit one step short of where
+     * it was sent. */
+    if (!order_works_on_square(order)) {
+        best = game_path_to(g, slot, x, y);
+        if (best <= 0) return 0;
+    } else {
         int bx = 0, by = 0;
         for (d = 0; d < 4; d++) {
             int nx = x + dx[d], ny = y + dy[d], len;
@@ -1940,9 +1957,13 @@ int game_order(Game *g, int slot, int x, int y, int order)
     /* A lord keeps its own state: sub_20f0 loads al with 0x2d for it and skips
      * the menu entirely (0x2208), so the 0x20 bit survives and the state stays
      * the one the unit sweep dispatches on. */
+    /* 0x2289 is a plain store - "mov [si+0xa], al" - and al is the whole byte
+     * the menu built: the choice, 0x10 unless the choice was 1, and the second
+     * menu folded into the top two bits by "ror ah, 2".  Keeping old bits here
+     * meant a unit that had once been told to do something afterwards kept
+     * doing it. */
     if (!(g->unit[slot].state & 0x20))
-        g->unit[slot].state =
-            (unsigned char)((g->unit[slot].state & 0xd0) | order);
+        g->unit[slot].state = (unsigned char)order;
     g->unit[slot].retry = 4;
     return best;
 }
