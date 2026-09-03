@@ -144,6 +144,20 @@ int app_font_rom(const unsigned char *data, unsigned n);
 int app_japanese(void);
 /* The two settings the knob windows change, so a test can say what the cancel
  * did without reaching into the game. */
+/* The save slots, for a host that can keep them between visits.  A slot is one
+ * opaque byte array holding both the directory entry the list draws and the
+ * payload, so the store does not need to know the shape of either.  The page
+ * puts each used slot in localStorage and hands them back with app_slot_put on
+ * the way in. */
+int app_save_slots(void);
+int app_slot_used(int at);
+const unsigned char *app_slot_bytes(int at, unsigned *len);
+int app_slot_put(int at, const unsigned char *bytes, unsigned len);
+/* Changes when any slot does, so the host need not copy them all every frame. */
+int app_slot_stamp(void);
+
+/* The day the world is on, so a test can say whether a load put it back. */
+int app_day(void);
 int app_tax(void);
 int app_speed(void);
 

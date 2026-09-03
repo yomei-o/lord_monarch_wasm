@@ -139,10 +139,10 @@
 <!-- BUILD is bumped by "make wasm".  Without it a browser will happily hold
      on to a monarch.js from an earlier build and then fail on whichever
      function was added since - which is exactly what happened once. -->
-<script src="monarch.js?v=94298030"></script>
+<script src="monarch.js?v=ddc16b2b"></script>
 <script>
   // Stamped by tools/stamp.py from the wasm's own hash.
-  window.LM_BUILD = '94298030';
+  window.LM_BUILD = 'ddc16b2b';
 
 (function () {
   'use strict';
@@ -162,6 +162,93 @@
 
   function fail(text) {
     statusEl.textContent = text;
+  }
+
+  // The save slots.  A slot is one opaque byte array on the C side - the
+  // directory entry the list draws and the payload together - so this only
+  // copies bytes in and out and never has to know what is in them.  They go
+  // into localStorage one key a slot, base64 because localStorage holds
+  // strings.  The C side bumps a counter whenever a slot changes, so a frame
+  // only writes when there is something to write.
+  var SLOT_KEY = 'lm.slot.';
+  var slotStamp = -1;
+
+  function bytesToBase64(bytes) {
+    var out = '', chunk = 0x8000, i;
+    for (i = 0; i < bytes.length; i += chunk)
+      out += String.fromCharCode.apply(
+        null, bytes.subarray(i, Math.min(i + chunk, bytes.length)));
+    return btoa(out);
+  }
+
+  function base64ToBytes(text) {
+    var raw = atob(text), out = new Uint8Array(raw.length), i;
+    for (i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i) & 0xff;
+    return out;
+  }
+
+  // Hand whatever the store has back to the game before the first frame.  A
+  // slot the C side rejects - a blob from an older build, say - is dropped
+  // rather than kept around to fail again.
+  function slotsLoad() {
+    var n, i, text, bytes, buf, cap;
+    if (!mod || !mod._lm_save_slots) return;
+    n = mod._lm_save_slots();
+    buf = mod._lm_slot_buffer();
+    cap = mod._lm_slot_capacity();
+    for (i = 0; i < n; i++) {
+      try {
+        text = localStorage.getItem(SLOT_KEY + i);
+      } catch (e) {
+        return;                         // no store at all: nothing to do
+      }
+      if (!text) continue;
+      try {
+        bytes = base64ToBytes(text);
+      } catch (e) {
+        bytes = null;
+      }
+      if (!bytes || bytes.length === 0 || bytes.length > cap) {
+        try { localStorage.removeItem(SLOT_KEY + i); } catch (e) {}
+        continue;
+      }
+      mod.HEAPU8.set(bytes, buf);
+      if (!mod._lm_slot_write(i, bytes.length)) {
+        try { localStorage.removeItem(SLOT_KEY + i); } catch (e) {}
+      }
+    }
+    slotStamp = mod._lm_slot_stamp();
+  }
+
+  function slotsSave() {
+    var n, i, len, buf, bytes;
+    if (!mod || !mod._lm_save_slots) return;
+    n = mod._lm_save_slots();
+    buf = mod._lm_slot_buffer();
+    for (i = 0; i < n; i++) {
+      try {
+        if (!mod._lm_slot_used(i)) {
+          localStorage.removeItem(SLOT_KEY + i);
+          continue;
+        }
+        len = mod._lm_slot_read(i);
+        if (!len) continue;
+        bytes = mod.HEAPU8.subarray(buf, buf + len);
+        localStorage.setItem(SLOT_KEY + i, bytesToBase64(bytes));
+      } catch (e) {
+        // A full or blocked store is not worth stopping the game for.
+        return;
+      }
+    }
+  }
+
+  function slotsSync() {
+    var now;
+    if (!mod || !mod._lm_slot_stamp) return;
+    now = mod._lm_slot_stamp();
+    if (now === slotStamp) return;
+    slotStamp = now;
+    slotsSave();
   }
 
   // No WebGL on purpose: the frame is rasterised in C and handed over as RGBA,
@@ -192,6 +279,7 @@
       dirty = false;
     }
     bgmSync();
+    slotsSync();
     requestAnimationFrame(frame);
   }
 
@@ -504,6 +592,7 @@
       fail('起動できませんでした: ' + m.UTF8ToString(m._lm_status()));
       return;
     }
+    slotsLoad();
     frame();
   }).catch(function (e) {
     fail('起動できませんでした: ' + e);

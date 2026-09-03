@@ -26,6 +26,8 @@
 #define DLG_INFO    1
 #define DLG_TAX     2
 #define DLG_SPEED   3
+#define DLG_SAVE    15
+#define DLG_LOAD    16
 #define DLG_ALLY    5
 #define DLG_FELL    7
 #define DLG_OVER    8
@@ -312,6 +314,62 @@ int main(int argc, char **argv)
                tenths, 0, 0);
         app_key(APP_KEY_START);
         check(app_dialog() == 0, "and any key closes it");
+    }
+
+    /* SAVE and LOAD.  The list is the game's own - DS:0x10bd's one template
+     * indexed by line number over the twelve-byte directory at DS:0xf67e - and
+     * what goes in a slot is the port's own shape, because there is no floppy
+     * here to be byte-compatible with.  What this checks is that the round trip
+     * puts the world back where it was.
+     *
+     * The icons are column 0 of rows 4 and 5: LOAD is index 8 and SAVE 10, and
+     * the rows start at y 248 and 280.
+     */
+    {
+        int k, was, later;
+
+        app_show_map(0, 16);
+        app_key(APP_KEY_RUN);
+        for (k = 0; k < 300; k++) app_render();
+        was = app_day();
+        checkf(was > 0, "the world reached day %d before saving",
+               was, 0, 0);
+
+        app_click(24, 288);                     /* ICON_SAVE */
+        check(app_dialog() == DLG_SAVE, "the save icon opens the slot list");
+        check(app_dialog_lines() == 2 + 10,
+              "ten of the eighty slots are shown");
+        check(strstr(app_dialog_line(2), "----") != NULL,
+              "slot one starts empty");
+        app_key(APP_KEY_START);                 /* write slot one */
+        check(app_dialog() == DLG_SAVE, "the list stays up after a save");
+        {
+            const char *l = app_dialog_line(2);
+            printf("      | %s\n", l);
+            check(strstr(l, "MAP-No.") != NULL,
+                  "and slot one now names a stage");
+        }
+        app_key(APP_KEY_BACK);
+        check(app_dialog() == 0, "cancel is what leaves the list");
+
+        for (k = 0; k < 600; k++) app_render();
+        later = app_day();
+        checkf(later != was, "the world moved from day %d to %d after the save",
+               was, later, 0);
+
+        app_click(24, 256);                     /* ICON_LOAD */
+        check(app_dialog() == DLG_LOAD, "the load icon opens the same list");
+        app_key(APP_KEY_START);
+        check(app_dialog() == 0, "loading closes the list");
+        checkf(app_day() == was, "the load put the day back to %d from %d",
+               app_day(), was, 0);
+
+        /* 0x1f39: an empty slot cannot be chosen - the list stays up. */
+        app_click(24, 256);
+        for (k = 0; k < 5; k++) app_key(APP_KEY_DOWN);
+        app_key(APP_KEY_START);
+        check(app_dialog() == DLG_LOAD, "an empty slot cannot be loaded");
+        app_key(APP_KEY_BACK);
     }
 
     app_shutdown();

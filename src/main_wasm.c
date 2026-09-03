@@ -151,3 +151,37 @@ void lm_render(void)
     for (n = 0; n < (size_t)SCR_W * SCR_H; n++)
         memcpy(rgba + n * 4, &lut[s->px[n] & 15], 4);
 }
+
+/* The save slots, for the page to keep in localStorage.
+ *
+ * A slot is one opaque byte array - the directory entry the list draws and the
+ * payload together - so the page copies bytes and never has to know what is in
+ * them.  Reading uses a staging buffer here rather than handing out a pointer
+ * into the app's own allocation, so nothing but the lm_* names is exported and
+ * a freed slot cannot be read by mistake.
+ */
+static unsigned char slotBuf[24 * 1024];
+
+EMSCRIPTEN_KEEPALIVE int lm_save_slots(void) { return app_save_slots(); }
+EMSCRIPTEN_KEEPALIVE int lm_slot_stamp(void) { return app_slot_stamp(); }
+EMSCRIPTEN_KEEPALIVE int lm_slot_used(int at) { return app_slot_used(at); }
+EMSCRIPTEN_KEEPALIVE unsigned char *lm_slot_buffer(void) { return slotBuf; }
+EMSCRIPTEN_KEEPALIVE int lm_slot_capacity(void) { return (int)sizeof slotBuf; }
+
+/* Copies slot `at` into the buffer and answers its length, or nought. */
+EMSCRIPTEN_KEEPALIVE int lm_slot_read(int at)
+{
+    unsigned n = 0;
+    const unsigned char *p = app_slot_bytes(at, &n);
+
+    if (!p || n == 0 || n > sizeof slotBuf) return 0;
+    memcpy(slotBuf, p, n);
+    return (int)n;
+}
+
+/* Takes `n` bytes out of the buffer as slot `at`. */
+EMSCRIPTEN_KEEPALIVE int lm_slot_write(int at, int n)
+{
+    if (n <= 0 || (unsigned)n > sizeof slotBuf) return 0;
+    return app_slot_put(at, slotBuf, (unsigned)n);
+}

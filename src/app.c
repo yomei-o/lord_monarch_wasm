@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 /* The window WAKU leaves for the map, measured off the frame itself: the black
  * rectangle runs x 96..479 and y 8..391, which is 24 by 24 squares of 16.  The
@@ -134,6 +135,8 @@ static void dlg_confirm(void);
 static void dlg_open_order2(void);
 static void dlg_open_force(unsigned tableAddr);
 static void dlg_open_drive(void);
+static void dlg_open_slots(int what);
+static void slot_lines(void);
 static void dlg_open_order(int cx, int cy);
 static void order_chosen(void);
 static void order_apply(int after);
@@ -207,7 +210,7 @@ static FontRom fontRom;
 enum {
     DLG_NONE, DLG_INFO, DLG_TAX, DLG_SPEED, DLG_ZOOM, DLG_ALLY, DLG_ORDER,
     DLG_FELL, DLG_OVER, DLG_REFUSED, DLG_VIEW, DLG_MAPSEL, DLG_ORDER2,
-    DLG_FORCE, DLG_DRIVE
+    DLG_FORCE, DLG_DRIVE, DLG_SAVE, DLG_LOAD
 };
 static struct {
     int what;                       /* DLG_* , DLG_NONE when closed */
@@ -310,6 +313,52 @@ typedef struct {
 } StageRecord;
 
 static StageRecord record[GFX_MAPS];
+
+/* The save slots.  DS:0xf67e holds eighty records of twelve bytes and 0x1f39
+ * reads the first word of one to see whether it holds anything:
+ *
+ *   +0   non-zero when the slot is used
+ *   +2   the day the stage was on, nought meaning it was saved at the start
+ *   +4   the stage number, nought meaning the slot is only a cursor position
+ *   +6   year, +7 month, +8 day, +9 hour, +10 minute
+ *
+ * and DS:0x170c draws a line of the list out of them - see the note on
+ * dlg_open_slots.  What goes in the file is another matter: sub_6473 writes 628
+ * bytes of progress from DS:0xcc00 and 87 bytes of globals from DS:0x3bc2, and
+ * then the board on top when a stage is under way.  A browser has no floppy to
+ * be byte-compatible with, so the port keeps the same facts in its own shape
+ * and leaves the directory looking exactly like the game's. */
+#define SAVE_SLOTS 80
+#define SAVE_DIR_AT 0xf67eu
+#define SAVE_LIST_AT 0x10bd         /* the descriptor, ten of eighty visible */
+#define SAVE_TITLE_AT 0x1189        /* ゲームセーブ */
+#define LOAD_TITLE_AT 0x1183        /* ゲーム・ロード */
+#define SAVE_MAGIC 0x314d4cadu      /* "LM" and a format number */
+
+typedef struct {
+    unsigned short used, days, map;
+    unsigned char yy, mm, dd, hh, mi;
+    unsigned char *blob;
+    unsigned blobLen;
+} SaveSlot;
+
+static SaveSlot slotDir[SAVE_SLOTS];
+/* Bumped whenever a slot changes, so a host that keeps them somewhere can tell
+ * without copying eighty of them every frame. */
+static int slotStamp;
+
+typedef struct {
+    unsigned magic;
+    /* The directory fields travel with the payload so that one byte array is a
+     * whole slot: the page hands it to localStorage and back without knowing
+     * anything about what is in it. */
+    unsigned short used, days, map;
+    unsigned char yy, mm, dd, hh, mi, pad;
+    unsigned short mapNumber, tileSize, reached, hasGame;
+    unsigned short day, daysLeft, spare[2];
+    StageRecord record[GFX_MAPS];
+    Game game;
+} SaveBlob;
 /* 0xb3d1 and 0xb3d7: the record is only replaced, and [0xce70] only moved,
  * when the score beats the one already stored AND is not nought.  So clearing
  * a stage with nothing left to your name does not open the next one. */
@@ -1063,10 +1112,10 @@ typedef struct {
 } FmtSlot;
 
 static int fmt_render(unsigned strAddr, const FmtSlot *slot, int slots,
-                      char *out, int max, int depth)
+                      char *out, int max, int depth, int line, unsigned inBase)
 {
     const unsigned char *str;
-    unsigned at, based = 0, pending = 0;
+    unsigned at, based = inBase, pending = 0;
     int n = 0, len = 0, havePending = 0;
 
     if (max <= 1 || depth > 4) return 0;
@@ -1089,6 +1138,12 @@ static int fmt_render(unsigned strAddr, const FmtSlot *slot, int slots,
             if (*str) str++;
             if (letter == '?') eats = 3;
             else if (letter == 't') eats = pad == '0' ? 1 : 2;
+            /* "@O" is the one code that reads no argument: 0x7754 takes the
+             * caller's base off the stack and never touches bx.  Letting it
+             * eat a word put every field of the save list one along, which
+             * showed up as a date that read 9/03/11 50 instead of 26/09/03
+             * 11:50 and a missing MAP-No. */
+            else if (letter == 'O') eats = 0;
             if (havePending) {
                 arg = pending;
                 havePending = 0;
@@ -1109,7 +1164,15 @@ static int fmt_render(unsigned strAddr, const FmtSlot *slot, int slots,
                 long idx = 0;
                 int j;
 
-                if (pad == '0') continue;
+                /* "@.Nt" is the same sum with [0xc54c] - the line being drawn -
+                 * in place of the first argument, and it takes one word rather
+                 * than two (0x77b4).  That is how one template becomes eighty
+                 * lines of a save list. */
+                if (pad == '0') {
+                    pending = (unsigned)((long)(line - 1) * width + (long)arg);
+                    havePending = 1;
+                    continue;
+                }
                 w2 = dat_at(at - 2, 2);
                 base = w2 ? (unsigned)(w2[0] | (w2[1] << 8)) : 0;
                 for (j = 0; j < slots; j++)
@@ -1122,11 +1185,28 @@ static int fmt_render(unsigned strAddr, const FmtSlot *slot, int slots,
                 continue;
             }
             /* "@o" is not drawn: it says where the arguments after it are
-             * measured from.  0x7735 with no "@." reads the word at the
-             * argument and takes that as the base, which is how DS:0x1a54 gets
-             * at a side record it only knows through [0x1aa3]. */
-            if (letter == 'o' || letter == 'O') { based = FMT_BASED; continue; }
-            key = based ? FMT_BASED + arg : arg;
+             * measured from, and the three forms differ.
+             *
+             *   "@o"   0x7735 with ch = 0x20: si = [bx], then the base is the
+             *          WORD AT that address - an address of the original's own
+             *          memory, which this port has no equivalent of, so the
+             *          base becomes FMT_BASED and the slots are keyed by the
+             *          offset alone.  DS:0x1a54's side record is one of these.
+             *   "@.o"  0x7746: the base is the argument itself, which "@Nt"
+             *          has usually just filled in - a real address the port can
+             *          answer for, so it is used as it stands.
+             *   "@O"   0x7754: the caller's base, inherited.
+             */
+            if (letter == 'o') {
+                based = pad == '0' ? arg : FMT_BASED;
+                continue;
+            }
+            if (letter == 'O') { based = inBase; continue; }
+            /* An offset from whatever "@o" last named.  `based` is nought
+             * outside one, a real address after "@.o", and FMT_BASED when the
+             * base was a word of the original's memory the port cannot hand
+             * out - so the slots are keyed the same way either way. */
+            key = based + arg;
             /* "@?" picks one of two strings on a word being zero - 0x7763's
              * "cmp word ptr [si], 0 / je +5" takes [bx+4] for nought and
              * [bx+2] otherwise - and then draws it through sub_75ad, so the
@@ -1147,7 +1227,8 @@ static int fmt_render(unsigned strAddr, const FmtSlot *slot, int slots,
                     }
                 pick = flag ? (unsigned)(w2[0] | (w2[1] << 8))
                             : (unsigned)(w2[2] | (w2[3] << 8));
-                n += fmt_render(pick, slot, slots, out + n, max - n, depth + 1);
+                n += fmt_render(pick, slot, slots, out + n, max - n, depth + 1,
+                                line, based);
                 continue;
             }
             if (letter != 'S' && letter != 's' && letter != 'b' &&
@@ -1204,7 +1285,7 @@ static void dlg_say_fmt(unsigned strAddr, const FmtSlot *slot, int slots)
     char out[DLG_TEXT];
 
     if (!dat_at(strAddr, 1)) return;
-    fmt_render(strAddr, slot, slots, out, (int)sizeof out, 0);
+    fmt_render(strAddr, slot, slots, out, (int)sizeof out, 0, 1, 0);
     dlg_say(out);
 }
 
@@ -2090,6 +2171,138 @@ static void dlg_open_drive(void)
     }
 }
 
+/* The save and load lists, which are one descriptor used twice: 0x1efc and
+ * 0x2007 both hand sub_49bb DS:0x10bd, whose header is 04 01 8a 15 50 00 -
+ * position (4,1), ten lines visible with bit 7 set, height 21, eighty in all -
+ * and put the answer in [0x3bf6].  Bit 7 means the count is not a list of
+ * pointers but one template indexed by the line number, and the template is
+ * DS:0x170c:
+ *
+ *     "@2b : @.12t@.o@?"   with c54c f67e 0000 0000 174d 1729
+ *
+ *   @2b     [0xc54c], the line being drawn, so each line numbers itself
+ *   @.12t   0xf67e + (line - 1) * 12, written into the argument after it
+ *   @.o     take that as the base
+ *   @?      base+0 is nought -> DS:0x1729, a row of dashes; otherwise
+ *           DS:0x174d, "@O@? @2b/@.2b/@.2b @2b:@.2b" - the date out of +6..+10
+ *           with base+4 choosing DS:0x1779 "@OMAP-No.@.3w @?" or DS:0x1792
+ *           "@OOnly cursor position", and base+2 inside that choosing
+ *           DS:0x17a9 "@O@5w DAYS" or DS:0x17b8 "beginning".
+ *
+ * Cancel leaves with the 0x602 sound, which is the same the other way round as
+ * the drive window (0x1f27 and 0x202c).
+ */
+static void dlg_open_slots(int what)
+{
+    int i;
+
+    dlg_close();
+    dlg.what = what;
+    dlg_say_table(what == DLG_SAVE ? SAVE_TITLE_AT : LOAD_TITLE_AT);
+    if (dlg.lines == 0) dlg_say(what == DLG_SAVE ? "SAVE" : "LOAD");
+    dlg_say("");
+
+    dlg.total = SAVE_SLOTS;
+    dlg.window = 10;                    /* the descriptor's own count */
+    dlg.first = dlg.lines;
+    dlg.count = dlg.window;
+    for (i = 0; i < dlg.window; i++) dlg_say("");
+    dlg.pick = 0;
+    dlg.top = 0;
+    slot_lines();
+}
+
+/* Writing a slot and reading it back.  What goes in is the port's own shape:
+ * the stage records, the reached counter, and - when a stage is under way - the
+ * whole board, because being byte-compatible with a floppy the browser has not
+ * got would buy nothing.  The directory entry is the game's, so the list reads
+ * the way the original's does.
+ *
+ * 0x64e8: the day is only recorded when [0x3bd4] says the stage is under way
+ * and [0x3bd6] says no loss is pending; otherwise it is nought, which is what
+ * makes the list say "beginning".
+ */
+static int slot_write(int at)
+{
+    SaveSlot *sl;
+    SaveBlob *b;
+    time_t now;
+    struct tm *t;
+
+    if (at < 0 || at >= SAVE_SLOTS) return 0;
+    sl = &slotDir[at];
+    b = (SaveBlob *)calloc(1, sizeof *b);
+    if (!b) return 0;
+    b->magic = SAVE_MAGIC;
+    b->mapNumber = (unsigned short)mapNumber;
+    b->tileSize = (unsigned short)tileSize;
+    b->reached = (unsigned short)reached;
+    b->hasGame = (unsigned short)(mode == APP_MODE_MAP);
+    b->day = (unsigned short)game.day;
+    b->daysLeft = (unsigned short)game.daysLeft;
+    memcpy(b->record, record, sizeof record);
+    b->game = game;
+
+    free(sl->blob);
+    sl->blob = (unsigned char *)b;
+    sl->blobLen = (unsigned)sizeof *b;
+    sl->used = 1;
+    /* 0x64ff and 0x6502 put the day and the stage in the entry, the day only
+     * when the stage is under way (0x64e8), which is what makes the list say
+     * "beginning".  The stage is stored one along, because the original writes
+     * [0x3bc2] as it stands and DS:0x174d reads nought as "Only cursor
+     * position" - so a save on the very first stage would read as an empty
+     * one, which is worth not copying. */
+    sl->map = (unsigned short)(mode == APP_MODE_MAP ? mapNumber + 1 : 0);
+    sl->days = (unsigned short)(underWay ? game.day : 0);
+    now = time(0);
+    t = localtime(&now);
+    if (t) {
+        sl->yy = (unsigned char)(t->tm_year % 100);
+        sl->mm = (unsigned char)(t->tm_mon + 1);
+        sl->dd = (unsigned char)t->tm_mday;
+        sl->hh = (unsigned char)t->tm_hour;
+        sl->mi = (unsigned char)t->tm_min;
+    }
+    b->used = sl->used;
+    b->days = sl->days;
+    b->map = sl->map;
+    b->yy = sl->yy;
+    b->mm = sl->mm;
+    b->dd = sl->dd;
+    b->hh = sl->hh;
+    b->mi = sl->mi;
+    slotStamp++;
+    return 1;
+}
+
+static int slot_read(int at)
+{
+    const SaveSlot *sl;
+    const SaveBlob *b;
+
+    if (at < 0 || at >= SAVE_SLOTS) return 0;
+    sl = &slotDir[at];
+    if (!sl->used || !sl->blob || sl->blobLen < sizeof *b) return 0;
+    b = (const SaveBlob *)sl->blob;
+    if (b->magic != SAVE_MAGIC) return 0;
+    memcpy(record, b->record, sizeof record);
+    reached = b->reached;
+    if (b->hasGame) {
+        if (!app_show_map(b->mapNumber, b->tileSize)) return 0;
+        game = b->game;
+        game.day = b->day;
+        game.daysLeft = b->daysLeft;
+        game_forget_distances();
+        live = map;
+        {
+            int i;
+            for (i = 0; i < MAP_W * MAP_H; i++) live.cell[i] = game.cell[i].tile;
+        }
+    }
+    return 1;
+}
+
 static void dlg_open_order(int cx, int cy)
 {
     unsigned char t = game.cell[game_cell_index(cx, cy)].tile;
@@ -2192,6 +2405,18 @@ static void icon_press(int idx)
         app_sound(APP_SND_OK);
         dlg_open_mapsel();
         break;
+    /* 0x1ee5 and 0x1ff3 both open with sub_6591, which picks the game-data
+     * drive and reads the eighty-entry directory into DS:0xf67e before the
+     * window goes up.  There is no drive here, so the directory is whatever
+     * this session and the page's own store have put in it. */
+    case ICON_LOAD:
+        app_sound(APP_SND_OK);
+        dlg_open_slots(DLG_LOAD);
+        break;
+    case ICON_SAVE:
+        app_sound(APP_SND_OK);
+        dlg_open_slots(DLG_SAVE);
+        break;
     /* 0x203e has no guard - straight to sub_727a. */
     case ICON_DRIVE:
         app_sound(APP_SND_OK);
@@ -2202,9 +2427,45 @@ static void icon_press(int idx)
         snprintf(status, sizeof status,
                  "%s is in the original but not in this port yet",
                  idx == ICON_EDIT ? "EDIT" :
-                 idx == ICON_LOAD  ? "LOAD"  : idx == ICON_SAVE ? "SAVE" :
                  idx == ICON_FORM  ? "FORM"  : "CRT/LCD");
         break;
+    }
+}
+
+/* Fill the ten visible lines of the slot list from the game's own template.
+ * The slots the format engine is given are rebuilt for each line, because the
+ * base - 0xf67e + (line - 1) * 12 - is different on every one. */
+static void slot_lines(void)
+{
+    int i;
+
+    if (dlg.what != DLG_SAVE && dlg.what != DLG_LOAD) return;
+    if (dlg.top < 0) dlg.top = 0;
+    if (dlg.top > dlg.total - dlg.window) dlg.top = dlg.total - dlg.window;
+    for (i = 0; i < dlg.window; i++) {
+        int at = dlg.top + i;
+        int line = at + 1;              /* [0xc54c] counts from one */
+        unsigned base = SAVE_DIR_AT + (unsigned)at * 12;
+        const SaveSlot *sl = &slotDir[at];
+        FmtSlot fs[9];
+        char out[DLG_TEXT];
+        int k;
+
+        fs[0].addr = 0xc54c; fs[0].value = line;        /* "@2b" */
+        fs[1].addr = base + 0; fs[1].value = sl->used;
+        fs[2].addr = base + 2; fs[2].value = sl->days;
+        fs[3].addr = base + 4; fs[3].value = sl->map;
+        fs[4].addr = base + 6; fs[4].value = sl->yy;
+        fs[5].addr = base + 7; fs[5].value = sl->mm;
+        fs[6].addr = base + 8; fs[6].value = sl->dd;
+        fs[7].addr = base + 9; fs[7].value = sl->hh;
+        fs[8].addr = base + 10; fs[8].value = sl->mi;
+        for (k = 0; k < 9; k++) { fs[k].text = 0; fs[k].isNum = 1; }
+        out[0] = 0;
+        fmt_render(0x170c, fs, 9, out, (int)sizeof out, 0, line, 0);
+        snprintf(dlg.line[dlg.first + i], DLG_TEXT, "%s", out);
+        dlg.colour[dlg.first + i] = 7;
+        dlg.value[dlg.first + i] = at;
     }
 }
 
@@ -2218,6 +2479,10 @@ static void dlg_follow(void)
     if (dlg.pick >= dlg.top + dlg.window) dlg.top = dlg.pick - dlg.window + 1;
     if (dlg.top < 0) dlg.top = 0;
     if (dlg.top > dlg.total - dlg.window) dlg.top = dlg.total - dlg.window;
+    if (dlg.what == DLG_SAVE || dlg.what == DLG_LOAD) {
+        slot_lines();
+        return;
+    }
     for (i = 0; i < dlg.window; i++) {
         int at = dlg.top + i;
         snprintf(dlg.line[dlg.first + i], DLG_TEXT, "%s",
@@ -2245,6 +2510,14 @@ static void dlg_cancel(void)
         selected = -1;
         app_sound(APP_SND_FAILED);          /* 0x0702 at 0x22d3 */
         snprintf(status, sizeof status, "cancelled");
+        break;
+    /* 0x1f27 and 0x202c: the same as the drive window, the cancel is what
+     * leaves and it plays 0x602 doing it. */
+    case DLG_SAVE:
+    case DLG_LOAD:
+        dlg_close();
+        app_sound(APP_SND_OK);
+        snprintf(status, sizeof status, "back from the slot list");
         break;
     /* 0x2052 takes the cancel out of the drive window, and 0x2055 plays 0x602
      * on the way - the only window where leaving sounds like accepting. */
@@ -2295,7 +2568,11 @@ static void dlg_cancel(void)
 /* Confirm inside a dialog. */
 static void dlg_confirm(void)
 {
-    int line = dlg.first + dlg.pick;
+    /* With a scroll window the selection is an index into the whole list and
+     * the line it is drawn on is the one the box shows it at, which is what
+     * the drawing works out too.  Reading dlg.value at first + pick was right
+     * only while the box was at the top of the list. */
+    int line = dlg.first + (dlg.window > 0 ? dlg.pick - dlg.top : dlg.pick);
     int value = dlg.value[line];
     int what = dlg.what;
 
@@ -2409,6 +2686,34 @@ static void dlg_confirm(void)
                  which >= 0 && which < 4 ? driveOf[which] + 1 : 0, which);
         break;
     }
+    /* 0x1f39: a slot with nothing in it sends the load list back to waiting,
+     * so an empty slot cannot be chosen.  A save slot can, used or not. */
+    case DLG_LOAD:
+        if (value < 0 || value >= SAVE_SLOTS || !slotDir[value].used) {
+            app_sound(APP_SND_NO);
+            return;                     /* the window stays up */
+        }
+        dlg_close();
+        if (slot_read(value)) {
+            app_sound(APP_SND_OK);
+            snprintf(status, sizeof status, "loaded slot %d", value + 1);
+        } else {
+            app_sound(APP_SND_FAILED);
+            snprintf(status, sizeof status, "slot %d would not read",
+                     value + 1);
+        }
+        break;
+    case DLG_SAVE:
+        if (slot_write(value)) {
+            app_sound(APP_SND_OK);
+            slot_lines();               /* the list shows it at once */
+            snprintf(status, sizeof status, "saved to slot %d", value + 1);
+        } else {
+            app_sound(APP_SND_FAILED);
+            snprintf(status, sizeof status, "slot %d would not write",
+                     value + 1);
+        }
+        break;
     case DLG_FORCE:
         /* 0x21ba and 0x21ec: nought is 強行 and goes on, anything else goes
          * back to choosing a destination with the unit still held. */
@@ -2897,6 +3202,54 @@ int app_font_rom(const unsigned char *data, unsigned n)
 }
 
 int app_dialog(void) { return dlg.what; }
+/* What the page needs to keep the slots between visits.  A slot is one opaque
+ * byte array - the directory entry and the payload together - so the store need
+ * not know the shape of anything. */
+int app_save_slots(void) { return SAVE_SLOTS; }
+
+int app_slot_used(int at)
+{
+    return at >= 0 && at < SAVE_SLOTS && slotDir[at].used ? 1 : 0;
+}
+
+const unsigned char *app_slot_bytes(int at, unsigned *len)
+{
+    if (len) *len = 0;
+    if (at < 0 || at >= SAVE_SLOTS || !slotDir[at].used || !slotDir[at].blob)
+        return 0;
+    if (len) *len = slotDir[at].blobLen;
+    return slotDir[at].blob;
+}
+
+int app_slot_put(int at, const unsigned char *bytes, unsigned len)
+{
+    const SaveBlob *b = (const SaveBlob *)bytes;
+    SaveSlot *sl;
+
+    if (at < 0 || at >= SAVE_SLOTS || !bytes || len != sizeof *b) return 0;
+    if (b->magic != SAVE_MAGIC) return 0;
+    sl = &slotDir[at];
+    free(sl->blob);
+    sl->blob = (unsigned char *)malloc(len);
+    if (!sl->blob) { sl->blobLen = 0; sl->used = 0; return 0; }
+    memcpy(sl->blob, bytes, len);
+    sl->blobLen = len;
+    sl->used = b->used ? b->used : 1;
+    sl->days = b->days;
+    sl->map = b->map;
+    sl->yy = b->yy;
+    sl->mm = b->mm;
+    sl->dd = b->dd;
+    sl->hh = b->hh;
+    sl->mi = b->mi;
+    slotStamp++;
+    return 1;
+}
+
+int app_slot_stamp(void) { return slotStamp; }
+
+int app_day(void) { return game.day; }
+
 int app_tax(void)
 {
     return game.side[game.human < 0 ? 0 : game.human].rate;
@@ -2982,7 +3335,7 @@ void app_click(int x, int y)
         int row = (y - DLG_Y - 8) / DLG_LINE;
         if (x >= DLG_X && x < DLG_X + DLG_W &&
             row >= dlg.first && row < dlg.first + dlg.count) {
-            dlg.pick = row - dlg.first;
+            dlg.pick = row - dlg.first + (dlg.window > 0 ? dlg.top : 0);
             dlg_confirm();
         } else {
             dlg_close();

@@ -93,7 +93,7 @@ LordMonarch().then((m) => {
   // the game's own screen, not in the host's status line, so these check
   // lm_dialog rather than the text under the canvas.
   const DLG = {NONE: 0, INFO: 1, TAX: 2, SPEED: 3, ZOOM: 4, ALLY: 5, ORDER: 6,
-               MAPSEL: 11, ORDER2: 12};
+               MAPSEL: 11, ORDER2: 12, SAVE: 15, LOAD: 16};
   // sub_20f0's menu is the game's own twelve, in the order the name records
   // come off the floppy, and the choice IS the low nibble of the state:
   //   0 wait 1 auto 2 hold 3 reinforce 4 raze 5 village 6 fence
@@ -334,6 +334,45 @@ LordMonarch().then((m) => {
     console.log(`${broke >= 0 ? 'ok  ' : 'FAIL'}  and it came down to a rock ` +
                 `after ${broke} ticks`);
     if (broke < 0) process.exit(1);
+  }
+
+  // The save slots, through the same four calls the page uses.  A slot is one
+  // opaque byte array on the C side, so this checks that it comes out, goes
+  // back into a different slot, and is taken.
+  {
+    m._lm_key(KEY.TITLE);
+    m._lm_key(KEY.START);
+    m._lm_key(KEY.TILE16);
+    m._lm_key(KEY.BACK);                  // the panel
+    for (let i = 0; i < 5; i++) m._lm_key(KEY.DOWN);   // down to SAVE
+    m._lm_key(KEY.START);                 // press it
+    const listUp = m._lm_dialog() === DLG.SAVE;
+    console.log(`${listUp ? 'ok  ' : 'FAIL'}  the save icon opens the slot ` +
+                `list (dialog ${m._lm_dialog()})`);
+    if (!listUp) process.exit(1);
+    const before = m._lm_slot_stamp();
+    m._lm_key(KEY.START);                 // write slot 0
+    const wrote = m._lm_slot_used(0) === 1 && m._lm_slot_stamp() !== before;
+    console.log(`${wrote ? 'ok  ' : 'FAIL'}  slot 1 is used and the stamp ` +
+                `moved (${before} -> ${m._lm_slot_stamp()})`);
+    if (!wrote) process.exit(1);
+    const len = m._lm_slot_read(0);
+    const buf = m._lm_slot_buffer();
+    const cap = m._lm_slot_capacity();
+    const sane = len > 0 && len <= cap;
+    console.log(`${sane ? 'ok  ' : 'FAIL'}  it reads back as ${len} bytes ` +
+                `(buffer holds ${cap})`);
+    if (!sane) process.exit(1);
+    // The bytes are still in the staging buffer, so putting them somewhere
+    // else is what the page does on the way back in.
+    const put = m._lm_slot_write(3, len) === 1 && m._lm_slot_used(3) === 1;
+    console.log(`${put ? 'ok  ' : 'FAIL'}  and they go back in as slot 4`);
+    if (!put) process.exit(1);
+    // A length the C side cannot make sense of is refused rather than kept.
+    const junk = m._lm_slot_write(4, 8) === 0 && m._lm_slot_used(4) === 0;
+    console.log(`${junk ? 'ok  ' : 'FAIL'}  a short blob is refused`);
+    if (!junk) process.exit(1);
+    m._lm_key(KEY.BACK);
   }
 
   // The noises.  A refusal has to sound different from something taken, since
