@@ -1241,6 +1241,41 @@ static void snapshot_dim_icons(void)
     haveDim = 1;
 }
 
+/* Eight of a piece's sixteen columns, which is all sub_8b7a and sub_8e2b draw.
+ *
+ * Both are blitters of the same shape as sub_8789 - "ds = 0x3000 + piece * 8" -
+ * but they read ONE byte a plane a row rather than two: sub_8b7a starts at
+ * [si] with si = 0 and sub_8e2b at si = 1.  A byte is eight pixels, so one
+ * draws a piece's left half and the other its right.
+ *
+ * That is what the tax bar's two markers are.  Piece 0x8a7 holds them side by
+ * side - gold in its left eight columns, light blue in its right - so
+ * sub_4e9f's sub_8b7a puts the GOLD one down and sub_4e49's sub_8e2b the LIGHT
+ * BLUE one.  Drawing the whole piece for each, which is what this port did,
+ * put both colours at both positions.
+ */
+static void blit_half(int piece, int rightHalf, int x, int y)
+{
+    const unsigned char *src;
+    int r, c;
+
+    if (!iconsOk || piece < 0 || piece >= icons.count) return;
+    src = icons.px + (size_t)piece * 16 * 16;
+    for (r = 0; r < 16; r++) {
+        int sy = y + r;
+
+        if (sy < 0 || sy >= SCR_H) continue;
+        for (c = 0; c < 8; c++) {
+            int sx = x + c;
+            unsigned char v = src[(size_t)r * 16 + (rightHalf ? 8 + c : c)];
+
+            if (sx < 0 || sx >= SCR_W) continue;
+            if (v == 15) continue;              /* the sheet's own background */
+            scr.px[(size_t)sy * SCR_W + sx] = v;
+        }
+    }
+}
+
 /* The hand, where DS:0x2055 says it goes for that icon. */
 static void draw_hand(int idx)
 {
@@ -4511,9 +4546,12 @@ void app_render(void)
             gfx_blit_tile(&scr, &icons, 0x8a5 - ICON_PIECE_BASE,
                           120 + 16 + i * 16, 40);
         gfx_blit_tile(&scr, &icons, 0x8a6 - ICON_PIECE_BASE, 120 + 16 * 16, 40);
-        gfx_blit_tile(&scr, &icons, 0x8a7 - ICON_PIECE_BASE,
-                      128 + (int)knob * 8, 40);
-        gfx_blit_tile(&scr, &icons, 0x8a7 - ICON_PIECE_BASE, 128 + rate * 8, 40);
+        /* 0x4e94's sub_8e2b is the piece's RIGHT half, which is the light
+         * blue one, and it goes at 0xc90 + max(0, 0x14 - (purse >> 8)) - the
+         * rate the country is on now.  0x4eca's sub_8b7a is the LEFT half, the
+         * gold one, at 0xc90 + [bx+0x12] - the rate being dialled in. */
+        blit_half(0x8a7 - ICON_PIECE_BASE, 1, 128 + (int)knob * 8, 40);
+        blit_half(0x8a7 - ICON_PIECE_BASE, 0, 128 + rate * 8, 40);
         snprintf(buf, sizeof buf, "%2d%%", rate);
         gfx_text_sjis(&scr, &font, &fontRom, 392, 40, buf, 7);
     } else if (dlg.what != DLG_NONE && frameOk) {
