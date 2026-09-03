@@ -1466,16 +1466,72 @@ static void dlg_open_tax(void)
 }
 
 /* One notch of the knob.  Returns whether the window took the key. */
+/* The three windows that are knobs on a bar rather than menus, and they follow
+ * their own rules.  sub_4f08 (tax), sub_539f (speed) and sub_52b7 (zoom) are
+ * the same loop three times over:
+ *
+ *   the keys      tax takes "and al, 0x6c" - left and right - while speed and
+ *                 zoom take "and al, 0x63", up and down.  Either way only two
+ *                 directions, confirm and cancel get through.
+ *   a move        writes the new value straight into the game's own byte and
+ *                 goes back to waiting.  There is NO sound: 0x53e2 jumps to
+ *                 0x53b3 and 0x4f56 to 0x4f1a, neither of which touches the
+ *                 driver.  A menu plays 0x0500 on a move; a knob is silent.
+ *   at either end 0x4f45, 0x53d3 and 0x52eb all jump back to the wait without
+ *                 doing anything, so pressing on past the end is silent too.
+ *   confirm       sound 0x601, carry clear.
+ *   cancel        sound 0x601 as well - unlike a menu, whose cancel at 0x4c94
+ *                 is a bare "stc" with no sound at all.
+ *
+ * And they do not agree about what cancel means, which is worth writing down
+ * because it looks like an oversight and is consistent across two of the three:
+ *
+ *   speed  0x53a1 saves [di] in bh and 0x53f1 puts it back  -> cancel reverts
+ *   zoom   0x52b9 and 0x5309 do the same                    -> cancel reverts
+ *   tax    0x4f66 restores nothing                          -> cancel KEEPS it
+ *
+ * Since every move has already been written to the live byte, tax cancelled is
+ * tax set.  This port used to apply all three only on confirm, so the world
+ * never sped up while the knob was moving and a cancelled tax went back.
+ */
+/* [0x3c02] as it was when the speed window opened, which 0x53a1 keeps in bh so
+ * that 0x53f1 can put it back on a cancel.  A named place rather than a spare
+ * slot in dlg.value, where the next person to add a line would tread on it. */
+static int speedWas;
+
+static int slider_is(int what)
+{
+    return what == DLG_TAX || what == DLG_SPEED || what == DLG_ZOOM;
+}
+
+/* Push the live value into the game, which is what the loops do on every move
+ * rather than at the end.  Zoom is the exception: 0x52fa stores the byte but
+ * the display is only rebuilt at 0x1c6a, after the confirm. */
+static void slider_apply(void)
+{
+    int mine = game.human < 0 ? 0 : game.human;
+
+    switch (dlg.what) {
+    case DLG_TAX:
+        game.side[mine].rate = (unsigned char)dlg.value[0];
+        break;
+    case DLG_SPEED:
+        game.speed = dlg.pick;          /* [0x3c02] */
+        break;
+    default:
+        break;
+    }
+}
+
 static int tax_step(int by)
 {
     int rate = dlg.value[0] + by;
 
     if (dlg.what != DLG_TAX) return 0;
-    if (rate < 0 || rate > TAX_MAX) {   /* 0x4f45 and 0x4f4d both just wait */
-        app_sound(APP_SND_NO);
-        return 1;
-    }
+    /* 0x4f45 and 0x4f4d both jump straight back to the wait. */
+    if (rate < 0 || rate > TAX_MAX) return 1;
     dlg.value[0] = rate;
+    slider_apply();                     /* 0x4f56, on every move */
     tax_lines();
     return 1;
 }
@@ -1489,6 +1545,10 @@ static void dlg_open_speed(void)
     dlg_choice(JP_FAST, 0);
     dlg_choice(JP_NORMAL, 1);
     dlg_choice(JP_SLOW, 2);
+    /* 0x53a1: bh keeps [0x3c02] so the cancel can put it back, and the knob
+     * opens where the setting already is. */
+    dlg.pick = game.speed >= 0 && game.speed < dlg.count ? game.speed : 0;
+    speedWas = game.speed;
 }
 
 static void dlg_open_zoom(void)
@@ -2061,6 +2121,26 @@ static void dlg_cancel(void)
     case DLG_REFUSED:
         dlg_confirm();              /* these only wait for a key */
         break;
+    /* 0x53f1 and 0x5309 put the byte they saved on the way in back before they
+     * leave, and both play 0x601 doing it.  The tax window does not restore
+     * anything, so what the knob was left on is what the country pays. */
+    case DLG_SPEED:
+        game.speed = speedWas;
+        dlg_close();
+        app_sound(APP_SND_CONFIRM);
+        snprintf(status, sizeof status, "speed left at %d", game.speed);
+        break;
+    case DLG_ZOOM:
+        dlg_close();
+        app_sound(APP_SND_CONFIRM);
+        snprintf(status, sizeof status, "square size unchanged");
+        break;
+    case DLG_TAX:
+        dlg_close();
+        app_sound(APP_SND_CONFIRM);
+        snprintf(status, sizeof status, "tax rate %d of %d",
+                 game.side[game.human < 0 ? 0 : game.human].rate, TAX_MAX);
+        break;
     default:
         dlg_close();
         snprintf(status, sizeof status, "cancelled");
@@ -2116,13 +2196,17 @@ static void dlg_confirm(void)
             app_show_map(mapNumber, tileSize);
         }
         break;
+    /* 0x4f5b only sounds and clears the carry: the rate has been in the side
+     * record since the knob last moved. */
     case DLG_TAX:
-        game.side[game.human < 0 ? 0 : game.human].rate = (unsigned char)value;
-        snprintf(status, sizeof status, "tax rate %d of %d", value, TAX_MAX);
+        game.side[game.human < 0 ? 0 : game.human].rate =
+            (unsigned char)dlg.value[0];
+        snprintf(status, sizeof status, "tax rate %d of %d", dlg.value[0],
+                 TAX_MAX);
         dlg_close();
         break;
     case DLG_SPEED:
-        game.speed = value;
+        game.speed = value;             /* already set, but say so plainly */
         snprintf(status, sizeof status, "speed %s",
                  value == 0 ? "fast" : value == 1 ? "normal" : "slow");
         dlg_close();
@@ -2288,7 +2372,9 @@ void app_key(int key)
             if (dlg.pick > 0) {
                 dlg.pick--;
                 dlg_follow();
-                app_sound(APP_SND_MOVE);        /* 0x4c2e */
+                /* A knob is silent; only a menu clicks. */
+                if (!slider_is(dlg.what)) app_sound(APP_SND_MOVE);  /* 0x4c2e */
+                slider_apply();
             }
             return;                             /* 0x4cab: no wrap, no sound */
         case APP_KEY_DOWN:
@@ -2296,7 +2382,8 @@ void app_key(int key)
             if (dlg.pick + 1 < (dlg.window > 0 ? dlg.total : dlg.count)) {
                 dlg.pick++;
                 dlg_follow();
-                app_sound(APP_SND_MOVE);
+                if (!slider_is(dlg.what)) app_sound(APP_SND_MOVE);
+                slider_apply();
             }
             return;                             /* 0x4cb3: no wrap, no sound */
         case APP_KEY_START:
@@ -2663,6 +2750,13 @@ int app_font_rom(const unsigned char *data, unsigned n)
 }
 
 int app_dialog(void) { return dlg.what; }
+int app_tax(void)
+{
+    return game.side[game.human < 0 ? 0 : game.human].rate;
+}
+
+int app_speed(void) { return game.speed; }
+
 int app_dialog_lines(void) { return dlg.lines; }
 const char *app_dialog_line(int i)
 {

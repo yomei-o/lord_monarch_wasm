@@ -25,6 +25,7 @@
 
 #define DLG_INFO    1
 #define DLG_TAX     2
+#define DLG_SPEED   3
 #define DLG_ALLY    5
 #define DLG_FELL    7
 #define DLG_OVER    8
@@ -86,6 +87,47 @@ int main(int argc, char **argv)
     check(app_dialog() == 0, "and setting it closes it");
     check(strstr(app_status(), "tax rate 0 of 30") != NULL,
           "nought is what the game got");
+
+    /* The three knob windows do not agree about cancel, and both readings come
+     * straight off the loops: 0x53f1 and 0x5309 put back the byte they saved on
+     * the way in, while 0x4f66 restores nothing at all.  Since every move has
+     * already been written to the live byte, a cancelled tax is a set tax.
+     */
+    app_click(24, 64);                          /* ICON_TAX */
+    check(app_dialog() == DLG_TAX, "the tax window opens again");
+    app_key(APP_KEY_RIGHT);
+    app_key(APP_KEY_RIGHT);
+    app_key(APP_KEY_RIGHT);
+    check(strstr(app_dialog_line(3), " 3") != NULL,
+          "three notches up from nought is three");
+    app_key(APP_KEY_BACK);                      /* 0x4f66 - cancel */
+    check(app_dialog() == 0, "cancel closes the tax window");
+    checkf(app_tax() == 3,
+           "cancel left the tax at %d - 0x4f66 restores nothing",
+           app_tax(), 0, 0);
+    /* Put it back where the run below wants it. */
+    app_click(24, 64);
+    {
+        int k;
+        for (k = 0; k < 60; k++) app_key(APP_KEY_LEFT);
+    }
+    app_key(APP_KEY_START);
+
+    /* Speed is the other way round. */
+    {
+        int was;
+
+        app_click(24, 128);                     /* ICON_SPEED, row 2 column 0 */
+        check(app_dialog() == DLG_SPEED, "the speed window opens");
+        was = app_speed();
+        app_key(APP_KEY_DOWN);
+        checkf(app_speed() != was,
+               "the knob moved and the world is at speed %d already",
+               app_speed(), 0, 0);
+        app_key(APP_KEY_BACK);                  /* 0x53f1 - cancel restores */
+        checkf(app_speed() == was, "cancel put the speed back to %d from %d",
+               app_speed(), was, 0);
+    }
 
     /* The look-around at 0x1b5f is a loop of its own, not a mode that stays on:
      * the arrows are the cursor's while it is up and either button leaves. */

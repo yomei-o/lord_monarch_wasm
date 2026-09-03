@@ -142,6 +142,11 @@ int app_sound_take(void);
 
 int app_font_rom(const unsigned char *data, unsigned n);
 int app_japanese(void);
+/* The two settings the knob windows change, so a test can say what the cancel
+ * did without reaching into the game. */
+int app_tax(void);
+int app_speed(void);
+
 int app_dialog_lines(void);
 const char *app_dialog_line(int i);
 int app_dialog_pick(void);
