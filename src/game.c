@@ -1276,6 +1276,33 @@ static void follow_path(Game *g, int slot)
 
 /* States 1, 3 and 5 all end up here: develop where you stand, and if you
  * cannot, look for something else to do.  0x3998 and 0x38c1. */
+/* 0x3807, which a finished job runs into.  The top two bits of the state say
+ * what to do next, and the follow-up window at 0x2241 is what put them there -
+ * "ror ah, 2" turns its answer 0, 1 or 2 into 0x00, 0x40 or 0x80:
+ *
+ *   bit 7      "mov al, [si+0xa] / test al, 0x80 / je / ret" - the state is
+ *              left alone, so the same order runs again           (継続)
+ *   bit 6      "[si+0xa] = 0x10", which is 待機 with the 0x10 bit (待機にする)
+ *   neither    "jmp 0x378e", the auto path                        (オートにする)
+ *
+ * and 0x380f's "add sp, 2" is how the last two arms escape a level of call.
+ * Without this the follow-up window meant nothing: every job ended by looking
+ * for fresh work whatever the player had chosen. */
+static int decide(Game *g, int slot);
+
+static void job_done(Game *g, int slot)
+{
+    Unit *u = &g->unit[slot];
+
+    if (u->state & 0x80) return;                        /* 0x380e */
+    if (u->state & 0x40) {                              /* 0x3819 */
+        u->state = 0x10;
+        return;
+    }
+    if (!decide(g, slot))
+        u->state = (unsigned char)((u->state & 0xd0) | 1);
+}
+
 static void state_develop(Game *g, int slot)
 {
     Unit *u = &g->unit[slot];
@@ -1321,24 +1348,31 @@ void game_unit_step(Game *g, int slot)
     }
 
     switch (u->state & 0x0f) {
+    /* 待機.  CS:0x3a47's first entry is sub_3867, which is "mov [si+1], 6" and
+     * a ret - face right and do nothing at all - and entries 13, 14 and 15 are
+     * the same routine.  This port had no case for it, so it fell to the
+     * default and ran decide(), which is the exact opposite: a unit told to
+     * wait went looking for work.  It is the plainest of the twelve orders and
+     * it did not hold. */
+    case 0:
+        u->facing = DIR_RIGHT;
+        break;
     case 1: case 3: case 5:
         state_develop(g, slot);
         break;
     case 8:
         if (game_clear(g, slot)) break;         /* still chipping away */
-        if (!decide(g, slot))
-            u->state = (unsigned char)((u->state & 0xd0) | 1);
+        job_done(g, slot);
         break;
     case 4:
-        if (!state_outward(g, slot))
-            u->state = (unsigned char)((u->state & 0xd0) | 1);
+        if (!state_outward(g, slot)) job_done(g, slot);
         break;
     case 6: case 7: case 9: case 10: case 11:
-        /* The square orders: fill it in, clear the wood, break a bridge, pull
-         * a nest down.  When the job is over the unit looks for fresh work. */
-        if (!game_job(g, slot))
-            if (!decide(g, slot))
-                u->state = (unsigned char)((u->state & 0xd0) | 1);
+        /* The square orders: fill it in, clear the fence, break a bridge, seal
+         * a cave.  What happens when the job is over is not "look for fresh
+         * work" but whatever the follow-up window was answered with - see
+         * job_done. */
+        if (!game_job(g, slot)) job_done(g, slot);
         break;
     case 12:
         /* 0x3985: the side has fallen, so change to whoever inherited it. */

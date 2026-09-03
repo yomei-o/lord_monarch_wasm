@@ -93,6 +93,22 @@ static int haveDim;
  * bytes of DS:0x249b into the working table, and that is what is up while no
  * stage is loaded. */
 #define PAL_BOOT_AT 0x249b
+/* And the one the opening starts under.  0xca01 copies DS:0x24cb in before the
+ * title image is shown, and it is a flat two-tone - every index below eight is
+ * the same blue and every index above it the same near-white - so what is on
+ * the screen is the logo as a silhouette with the stars falling through it.
+ * 0xca15 holds that for 0x1e ticks and 0xca28 then hands DS:0x24fb to sub_c630,
+ * which fades from one to the other.  This port went straight to the finished
+ * palette, so there was no opening to see. */
+#define PAL_OPENING_AT 0x24cb
+/* sub_c630's own blend: [0x34d8] runs from 0xff down in steps of [0x34d7], one
+ * tick a step, and sub_c673 works each byte out as
+ * target + ((|target - start| + 1) * blend >> 8) with the sign put back.  The
+ * step itself is written nowhere the disassembler reaches, so eight is a
+ * choice: it gives thirty-two ticks, which at sixty a second is the half
+ * second the hold before it lasts. */
+#define PAL_FADE_STEP 8
+#define TITLE_HOLD 0x1e
 #define PANEL_TABLE_AT 0x3b4f      /* the three lines across the title's foot */
 
 static unsigned char *progDat;
@@ -965,17 +981,29 @@ int app_show_device(void)
     return 1;
 }
 
+/* Where the opening has got to: the hold, then the fade, then the finished
+ * title.  A key leaves at any point, which is 0xca1f's own "and al, 0x60". */
+static int titleHold, titleBlend;
+
 int app_show_title(void)
 {
     const unsigned char *t = dat_at(PAL_TITLE_AT, 48);
 
     dlg_close();
     mode = APP_MODE_TITLE;
+    titleHold = TITLE_HOLD;
+    titleBlend = 0xff;
     if (!t) {
         snprintf(status, sizeof status, "no title palette in PROG.DAT");
         return 0;
     }
-    app_palette(t);
+    /* The opening's own palette first; the fade below walks it to `t`. */
+    {
+        const unsigned char *o = dat_at(PAL_OPENING_AT, 48);
+
+        app_palette(o ? o : t);
+    }
+
     /* The background is index 0, and it is black on screen even though the
      * stored table gives index 0 as 06A, a blue.  Three measurements off
      * ss0.jpg agree on that and leave no other reading:
@@ -3280,7 +3308,11 @@ void app_key(int key)
     case APP_KEY_STEP:      running = 0; app_tick(); break;
     case APP_KEY_TITLE:     app_show_title(); break;
     case APP_KEY_MONEY:
-        if (mode == APP_MODE_MAP && game.human >= 0 && game.human < PLAYERS) {
+        /* stageLoaded as well, because before GO there is no side record worth
+         * writing to and the readout would be showing a stage that is not
+         * there yet. */
+        if (mode == APP_MODE_MAP && stageLoaded &&
+            game.human >= 0 && game.human < PLAYERS) {
             game.side[game.human].funds = APP_MONEY_MAX;
             game.purseMoved = 1;
             snprintf(status, sizeof status,
@@ -3847,6 +3879,33 @@ void app_render(void)
     memcpy(scr.px, bg.px, sizeof scr.px);
     if (mode == APP_MODE_TITLE) {
         stars_tick();
+        /* 0xca15's hold and then sub_c630's blend, a step a frame. */
+        if (titleHold > 0) {
+            titleHold--;
+        } else if (titleBlend > 0) {
+            const unsigned char *from = dat_at(PAL_OPENING_AT, 48);
+            const unsigned char *to = dat_at(PAL_TITLE_AT, 48);
+
+            titleBlend -= PAL_FADE_STEP;
+            if (titleBlend < 0) titleBlend = 0;
+            if (from && to) {
+                unsigned char mix[48];
+                int i;
+
+                for (i = 0; i < 48; i++) {
+                    int d = (int)(from[i] & 0x0f) - (int)(to[i] & 0x0f);
+                    int step = ((d < 0 ? -d : d) + 1) * titleBlend >> 8;
+
+                    if (d < 0) step = -step;
+                    mix[i] = (unsigned char)((to[i] & 0x0f) + step);
+                }
+                app_palette(mix);
+                /* And the same blanking app_show_title does once: index 0 is
+                 * black on screen throughout the opening, measured off ss0.jpg,
+                 * whatever the stored tables say. */
+                scr.pal[0][0] = scr.pal[0][1] = scr.pal[0][2] = 0;
+            }
+        }
         /* The three lines the opening puts along the bottom, which are a
          * readout of the machine it found.  sub_c946 walks the list at
          * DS:0x3b4f - each record a VRAM offset, then a string, then that

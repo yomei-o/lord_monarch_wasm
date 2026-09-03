@@ -278,7 +278,13 @@ int main(int argc, char **argv)
                     }
                 }
         }
-        app_render();
+        /* --frames runs the retrace on before the picture is taken, which is
+         * what makes the opening's hold and fade visible. */
+        {
+            int k, n = arg_int(argc, argv, "--frames", 1);
+
+            for (k = 0; k < n; k++) app_render();
+        }
         printf("%s\n", app_status());
         scr = *app_screen();
         save(argv[5], scr.px, SCR_W, SCR_H, SCR_W);

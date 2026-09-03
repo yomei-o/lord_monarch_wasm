@@ -231,6 +231,24 @@ LordMonarch().then((m) => {
     }
     return m.UTF8ToString(m._lm_status());
   };
+  // The follow-up window's answer goes into the top two bits: "ror ah, 2"
+  // turns 0, 1 and 2 into 0x00, 0x40 and 0x80, and 0x3807 reads them back when
+  // the job ends - bit 7 repeats the order, bit 6 drops to 待機, neither goes
+  // auto.  Picking the second line therefore has to give state 0x17 | 0x40.
+  {
+    for (let i = 0; i < 12; i++) m._lm_key(KEY.UP);
+    for (let i = 0; i < ORDER.BRIDGE; i++) m._lm_key(KEY.DOWN);
+    m._lm_key(KEY.START);
+    m._lm_key(KEY.DOWN);                // "待機にする"
+    m._lm_key(KEY.START);
+    const st = m.UTF8ToString(m._lm_status());
+    const ok = /state 57/.test(st);
+    console.log(`${ok ? 'ok  ' : 'FAIL'}  "待機にする" folds into bit 6: ${st}`);
+    if (!ok) process.exit(1);
+    // Put the unit back in hand for the check below.
+    m._lm_click(...cell(14, 3));
+    m._lm_click(...cell(12, 4));
+  }
   const bridged = chooseOrder(ORDER.BRIDGE);
   // The name is the floppy's, so this checks the square and the state byte:
   // 7 | 0x10, with the follow-up nought in the top two bits.
