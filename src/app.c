@@ -69,12 +69,42 @@ enum {
 static const short iconCol[2] = {16, 48};
 static const short iconRow[7] = {24, 56, 120, 184, 248, 280, 312};
 
-/* Which of the fourteen this port actually does something with.  The rest are
- * drawn dim, the way the original draws a command you cannot use. */
-static const unsigned char iconLive[ICON_COUNT] = {
-    1, 1, 1, 1, 1, 1, 0, 0,        /* GO VIEW TAX INFO SPEED ZOOM ALLY EDIT */
-    0, 1, 0, 0, 0, 0               /* LOAD MAP SAVE FORM CRT DRIVE */
-};
+/* Which of the first eight are lit, and it is not a fixed list: sub_4cdd works
+ * it out from the stage's state every time the panel is drawn.
+ *
+ *   4cde  dl = 0x76                      no stage: [0x3bc2] == -1
+ *   4ce7  dl = 0                         a stage, and [0x3bd4] clear
+ *   4cf0  dl = 3                         under way
+ *   4cf9  dl = 0xf6                      and [0x3bd6] set as well
+ *
+ * then it walks DS:0x22e5 - eight VRAM positions, which are exactly this
+ * port's first eight icons at (16,24), (48,24), (16,56), (48,56), (16,120),
+ * (48,120), (16,184) and (48,184) - taking bit 7 first and shifting left, and
+ * for each one whose bit CHANGED it draws piece 0x840 + i*4, plus 0x20 when the
+ * bit is set.  A set bit is the dim picture, which the four masks put beyond
+ * doubt: with a stage loaded and not started the mask is nought and every
+ * command works.
+ *
+ * Written out, the masks are the guard table made visible:
+ *
+ *   no stage    dim VIEW TAX INFO ZOOM ALLY   - all five want sub_b509
+ *               lit GO SPEED EDIT             - GO is what loads one, and
+ *                                               0x1c21 has no guard at all
+ *   loaded      everything lit
+ *   under way   dim ALLY EDIT                 - sub_b52e refuses them
+ *   finished    dim all but SPEED and EDIT    - sub_b509's second condition,
+ *                                               and GO's own 0x1b10
+ *
+ * The port had a constant array saying which commands it had got round to
+ * implementing, which is a different question and looked wrong at every point
+ * in a stage.
+ */
+static const unsigned char ICON_MASK_NONE = 0x76;
+static const unsigned char ICON_MASK_LOADED = 0x00;
+static const unsigned char ICON_MASK_RUNNING = 0x03;
+static const unsigned char ICON_MASK_OVER = 0xf6;
+
+static int icon_dim(int idx);
 
 /* The "not selected" artwork for the eight game icons, which WAKU carries at
  * x 96 and 128 on the same rows - inside the map window, so it survives exactly
@@ -1286,6 +1316,21 @@ static void blit_half(int piece, int rightHalf, int x, int y)
             scr.px[(size_t)sy * SCR_W + sx] = v;
         }
     }
+}
+
+/* sub_4cdd's own four-way choice, and the bit for one icon out of it.  Bit 7
+ * is icon 0, so the shift is 7 - idx. */
+static int icon_dim(int idx)
+{
+    unsigned char mask;
+
+    if (idx < 0 || idx >= 8) return 0;  /* only the first eight have two
+                                         * pictures; the rest are always lit */
+    if (!stageLoaded) mask = ICON_MASK_NONE;
+    else if (!underWay) mask = ICON_MASK_LOADED;
+    else if (overPending) mask = ICON_MASK_OVER;
+    else mask = ICON_MASK_RUNNING;
+    return (mask >> (7 - idx)) & 1;
 }
 
 /* The hand, where DS:0x2055 says it goes for that icon. */
@@ -3289,14 +3334,14 @@ static void cursor_move(int dx, int dy)
 {
     int nx = curX + dx, ny = curY + dy;
 
-    if (nx < MAP_MIN) {
-        /* Off the left: into the panel, on the row nearest the cursor. */
-        int row = (curY - MAP_MIN) * 7 / (MAP_MAX - MAP_MIN + 1);
-        if (row > 6) row = 6;
-        panelIcon = row * 2;
-        snprintf(status, sizeof status, "panel: %s", icon_name(panelIcon));
-        return;
-    }
+    /* The edge just refuses.  0x19cc reads the direction with sub_9ab9 and
+     * hands the cursor to sub_ad80, and 0x19d8's "jb 0x1a34" takes a refusal
+     * straight to the do-nothing path - there is no branch anywhere in the map
+     * loop that goes to the panel from an edge.  The one way in is the cancel
+     * button at 0x19be, which 0x1a9b takes.  Sliding into the panel by walking
+     * left was this port's own idea, and it fires while you are carrying a
+     * unit, which is when it is least wanted. */
+    if (nx < MAP_MIN) nx = MAP_MIN;
     if (nx > MAP_MAX) nx = MAP_MAX;
     if (ny < MAP_MIN) ny = MAP_MIN;
     if (ny > MAP_MAX) ny = MAP_MAX;
@@ -4238,7 +4283,7 @@ void app_render(void)
         for (y = 0; y < VIEW_H; y++)
             memset(scr.px + (size_t)(VIEW_Y + y) * SCR_W + VIEW_X, 0, VIEW_W);
         for (i = 0; i < DIM_ICONS; i++)
-            if (!iconLive[i]) draw_dim_icon(i);
+            if (icon_dim(i)) draw_dim_icon(i);
         if (panelIcon >= 0) draw_hand(panelIcon);
         return;
     }
@@ -4503,7 +4548,7 @@ void app_render(void)
     {
         int i;
         for (i = 0; i < DIM_ICONS; i++)
-            if (!iconLive[i]) draw_dim_icon(i);
+            if (icon_dim(i)) draw_dim_icon(i);
         if (running) outline_icon(ICON_GO, 6);
         if (viewMode) outline_icon(ICON_VIEW, 6);
         /* sub_4d4a puts the hand there; the box this used to draw was the

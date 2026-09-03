@@ -284,12 +284,20 @@ LordMonarch().then((m) => {
   console.log(`${bridgedByKey ? 'ok  ' : 'FAIL'}  and the order was given: ${st}`);
   if (!bridgedByKey) process.exit(1);
 
-  // Pushing the cursor off the left of the map opens the panel.
+  // The left edge does NOT open the panel: 0x19d8 takes sub_ad80's refusal to
+  // the do-nothing path and the map loop has no branch to the panel from an
+  // edge.  Cancel is the one way in (0x19be, then 0x1a9b).
   for (let i = 0; i < 20; i++) m._lm_key(KEY.LEFT);
   st = m.UTF8ToString(m._lm_status());
+  const notPanel = !/^panel: /.test(st);
+  console.log(`${notPanel ? 'ok  ' : 'FAIL'}  the left edge stays on the map: ${st}`);
+  if (!notPanel) process.exit(1);
+  m._lm_key(KEY.BACK);
+  st = m.UTF8ToString(m._lm_status());
   const inPanel = /^panel: /.test(st);
-  console.log(`${inPanel ? 'ok  ' : 'FAIL'}  the left edge opened the panel: ${st}`);
+  console.log(`${inPanel ? 'ok  ' : 'FAIL'}  and cancel is what opens it: ${st}`);
   if (!inPanel) process.exit(1);
+  m._lm_key(KEY.BACK);
 
   // A whole thing played out on the keys the browser sends, because a test that
   // only checks an order was accepted does not show that it finishes.  B_014's

@@ -84,7 +84,7 @@
   送信しません）。半角はディスク自身のフォント <code>C_MOJI.DAT</code>
   （8×16 の1bpp、256字）も持っています。<br>
   <b>キーボードだけで遊べます</b> — 矢印でカーソル、スペースで決定、Backspace で取消。
-  マップの左端でさらに左を押すと左パネルに入り、そこでも矢印と決定で操作します。
+  <b>Esc</b> か <b>Backspace</b> で左パネルに入り、そこでも矢印と決定で操作します。
   原作もこの2ボタン方式で、マウスには対応していません（実行像にマウスのI/Oポートが
   一つも現れない）。
   上から GO・VIEW（自由スクロール）・税率・情報・速度・拡大縮小・同盟・EDIT、
@@ -121,7 +121,7 @@
 </div>
 
 <div id="keys">
-  <b>← → ↑ ↓</b><span>カーソル移動。マップの左端でさらに左を押すと左パネルに入る</span>
+  <b>← → ↑ ↓</b><span>カーソル移動。端では止まる</span>
   <b>スペース / Enter</b><span>決定。自分のユニットの上で押して拾い、行き先で押すと命令になる。
     パネルではアイコンを押す</span>
   <b>Backspace / Esc</b><span>取消。マップでは左パネルを開き、パネルではマップに戻る。
@@ -143,10 +143,10 @@
 <!-- BUILD is bumped by "make wasm".  Without it a browser will happily hold
      on to a monarch.js from an earlier build and then fail on whichever
      function was added since - which is exactly what happened once. -->
-<script src="monarch.js?v=04f47381"></script>
+<script src="monarch.js?v=3c52e436"></script>
 <script>
   // Stamped by tools/stamp.py from the wasm's own hash.
-  window.LM_BUILD = '04f47381';
+  window.LM_BUILD = '3c52e436';
 
 (function () {
   'use strict';
