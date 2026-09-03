@@ -133,6 +133,7 @@ static void dlg_cancel(void);
 static void dlg_confirm(void);
 static void dlg_open_order2(void);
 static void dlg_open_force(unsigned tableAddr);
+static void dlg_open_drive(void);
 static void dlg_open_order(int cx, int cy);
 static void order_chosen(void);
 static void order_apply(int after);
@@ -192,7 +193,7 @@ static FontRom fontRom;
 enum {
     DLG_NONE, DLG_INFO, DLG_TAX, DLG_SPEED, DLG_ZOOM, DLG_ALLY, DLG_ORDER,
     DLG_FELL, DLG_OVER, DLG_REFUSED, DLG_VIEW, DLG_MAPSEL, DLG_ORDER2,
-    DLG_FORCE
+    DLG_FORCE, DLG_DRIVE
 };
 static struct {
     int what;                       /* DLG_* , DLG_NONE when closed */
@@ -1020,8 +1021,8 @@ static void dlg_say_fmt(unsigned strAddr, const FmtSlot *slot, int slots)
 {
     const unsigned char *str;
     char out[DLG_TEXT];
-    unsigned at, based = 0;
-    int n = 0, len = 0;
+    unsigned at, based = 0, pending = 0;
+    int n = 0, len = 0, havePending = 0;
 
     if (!dat_at(strAddr, 1)) return;
     while (dat_at(strAddr + len, 1) && *dat_at(strAddr + len, 1)) len++;
@@ -1042,9 +1043,41 @@ static void dlg_say_fmt(unsigned strAddr, const FmtSlot *slot, int slots)
             if (*str) str++;
             if (letter == '?') eats = 3;
             else if (letter == 't') eats = pad == '0' ? 1 : 2;
-            w = dat_at(at, 2);
-            if (w) arg = (unsigned)(w[0] | (w[1] << 8));
+            if (havePending) {
+                arg = pending;
+                havePending = 0;
+            } else {
+                w = dat_at(at, 2);
+                if (w) arg = (unsigned)(w[0] | (w[1] << 8));
+            }
             at += (unsigned)(eats * 2);
+            /* "@Nt" indexes a table: 0x779f reads the word at the first
+             * argument, multiplies it by N with "f6 e1" and adds the second,
+             * then writes the answer into the argument slot after them - so the
+             * next code reads the address it worked out and not what is in the
+             * file, which is a nought waiting to be filled in.  ("@.Nt" is the
+             * same with the line number in [0xc54c] instead of the first
+             * argument; the port builds the one window that uses it - the order
+             * menu - itself, so that form is only stepped over.)
+             */
+            if (letter == 't') {
+                if (pad == '0') continue;           /* "@.Nt", not done here */
+                {
+                    const unsigned char *w2 = dat_at(at - 2, 2);
+                    unsigned base = w2 ? (unsigned)(w2[0] | (w2[1] << 8)) : 0;
+                    long idx = 0;
+                    int j;
+
+                    for (j = 0; j < slots; j++)
+                        if (slot[j].addr == arg && slot[j].isNum) {
+                            idx = slot[j].value;
+                            break;
+                        }
+                    pending = (unsigned)(idx * width + (long)base);
+                    havePending = 1;
+                }
+                continue;
+            }
             /* "@o" is not printed: it says where the arguments after it are
              * measured from.  0x7735 with no "@." reads the word at the
              * argument and takes that as the base, which is how DS:0x1a54 gets
@@ -1778,6 +1811,81 @@ static void order_chosen(void)
     dlg_open_order(cx, cy);
 }
 
+/* 0x203e, and it needs no guard at all - it goes straight to sub_727a.
+ *
+ * The menu is DS:0x10c5, four lines that read
+ *
+ *     グラフィック    ドライブ@3t@s
+ *     ＢＧＭデーター  ドライブ@3t@s
+ *     マップデーター  ドライブ@3t@s
+ *     ゲームデーター  ドライブ@3t@s
+ *
+ * with the words 3476+i*2 and 1854 after each terminator.  "@3t" works out
+ * "the word at the first argument, times three, plus the second" and writes it
+ * into the argument after, which "@s" then draws: DS:0x1854 is four three-byte
+ * strings, the full-width １ ２ ３ ４.  So each line says which drive that kind
+ * of data is read from.
+ *
+ * Confirming does not leave: 0x205e xors [bx + 0x3476] with 1 and jumps back to
+ * the top, so a confirm toggles the drive between one and two and the window
+ * stays.  It is the CANCEL that leaves, and 0x2055 plays 0x602 - the "taken"
+ * sound - on the way out, which is the other way round from every other window.
+ *
+ * A browser has no drives, so the setting cannot mean anything here; the window
+ * is still worth having, because showing the game's own four lines says what the
+ * icon is for, where a refusal said only that this port had not got to it.
+ */
+static unsigned char driveOf[4] = {0, 0, 0, 0};     /* [0x3476..0x347c] */
+
+static void dlg_open_drive(void)
+{
+    int i;
+
+    dlg_close();
+    dlg.what = DLG_DRIVE;
+    for (i = 0; i < 4; i++) {
+        const unsigned char *p = dat_at(0x10c5 + 6 + i * 2, 2);
+        unsigned at, numAt;
+        FmtSlot slot[2];
+        char letter[8];
+        const unsigned char *num;
+        int before = dlg.lines;
+
+        if (!p) break;
+        at = (unsigned)(p[0] | (p[1] << 8));
+        numAt = 0x1854 + (unsigned)driveOf[i] * 3;
+        num = dat_at(numAt, 3);
+        letter[0] = 0;
+        if (num) {
+            letter[0] = (char)num[0];
+            letter[1] = (char)num[1];
+            letter[2] = 0;
+        }
+        /* The flag "@3t" reads, and then the string "@s" draws at the address
+         * it works out.  Written this way round the port does the original's
+         * arithmetic rather than short-circuiting it. */
+        slot[0].addr = 0x3476 + (unsigned)i * 2;
+        slot[0].text = 0;
+        slot[0].value = driveOf[i];
+        slot[0].isNum = 1;
+        slot[1].addr = numAt;
+        slot[1].text = letter;
+        slot[1].value = 0;
+        slot[1].isNum = 0;
+        dlg_say_fmt(at, slot, 2);
+        if (dlg.lines > before) {
+            if (!dlg.count) dlg.first = before;
+            dlg.value[before] = i;
+            dlg.count++;
+        }
+    }
+    if (dlg.count == 0) {
+        dlg_say("DRIVE");
+        dlg_say("");
+        dlg_choice(JP_CLOSE, -1);
+    }
+}
+
 static void dlg_open_order(int cx, int cy)
 {
     unsigned char t = game.cell[game_cell_index(cx, cy)].tile;
@@ -1880,14 +1988,18 @@ static void icon_press(int idx)
         app_sound(APP_SND_OK);
         dlg_open_mapsel();
         break;
+    /* 0x203e has no guard - straight to sub_727a. */
+    case ICON_DRIVE:
+        app_sound(APP_SND_OK);
+        dlg_open_drive();
+        break;
     default:
         app_sound(APP_SND_NO);          /* not a refusal by the game: by me */
         snprintf(status, sizeof status,
                  "%s is in the original but not in this port yet",
                  idx == ICON_EDIT ? "EDIT" :
                  idx == ICON_LOAD  ? "LOAD"  : idx == ICON_SAVE ? "SAVE" :
-                 idx == ICON_FORM  ? "FORM"  : idx == ICON_CRT  ? "CRT/LCD" :
-                 "DRIVE");
+                 idx == ICON_FORM  ? "FORM"  : "CRT/LCD");
         break;
     }
 }
@@ -1929,6 +2041,13 @@ static void dlg_cancel(void)
         selected = -1;
         app_sound(APP_SND_FAILED);          /* 0x0702 at 0x22d3 */
         snprintf(status, sizeof status, "cancelled");
+        break;
+    /* 0x2052 takes the cancel out of the drive window, and 0x2055 plays 0x602
+     * on the way - the only window where leaving sounds like accepting. */
+    case DLG_DRIVE:
+        dlg_close();
+        app_sound(APP_SND_OK);
+        snprintf(status, sizeof status, "drives set");
         break;
     /* 0x21b7 sends the warning's cancel back to 0x211a, not to 0x22ce: the
      * unit stays in your hand and you pick a different square. */
@@ -2047,6 +2166,18 @@ static void dlg_confirm(void)
     case DLG_ORDER2:
         order_apply(value);
         break;
+    /* 0x205e: a confirm toggles the drive and jumps back to the top of
+     * 0x203e, so the window is rebuilt and stays up. */
+    case DLG_DRIVE: {
+        int which = value, pick = dlg.pick;
+
+        if (which >= 0 && which < 4) driveOf[which] ^= 1;
+        dlg_open_drive();
+        dlg.pick = pick;
+        snprintf(status, sizeof status, "drive %d for kind %d",
+                 which >= 0 && which < 4 ? driveOf[which] + 1 : 0, which);
+        break;
+    }
     case DLG_FORCE:
         /* 0x21ba and 0x21ec: nought is 強行 and goes on, anything else goes
          * back to choosing a destination with the unit still held. */
