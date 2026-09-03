@@ -36,6 +36,20 @@ static void checkf(int ok, const char *fmt, int a, int b)
     }
 }
 
+/* How much of one frequency a run of samples holds, as an amplitude. */
+static double mag_at(const short *pcm, int samples, double w)
+{
+    double re = 0, im = 0;
+    int k;
+
+    if (samples <= 0) return 0;
+    for (k = 0; k < samples; k++) {
+        re += pcm[k] * cos(w * k);
+        im += pcm[k] * sin(w * k);
+    }
+    return sqrt(re * re + im * im) / samples * 2;
+}
+
 /* Sixteen wide even though only twelve are notes: the table used to be twelve
  * and a wrong reading of the format handed it a fifteen, which under -O2 came
  * out as a segfault rather than as a failing check. */
@@ -98,6 +112,14 @@ int main(int argc, char **argv)
             failures++;
             continue;
         }
+        /* 0x0e63: the effect voice starts with [si+4] = 0x80, tone and no
+         * noise.  Thirteen of the nineteen never write that byte themselves,
+         * effects 4, 6 and 7 - the refusal, the confirm and the "cannot" -
+         * among them, so at nought they get the noise source at period 0 as
+         * well and the note comes out half as loud with a hiss over it.  That
+         * is what made the confirm inaudible under the music. */
+        checkf(v.algo == 0x80, "effect %d starts with [si+4] = %02x, not 80",
+               id, v.algo);
         line[0] = 0;
         for (t = 0; t < 4000; t++) {
             if (!snd_tick(&v, &keyed)) break;
@@ -312,6 +334,35 @@ int main(int argc, char **argv)
             }
             printf("  an effect borrows a channel and hands it back: "
                    "%.0f before, %.0f after\n", sa / slices, sb / slices);
+
+            /* And it has to be as loud over the music as it is on its own -
+             * the two players write the mixer from different code, so this is
+             * where a difference between them shows up.  B4 is the loudest
+             * note of effect 6, the confirm.  The floor on `alone` is the
+             * other half of it: 225 with the mixer right, 102 with the noise
+             * source left in, which is what the check above is for. */
+            {
+                static short only[R];
+                int mo = snd_render_effect(dat, n, 6, only, R, R);
+                double w = 2.0 * 3.14159265358979 * 494.0 / R;
+                double alone, over, under;
+                int win = R / 2;            /* the half second it sounds for */
+
+                if (win > mo) win = mo;
+                #define MAG(buf, from) (mag_at((buf) + (from), win, w))
+                alone = MAG(only, 0);
+                over  = MAG(mixed, R);
+                under = MAG(plain, R);      /* what the music has there */
+                #undef MAG
+                printf("  effect 6 at 494 Hz: %.0f alone, %.0f over the "
+                       "music, %.0f music without it\n", alone, over, under);
+                checkf(over > alone * 0.6,
+                       "the effect is %d over the music against %d on its own",
+                       (int)over, (int)alone);
+                checkf(alone > 180,
+                       "effect 6's B is only %d, and %d is what the mixer "
+                       "gives it", (int)alone, 225);
+            }
         }
         free(sd);
     }

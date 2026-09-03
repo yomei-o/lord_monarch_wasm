@@ -74,6 +74,15 @@ static int start_at(SndVoice *v, const unsigned char *progDat,
     memset(v, 0, sizeof *v);
     v->note = -1;
     v->volume = 0x0f;
+    /* sub_0e3f zeroes the effect voice and then writes four fields by hand,
+     * and 0x0e63 is `mov byte ptr [di+4], 0x80` - tone, no noise; the music
+     * channels get the same byte from FUN_1000_0bda.  Only six of the nineteen
+     * effects set [si+4] themselves with an f4 command, and effects 4, 6 and 7
+     * - the refusal, the confirm and the "cannot", which is most of what the
+     * game says out loud - are not among them.  Left at zero the mixer hands
+     * the channel the noise source as well, at period 0, and the tone comes
+     * out half as loud because the chip ANDs the two together. */
+    v->algo = 0x80;
     if (seqAddr < 0x1000 || end <= seqAddr) return 0;
     off = seqAddr - 0x1000;
     if (off >= progDatSize) return 0;
@@ -92,6 +101,7 @@ int snd_start(SndVoice *v, const unsigned char *progDat, unsigned progDatSize,
     memset(v, 0, sizeof *v);
     v->note = -1;
     v->volume = 0x0f;
+    v->algo = 0x80;                     /* 0x0e63; start_at says why */
     if (id < 0 || id >= SND_EFFECTS) return 0;
 
     /* See sound.h: the sound board's table is pairs, and the second of a pair
@@ -432,6 +442,26 @@ int snd_env_step(SndVoice *v, const unsigned char *env)
 
 /* --------------------------------------------------------------- rendering */
 
+/* sub_10ee.  [si+4] is this channel's half of register 7 and the noise period
+ * with it: bit 7 is "tone only" - and then the write to register 6 is skipped
+ * - bit 6 is "noise only", and the low bits are the noise period.  With
+ * neither bit set the channel gets tone AND noise, which is what `f4 00` in
+ * effects 10, 12, 15 and 16 asks for.  `mixer` is register 7 as it stands,
+ * because the original reads the register back (0x1114) rather than keeping a
+ * copy.
+ *
+ * Both players go through here.  The effect renderer used to write 0x3e - tone
+ * on channel A - whatever the sequence said, so effect 2, whose whole content
+ * is `f4 40 f4 40`, came out as a tone where the machine makes noise. */
+static void algo_write(Ssg *chip, int *mixer, int c, int a4)
+{
+    if (!(a4 & 0x80)) ssg_write(chip, 6, a4 & 0x1f);
+    *mixer &= ~((1 << c) | (8 << c));
+    if (a4 & 0x40) *mixer |= 1 << c;            /* noise only: tone off */
+    if (a4 & 0x80) *mixer |= 8 << c;            /* tone only: noise off */
+    ssg_write(chip, 7, *mixer);
+}
+
 int snd_render_effect(const unsigned char *progDat, unsigned progDatSize,
                       int id, short *out, int maxSamples, int sampleRate)
 {
@@ -441,6 +471,7 @@ int snd_render_effect(const unsigned char *progDat, unsigned progDatSize,
     int made = 0;
     int perTick = sampleRate / SND_TICK_HZ;
     int level = 0;
+    int mixer = 0x3f;
 
     if (progDatSize < (unsigned)(SSG_PERIOD_AT - 0x1000) + 32) return 0;
     if (progDatSize < (unsigned)(SND_ENV_AT - 0x1000) + 256) return 0;
@@ -449,7 +480,7 @@ int snd_render_effect(const unsigned char *progDat, unsigned progDatSize,
     if (!snd_start(&v, progDat, progDatSize, id)) return 0;
 
     ssg_reset(&chip);
-    ssg_write(&chip, 7, 0x3f);              /* everything off to begin with */
+    ssg_write(&chip, 7, mixer);             /* everything off to begin with */
 
     for (;;) {
         int keyed = 0, room;
@@ -477,7 +508,7 @@ int snd_render_effect(const unsigned char *progDat, unsigned progDatSize,
             int p = ssg_period(periods, v.note, 0);
             ssg_write(&chip, 0, p & 0xff);
             ssg_write(&chip, 1, (p >> 8) & 0x0f);
-            ssg_write(&chip, 7, 0x3e);      /* tone on channel A */
+            algo_write(&chip, &mixer, 0, v.algo);   /* 0x0f94 */
             snd_env_key(&v, env);           /* sub_111e */
         }
         /* 0x0f40: with the tie flag set, the note goes into its release when
@@ -681,14 +712,7 @@ static void ssg_voice_tick(SndSong *s, SndVoice *v, int *live, int c,
             if (!mute) {
                 ssg_write(&s->chip, c * 2, p & 0xff);
                 ssg_write(&s->chip, c * 2 + 1, (p >> 8) & 0x0f);
-                /* sub_10ee: [si+4] is this channel's half of register 7.
-                 * Bit 7 is tone only - and skips the noise period - bit 6 is
-                 * noise only, and the low bits are the noise period. */
-                if (!(a4 & 0x80)) ssg_write(&s->chip, 6, a4 & 0x1f);
-                s->mixer &= ~((1 << c) | (8 << c));
-                if (a4 & 0x40) s->mixer |= 1 << c;
-                if (a4 & 0x80) s->mixer |= 8 << c;
-                ssg_write(&s->chip, 7, s->mixer);
+                algo_write(&s->chip, &s->mixer, c, a4);     /* 0x0f94 */
             }
             if (keyed) snd_env_key(v, s->env);
             if (!mute && c == SND_FX_CHANNEL && v != &s->fx) s->refresh = 0;
