@@ -241,6 +241,12 @@ static int mapNumber, tileSize = 16, scrollX, scrollY;
 
 /* So the end is announced once rather than every turn. */
 static int overSaid;
+/* [0xce70], the furthest stage reached.  sub_1afa - the GO icon - starts at it
+ * whenever no stage has been chosen (0x1b21 loads [0x3bc2] from it), and the win
+ * path increments it only when the stage just cleared is at least as far
+ * (0xb3e3).  So clearing stage 5 having already reached 10 puts you back on 10,
+ * not on 6, and this port advancing with mapNumber + 1 was wrong for that. */
+static int reached;
 
 /* 0 = the LOGiN three, 1 = the game's own fifty-two.  mapNumber is the index
  * within whichever is in force, not the file's number. */
@@ -1184,15 +1190,19 @@ static void dlg_confirm(void)
          * set, so its GO refuses at 0x1b10 until the stage is entered afresh -
          * here that reads as the map coming back up paused. */
         if (overSaid == 1) {
-            if (mapNumber + 1 < MAP_COUNT) {
-                app_show_map(mapNumber + 1, tileSize);
+            /* 0xb3e3: the counter only moves when this stage was the furthest
+             * one, and then 0x6315 starts whatever [0xce70] now names. */
+            if (mapNumber >= reached && reached + 1 < MAP_COUNT) reached++;
+            if (reached < MAP_COUNT) {
+                app_show_map(reached, tileSize);
                 running = 1;
             } else {
                 app_show_title();       /* sub_b661, which is not ported */
-                snprintf(status, sizeof status, "all %d maps cleared",
+                snprintf(status, sizeof status, "all %d stages cleared",
                          MAP_COUNT);
             }
         } else {
+            /* sub_b28d leaves [0x3bc2] alone: the same stage, and paused. */
             app_show_map(mapNumber, tileSize);
         }
         break;
@@ -1646,6 +1656,9 @@ int app_sound_take(void)
  * exactly what happened, and it looked like the game had stopped producing
  * soldiers rather than like the clock had stopped. */
 int app_running(void) { return running; }
+
+/* [0xce70].  A host or a test can ask how far the player has got. */
+int app_reached(void) { return reached; }
 int app_map_number(void) { return mapNumber; }
 
 int app_effect_pcm(int id, short *out, int maxSamples, int rate)

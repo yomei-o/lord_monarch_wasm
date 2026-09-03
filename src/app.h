@@ -105,6 +105,10 @@ int app_dialog(void);
  * it, so a host must ask instead of tracking its own flag. */
 int app_running(void);
 
+/* How far the player has got - the original's [0xce70].  A stage is entered
+ * from here, and clearing the furthest one moves it on. */
+int app_reached(void);
+
 /* Renders one of the game's own sound effects.  Returns the sample count. */
 int app_effect_pcm(int id, short *out, int maxSamples, int rate);
 

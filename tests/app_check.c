@@ -107,6 +107,14 @@ int main(int argc, char **argv)
         app_key(APP_KEY_START);
         check(app_dialog() == 0, "answering it closes it");
         check(app_map_number() == was + 1, "and the next stage is up");
+        /* The distinguishing rule: 0xb3e3 only moves [0xce70] when the stage
+         * just cleared was the furthest, and 0x6315 then enters whatever
+         * [0xce70] names.  So the stage that comes up is the counter, not the
+         * one after the stage played - clear stage 5 having reached 10 and you
+         * are put back on 10. */
+        check(app_reached() == was + 1, "the reached counter moved with it");
+        check(app_map_number() == app_reached(),
+              "and the stage entered is the one the counter names");
         check(app_running(), "already running, the way sub_6315 leaves it");
         printf("map %d won after %d frames, now on map %d\n",
                was, overAt, app_map_number());

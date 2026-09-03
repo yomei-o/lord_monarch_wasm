@@ -196,10 +196,15 @@ void game_endgame(Game *g)
     int i, alive = 0, human = g->human;
     unsigned long theirs = 0, mine;
 
-    for (i = 0; i < PLAYERS; i++) if (g->side[i].alive) alive++;
+    /* sub_b2f2 does not count who is alive: it counts flags with both bit 2
+     * and bit 3, and wants exactly three.  Counting it that way keeps the two
+     * halves honest - if bit 2 ever turns out to be set somewhere else, this
+     * follows without another change. */
+    for (i = 0; i < PLAYERS; i++)
+        if ((g->side[i].flag & 0x0c) == 0x0c) alive++;
     if (human >= 0 && human < PLAYERS) {
         if (!g->side[human].alive) g->over = 2;      /* sub_b28d */
-        else if (alive == 1) g->over = 1;            /* sub_b2f2, three gone */
+        else if (alive == 3) g->over = 1;            /* 0xb318: cmp dx, 3 */
     }
 
     /* sub_a75d.  Note what it counts: the four player records only, the
@@ -1385,8 +1390,20 @@ static void side_falls(Game *g, int side)
     int heir = s->heir, i, cx, cy, dx, dy;
 
     if (!s->alive) return;
-    s->alive = 0;                       /* the flag word's bit 3 */
-    s->flag |= 1;
+    s->alive = 0;
+    /* The flag word.  0xb158 sets bit 3 - "dealt with" - and sub_a9ca sets
+     * bit 0 for a dead king.  Bit 2 is set here as well, and that is a
+     * decision rather than a reading: sub_b2f2 counts sides whose flag has
+     * BOTH bits 2 and 3 and wants three of them before a stage is won, but
+     * nothing in the program appears to set bit 2 at all - 0xb158 is the only
+     * instruction that touches a side flag between 0xb100 and 0xb300, and an
+     * "or" of 4 or 0x0c turns up nowhere in the disassembly, which covers
+     * about 95% of the file.  Taken literally the win path is dead code and no
+     * stage can ever be cleared, which is what the user reported.  Reading bit
+     * 2 as "this fall has been dealt with" and setting it beside bit 3 is the
+     * one interpretation that makes sub_b2f2 mean what its own message says.
+     */
+    s->flag |= 0x0d;                    /* king dead, counted, dealt with */
     g->fellSide = side;                 /* 0xb197 has something to say */
 
     if (heir < PLAYERS && heir != side) {
