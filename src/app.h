@@ -90,6 +90,11 @@ int app_dialog(void);
  *
  * That distinction is the point: without it there is no way to tell a refusal
  * from something this port has not got round to implementing. */
+/* The window sounds, which are the driver's own ids at their own priorities:
+ * 0x0500 when the selection moves (0x4c2e) and 0x0601 on confirm (0x4c8a). */
+#define APP_SND_MOVE    0x0500
+#define APP_SND_CONFIRM 0x0601
+
 #define APP_SND_OK      0x0602
 #define APP_SND_NO      0x0402
 #define APP_SND_FAILED  0x0702

@@ -129,6 +129,8 @@ static const unsigned char *dat_at(unsigned addr, unsigned need)
 static void snapshot_dim_icons(void);
 static int screen_to_icon(int x, int y);
 static void confirm_at(int cx, int cy);
+static void dlg_cancel(void);
+static void dlg_confirm(void);
 static void follow_cursor(void);
 static void panel_move(int dx, int dy);
 static const char *icon_name(int idx);
@@ -1128,6 +1130,30 @@ static void icon_press(int idx)
     }
 }
 
+/* Cancel.  sub_4be9 hands the carry back and the caller decides; the order menu
+ * at 0x2238 puts the unit back in your hand to be sent somewhere else, and
+ * everything else simply closes.  The window that announces a fall or the end of
+ * a stage has no cancel at all - sub_c90f and sub_c921 wait for any key and
+ * carry on - so cancel there does what confirm does. */
+static void dlg_cancel(void)
+{
+    switch (dlg.what) {
+    case DLG_ORDER:
+        dlg_close();
+        snprintf(status, sizeof status,
+                 "still holding the unit - say where it should go");
+        break;                      /* selected is left alone: choose again */
+    case DLG_FELL:
+    case DLG_OVER:
+        dlg_confirm();              /* these only wait for a key */
+        break;
+    default:
+        dlg_close();
+        snprintf(status, sizeof status, "cancelled");
+        break;
+    }
+}
+
 /* Confirm inside a dialog. */
 static void dlg_confirm(void)
 {
@@ -1289,31 +1315,55 @@ void app_key(int key)
     }
     /* A dialog takes the keys while it is up, which is what the original does:
      * sub_4be9 sits on the input until the menu is answered. */
+    /* A window has the keys while it is up, and sub_4be9 is exact about what
+     * happens to each one:
+     *
+     *   sub_4ca1   moves the selection by one and REFUSES at either end - it
+     *              returns with the carry set and 0x4c2c goes straight back to
+     *              waiting, so pressing up at the top does nothing at all, not
+     *              even a click.  There is no wrapping.
+     *   0x4c2e     a move that did happen plays 0x0500
+     *   0x4c89     confirm plays 0x0601 and returns with the carry clear
+     *   0x4c94     cancel returns with the carry SET, and it is the caller that
+     *              decides what that means - for the order menu at 0x2238 it is
+     *              "choose again", not "forget it"
+     *   0x4c10     "and al, bh" - only the buttons the caller asked for get
+     *              through, and every caller passes 0x63: up, down, confirm and
+     *              cancel.  Left and right are not among them, so in a menu
+     *              they do nothing.  The tax window is not a menu but the
+     *              slider at sub_531d, which is why it alone takes them.
+     */
     if (dlg.what != DLG_NONE) {
         switch (key) {
         case APP_KEY_LEFT:
-            tax_step(-1);
+            tax_step(-1);           /* the slider, sub_539f, takes these */
             return;
         case APP_KEY_RIGHT:
             tax_step(1);
             return;
         case APP_KEY_UP:
             if (tax_step(-1)) return;
-            if (dlg.pick > 0) dlg.pick--;
-            return;
+            if (dlg.pick > 0) {
+                dlg.pick--;
+                app_sound(APP_SND_MOVE);        /* 0x4c2e */
+            }
+            return;                             /* 0x4cab: no wrap, no sound */
         case APP_KEY_DOWN:
             if (tax_step(1)) return;
-            if (dlg.pick + 1 < dlg.count) dlg.pick++;
-            return;
+            if (dlg.pick + 1 < dlg.count) {
+                dlg.pick++;
+                app_sound(APP_SND_MOVE);
+            }
+            return;                             /* 0x4cb3: no wrap, no sound */
         case APP_KEY_START:
+            app_sound(APP_SND_CONFIRM);         /* 0x4c8a */
             dlg_confirm();
             return;
         case APP_KEY_BACK:
-            dlg_close();
-            snprintf(status, sizeof status, "cancelled");
+            dlg_cancel();
             return;
         default:
-            return;                 /* nothing else gets through */
+            return;                 /* 0x4c10 lets nothing else through */
         }
     }
 
