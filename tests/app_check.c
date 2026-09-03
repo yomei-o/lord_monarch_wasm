@@ -29,6 +29,7 @@
 #define DLG_OVER    8
 #define DLG_REFUSED 9
 #define DLG_VIEW    10
+#define DLG_MAPSEL  11
 
 static int failures;
 
@@ -84,6 +85,26 @@ int main(int argc, char **argv)
     app_click(24, 200);                         /* ICON_ALLY, row 3 column 0 */
     check(app_dialog() == DLG_ALLY, "the alliance opens before the stage starts");
     app_key(APP_KEY_BACK);
+
+    /* 0x1e0f is a list of what is on the disk, not a step to the next stage.
+     * Fifty-two will not fit in a box, so the box scrolls: 0x4ccd moves it down
+     * when the selection reaches the bottom line. */
+    app_click(64, 264);                         /* ICON_MAP, row 4 column 1 */
+    check(app_dialog() == DLG_MAPSEL, "the map icon opens a list of stages");
+    {
+        int lines = app_dialog_lines(), k;
+        char firstShown[40];
+
+        snprintf(firstShown, sizeof firstShown, "%s", app_dialog_line(3));
+        for (k = 0; k < 12; k++) app_key(APP_KEY_DOWN);
+        check(strcmp(firstShown, app_dialog_line(3)) != 0,
+              "and walking down it scrolls the box");
+        check(app_dialog_lines() == lines,
+              "while the box stays the same size");
+    }
+    app_key(APP_KEY_BACK);
+    check(app_dialog() == 0, "cancel leaves the stage alone");
+    check(app_map_number() == 0, "and it is still map 0");
 
     app_key(APP_KEY_RUN);
     check(app_running(), "GO starts the world");

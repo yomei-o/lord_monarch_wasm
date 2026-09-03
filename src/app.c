@@ -132,6 +132,7 @@ static void confirm_at(int cx, int cy);
 static void dlg_cancel(void);
 static void dlg_confirm(void);
 static void cursor_move(int dx, int dy);
+static void dlg_follow(void);
 static void follow_cursor(void);
 static void panel_move(int dx, int dy);
 static const char *icon_name(int idx);
@@ -179,7 +180,7 @@ static FontRom fontRom;
 #define DLG_TEXT 34
 enum {
     DLG_NONE, DLG_INFO, DLG_TAX, DLG_SPEED, DLG_ZOOM, DLG_ALLY, DLG_ORDER,
-    DLG_FELL, DLG_OVER, DLG_REFUSED, DLG_VIEW
+    DLG_FELL, DLG_OVER, DLG_REFUSED, DLG_VIEW, DLG_MAPSEL
 };
 static struct {
     int what;                       /* DLG_* , DLG_NONE when closed */
@@ -189,6 +190,16 @@ static struct {
     int pick;                       /* 0..count-1 */
     int value[DLG_LINES];           /* what each choice means */
     char line[DLG_LINES][DLG_TEXT];
+    /* A window on to a longer list, which sub_49bb and sub_4ca1 keep between
+     * them: [di] is the selection and [di+1] the first line shown, with cl the
+     * lines the box can hold less one and ch the whole list less one.  0x4cc4
+     * scrolls up when the selection lands on the top of the box and 0x4ccd down
+     * when it lands on the bottom.  `window` of nought means the list is short
+     * enough to show whole, which is every window but the stage list. */
+    int top;                        /* [di+1] */
+    int window;                     /* cl + 1 */
+    int total;                      /* ch + 1, when it is longer than `count` */
+    char item[GFX_MAPS][DLG_TEXT];  /* the whole list, when there is one */
 } dlg;
 
 static void dlg_close(void)
@@ -916,6 +927,47 @@ static void dlg_open_fell(int side)
 #define GUARD_UNDER_WAY 0x1159
 #define GUARD_NO_LAND   0x115f
 
+/* A window's line as text, with what is not text taken out.
+ *
+ * sub_759b treats a byte under 0x20 as an instruction rather than a character -
+ * 0x10..0x1f set the colour, which is what panel_line above does with them -
+ * and an "@" opens a format code whose operand comes from a stack the caller
+ * built.  A title like the map load's is <0x16>@?マップ・ロード<0x17>, so
+ * copying it verbatim put "@?" and two stray glyphs on the screen, which is
+ * what "the windows do not display properly" looked like.  Here there is no
+ * operand stack to draw from, so a code contributes nothing and is dropped.
+ *
+ * A code is "@", an optional ".", optional digits, then one letter.
+ */
+static void dlg_clean(const char *in, char *out, int max)
+{
+    const unsigned char *p = (const unsigned char *)in;
+    int n = 0;
+
+    while (*p && n < max - 1) {
+        if (*p < 0x20) {                /* colour and the like, not text */
+            p++;
+            continue;
+        }
+        if (*p == '@') {
+            p++;
+            if (*p == '.') p++;
+            while (*p >= '0' && *p <= '9') p++;
+            if (*p) p++;                /* the letter that ends it */
+            continue;
+        }
+        /* Shift-JIS lead bytes take their trail byte with them. */
+        if ((*p >= 0x81 && *p <= 0x9f) || (*p >= 0xe0 && *p <= 0xef)) {
+            if (n + 2 >= max - 1) break;
+            out[n++] = (char)*p++;
+            if (*p) out[n++] = (char)*p++;
+            continue;
+        }
+        out[n++] = (char)*p++;
+    }
+    out[n] = 0;
+}
+
 /* Says every line of one of sub_4a4d's tables. */
 static void dlg_say_table(unsigned tableAddr)
 {
@@ -932,7 +984,11 @@ static void dlg_say_table(unsigned tableAddr)
             if (!p) break;
             at = p[0] | (p[1] << 8);
             text = dat_at(at, 1);
-            if (text) dlg_say((const char *)text);
+            if (text) {
+                char clean[DLG_TEXT];
+                dlg_clean((const char *)text, clean, sizeof clean);
+                dlg_say(clean);
+            }
         }
     }
 }
@@ -946,6 +1002,39 @@ static void dlg_open_refused(unsigned tableAddr)
     dlg_say("");
     dlg_choice(JP_CLOSE, 0);
     app_sound(APP_SND_FAILED);          /* 0x0702 at every one of the three */
+}
+
+/* 0x1e0f, the map load.  It puts up the window DS:0x117d names and then a menu
+ * of what is on the disk (the descriptor at DS:0x1079, selected into [0x3bf0]).
+ * Fifty-two stages will not fit in a box, which is what the scroll window is
+ * for.  This port used to advance to the next stage instead, which is not what
+ * the icon does at all.
+ */
+static void dlg_open_mapsel(void)
+{
+    int i;
+
+    dlg_close();
+    dlg.what = DLG_MAPSEL;
+    dlg_say_table(0x117d);
+    if (dlg.lines == 0) dlg_say("MAP");
+    dlg_say("");
+
+    dlg.total = MAP_COUNT;
+    for (i = 0; i < MAP_COUNT && i < GFX_MAPS; i++)
+        snprintf(dlg.item[i], DLG_TEXT, "%2d %s", i,
+                 mapNames[i][0] ? mapNames[i] : "");
+    dlg.window = DLG_LINES - dlg.lines - 1;
+    if (dlg.window > 8) dlg.window = 8;
+    dlg.first = dlg.lines;
+    dlg.count = dlg.window;
+    for (i = 0; i < dlg.window; i++) dlg_say("");
+    dlg.pick = mapNumber;
+    if (dlg.pick >= dlg.total) dlg.pick = 0;
+    /* pick is an index into the whole list here, so the box is placed round it
+     * and then the selection is expressed inside the box. */
+    dlg.top = dlg.pick - dlg.window / 2;
+    dlg_follow();
 }
 
 /* The look-around at 0x1b5f.  Its window is the table at DS:0x10f1, which is
@@ -1234,9 +1323,9 @@ static void icon_press(int idx)
         if (!guard_not_started()) break;
         app_sound(APP_SND_OK); dlg_open_ally();  break;
     case ICON_MAP:
+        if (!guard_stage()) break;
         app_sound(APP_SND_OK);
-        app_show_map(mapNumber + 1 >= MAP_COUNT ? 0 : mapNumber + 1,
-                     tileSize);
+        dlg_open_mapsel();
         break;
     default:
         app_sound(APP_SND_NO);          /* not a refusal by the game: by me */
@@ -1247,6 +1336,24 @@ static void icon_press(int idx)
                  idx == ICON_FORM  ? "FORM"  : idx == ICON_CRT  ? "CRT/LCD" :
                  "DRIVE");
         break;
+    }
+}
+
+/* 0x4cc4 and 0x4ccd: the box follows the selection when it reaches an edge. */
+static void dlg_follow(void)
+{
+    int i;
+
+    if (dlg.window <= 0) return;
+    if (dlg.pick < dlg.top) dlg.top = dlg.pick;
+    if (dlg.pick >= dlg.top + dlg.window) dlg.top = dlg.pick - dlg.window + 1;
+    if (dlg.top < 0) dlg.top = 0;
+    if (dlg.top > dlg.total - dlg.window) dlg.top = dlg.total - dlg.window;
+    for (i = 0; i < dlg.window; i++) {
+        int at = dlg.top + i;
+        snprintf(dlg.line[dlg.first + i], DLG_TEXT, "%s",
+                 at < dlg.total ? dlg.item[at] : "");
+        dlg.value[dlg.first + i] = at;
     }
 }
 
@@ -1338,6 +1445,12 @@ static void dlg_confirm(void)
         dlg_close();
         app_show_map(mapNumber, value);
         break;
+    case DLG_MAPSEL: {
+        int want = dlg.pick;            /* the index into the whole list */
+        dlg_close();
+        if (want >= 0 && want < MAP_COUNT) app_show_map(want, tileSize);
+        break;
+    }
     case DLG_ALLY: {
         /* An alliance holds from both ends, and sub_b102 breaks it from both
          * ends when a country falls, so it is set the same way. */
@@ -1490,13 +1603,15 @@ void app_key(int key)
             if (tax_step(-1)) return;
             if (dlg.pick > 0) {
                 dlg.pick--;
+                dlg_follow();
                 app_sound(APP_SND_MOVE);        /* 0x4c2e */
             }
             return;                             /* 0x4cab: no wrap, no sound */
         case APP_KEY_DOWN:
             if (tax_step(1)) return;
-            if (dlg.pick + 1 < dlg.count) {
+            if (dlg.pick + 1 < (dlg.window > 0 ? dlg.total : dlg.count)) {
                 dlg.pick++;
+                dlg_follow();
                 app_sound(APP_SND_MOVE);
             }
             return;                             /* 0x4cb3: no wrap, no sound */
@@ -2348,7 +2463,9 @@ void app_render(void)
         gfx_window(&scr, frameArt, x, y, cellsW, dlg.lines);
         for (i = 0; i < dlg.lines; i++) {
             int ly = y + 8 + i * 16;
-            int chosen = dlg.count && i == dlg.first + dlg.pick;
+            int chosen = dlg.count &&
+                         i == dlg.first + (dlg.window > 0 ? dlg.pick - dlg.top
+                                                          : dlg.pick);
 
             if (chosen) {
                 int j, k;
