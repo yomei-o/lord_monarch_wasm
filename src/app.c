@@ -159,7 +159,19 @@ typedef struct {
 } FmtSlot;
 
 static void confirm_at(int cx, int cy);
+/* The selection bar's colour.  sub_9239 recolours the chosen line's interior
+ * from 1 to 15 through the GRCG, and 15 is the entry 0x07b6 pulses. */
+#define BAR_COLOUR 15
+
 static void app_palette(const unsigned char *t48);
+static void bar_pulse(void);
+
+/* [0x3e4e] and the triangle 0x07b6 walks it along, kept beside the palette the
+ * port last uploaded because the pulse is re-applied over it every frame the
+ * way the retrace re-uploads the whole table at 0x07ce. */
+static int barPulse = 15, barUp;
+static unsigned char palBase[48];
+static int palBaseOk;
 static void dlg_say_table(unsigned tableAddr);
 static void dlg_say_table_fmt(unsigned tableAddr, const FmtSlot *slot,
                               int slots);
@@ -911,6 +923,8 @@ static void app_palette(const unsigned char *t48)
     int i;
 
     if (!t48) return;
+    memcpy(palBase, t48, sizeof palBase);
+    palBaseOk = 1;
     if (!lcd) {
         gfx_set_palette(&scr, t48);
         return;
@@ -949,12 +963,20 @@ static void app_palette(const unsigned char *t48)
     gfx_set_palette(&scr, out);
 }
 
-/* Where the display question's colour pulse has got to.  See the note by
- * app_show_device. */
-static int devPulse = 15, devUp;
+/* 0x07b6: every other tick, 15 down to 0 and back up, on entry 15's red. */
+static void bar_pulse(void)
+{
+    if (!palBaseOk) return;
+    if (barUp) {
+        if (++barPulse >= 15) { barPulse = 15; barUp = 0; }
+    } else {
+        if (--barPulse <= 0) { barPulse = 0; barUp = 1; }
+    }
+    scr.pal[BAR_COLOUR][0] = (unsigned char)(barPulse & 0x0f);
+}
 
-/* 0x06e8 and 0x06fa between them: DS:0x249b with everything but entries 7 and
- * 15 blacked out, and entry 15's red wherever the pulse has got to. */
+/* 0x06e8: entries 0..6 and 8..14 are blacked out for the display question and
+ * only 7 and 15 keep what DS:0x249b gave them. */
 static void device_palette(void)
 {
     const unsigned char *t = dat_at(PAL_BOOT_AT, 48);
@@ -967,7 +989,6 @@ static void device_palette(void)
         if (i == 7 || i == 15) continue;
         pal[i * 3 + 0] = pal[i * 3 + 1] = pal[i * 3 + 2] = 0;
     }
-    pal[15 * 3 + 1] = (unsigned char)(devPulse & 0x0f);     /* [0x3e4e] */
     app_palette(pal);
 }
 
@@ -1014,8 +1035,8 @@ int app_show_device(void)
     dlg_close();
     dlg.what = DLG_DEVICE;
     device_lines();
-    devPulse = 15;
-    devUp = 0;
+    barPulse = 15;
+    barUp = 0;
     device_palette();
     snprintf(status, sizeof status, "select the display device");
     return 1;
@@ -1025,25 +1046,26 @@ int app_show_device(void)
  * title.  A key leaves at any point, which is 0xca1f's own "and al, 0x60". */
 static int titleHold, titleBlend;
 
-/* The display question's own screen, which is not a window on a black ground.
+/* The selection bar, and it is a recolour rather than a box.
  *
- *   0x06e8  zeroes twenty-one bytes of the palette work area at DS:0x3e20,
- *           skips three, and zeroes twenty-one more - so entries 0..6 and
- *           8..14 go black and entries 7 and 15 keep what DS:0x249b gave them,
- *           which is white and 0xfa0, an orange
- *   0x06fa  sub_7518, which fills the whole of VRAM with 0xffff through the
- *           GRCG in mode 15: the screen becomes index 15 everywhere
- *   0x070e  the message, and 0x0717 the menu, drawn with [0x32a9] as the
- *           colour - which nothing has set at this point in the boot
+ * sub_9239 is what draws it.  For each of the sixteen rows of the chosen line
+ * it sets the GRCG to colour 1 with sub_7262 and READS the row's words, then
+ * sets it to colour 15 with sub_724a (ax = 0xf0f) and WRITES them back - which
+ * through the GRCG means "every pixel that was colour 1 becomes colour 15".
+ * Colour 1 is what sub_91ea filled the window's interior with (ax = 0x10f), so
+ * the bar is the interior repainted.
  *
- * so it is dark text on a flat orange field.  And 0x07b6, in the retrace, runs
- * a triangle wave on [0x3e4e] - byte 46 of the table, which is entry 15's RED -
- * stepping it every other tick, 15 down to 0 and back up.  With the whole
- * screen on index 15 that makes the field itself change colour, which is what
- * the bar changing colour is.  Its gate, [0x32e0], is only ever written inside
- * the opening (0xc9fb, 0xca40), so at this point in the boot it holds whatever
- * was in memory; on the machine this was reported from, it was running. */
-/* devPulse and devUp are declared above device_palette. */
+ * sub_724a itself is where the colours come from: "al = plane mask, ah =
+ * colour".  So sub_7518's ax = 0x0f is ah = 0, and it CLEARS the screen rather
+ * than filling it with index 15 - reading that as a fill was what turned the
+ * display question bright yellow.
+ *
+ * And 0x07b6, in the retrace, runs a triangle wave on [0x3e4e] - byte 46 of the
+ * palette work area, which is entry 15's RED - stepping it every other tick
+ * from 15 down to 0 and back.  Entry 15 is the bar, so it is the SELECTED LINE'S
+ * BACKGROUND that changes colour, slowly, over and over.  Its gate [0x32e0] is
+ * cleared for the opening at 0xc9fb and set again at 0xca40, so it runs
+ * everywhere except during the opening itself. */
 
 int app_show_title(void)
 {
@@ -3344,8 +3366,18 @@ void app_key(int key)
         case APP_KEY_RIGHT: panel_move(1, 0); break;
         case APP_KEY_UP:    panel_move(0, -1); break;
         case APP_KEY_DOWN:  panel_move(0, 1); break;
-        case APP_KEY_START: icon_press(panelIcon); return;
+        case APP_KEY_START:
+            /* 0x4e2b plays 0x601 when the panel's own confirm is taken, and
+             * only then does the handler run - which plays its own 0x602 if it
+             * accepts.  Both are heard. */
+            app_sound(APP_SND_CONFIRM);
+            icon_press(panelIcon);
+            return;
         case APP_KEY_BACK:
+            /* 0x4e36 is a bare "stc": leaving the panel makes no sound, and
+             * neither does moving the hand - 0x4dfc onwards changes [0x3bee]
+             * and jumps straight to the redraw at 0x4dd8.  The one sound in
+             * sub_4db2 is 0x601 on the confirm at 0x4e2b. */
             panelIcon = -1;
             snprintf(status, sizeof status, "back to the map");
             return;
@@ -3369,6 +3401,11 @@ void app_key(int key)
                 snprintf(status, sizeof status, "put it down again");
                 return;
             }
+            /* 0x19be tests the cancel button and 0x1a9b takes it: it plays
+             * 0x602 and then jumps to 0x193f, which is where sub_1aa6 - the
+             * panel loop - is called from.  So going into the panel sounds
+             * like a command being taken, and this port did it in silence. */
+            app_sound(APP_SND_OK);
             panelIcon = 0;
             snprintf(status, sizeof status, "panel: %s", icon_name(0));
             return;
@@ -3956,6 +3993,8 @@ void app_render(void)
 {
     memcpy(scr.px, bg.px, sizeof scr.px);
     if (mode == APP_MODE_TITLE) {
+        /* 0xc9fb clears [0x32e0] for the opening and 0xca40 sets it again, so
+         * the bar does not pulse while the title is up. */
         stars_tick();
         /* 0xca15's hold and then sub_c630's blend, a step a frame. */
         if (titleHold > 0) {
@@ -4010,18 +4049,45 @@ void app_render(void)
             unsigned at = 0x3b4f;
             int line;
 
-            /* The strip the lines sit on is cleared first, which is what
-             * 0xc9b5 does: sub_7c1c with (0,326) to (639,399) is a filled box
-             * over the bottom of the screen, and the two sub_7ad3 calls after
-             * it draw the slants into the corners.  DS7TTL has its own artwork
-             * down there, so writing the text straight over it - which is what
-             * this port did - left the glyphs tangled in it.  Rows 326 to 399,
-             * index 0. */
+            /* The strip the lines sit on, and its colours are the game's.
+             *
+             * sub_724a is "al = plane mask, ah = colour", so 0xc9b5's
+             * sub_7c1c(ax = 0x607, (0,326) to (639,399)) is a box filled with
+             * COLOUR 6, and the two sub_7ad3 calls after it - (73,326) to
+             * (0,399) and (566,326) to (639,399) - are lines in COLOUR 1.
+             *
+             * The text is colour 1 as well, because the last sub_724a before
+             * it left the GRCG there.  [0x32a9], which sub_759b's 0x10..0x1f
+             * control bytes write, is referenced exactly once in the whole
+             * binary - that write - and nothing reads it, so the leading 0x11
+             * on the first line records a colour that never reaches the
+             * drawing.  What the drawing uses is the GRCG.
+             *
+             * DS:0x24fb makes entry 6 white and entry 1 black, so the finished
+             * title has BLACK TEXT ON A WHITE STRIP; DS:0x24cb has both the
+             * same blue as everything else, so during the silhouette the strip
+             * is not there at all and the fade brings it up.  Clearing the
+             * strip to index 0 and writing the text in 7, which is what this
+             * port did first, had it the wrong way round.
+             */
             {
-                int y;
+                int y, x2;
 
                 for (y = 326; y < SCR_H; y++)
-                    memset(scr.px + (size_t)y * SCR_W, 0, SCR_W);
+                    memset(scr.px + (size_t)y * SCR_W, 6, SCR_W);
+                /* The two slants, drawn the plain way: the run is 73 or 74
+                 * against a rise of 73, so a step a row is close enough to
+                 * what a line routine walking (73,326)-(0,399) puts down. */
+                for (y = 326; y < SCR_H; y++) {
+                    int t = y - 326;
+
+                    x2 = 73 - t;
+                    if (x2 >= 0 && x2 < SCR_W)
+                        scr.px[(size_t)y * SCR_W + x2] = 1;
+                    x2 = 566 + t;
+                    if (x2 >= 0 && x2 < SCR_W)
+                        scr.px[(size_t)y * SCR_W + x2] = 1;
+                }
             }
 
             slot[0].addr = 0x3c1e; slot[0].value = 3;
@@ -4048,7 +4114,7 @@ void app_render(void)
                 fmt_render(str, slot, 3, out, (int)sizeof out, 0, 1, 0);
                 y = (int)(di / 80);
                 x = (int)(di % 80) * 8;
-                gfx_text_sjis(&scr, &font, &fontRom, x, y, out, 7);
+                gfx_text_sjis(&scr, &font, &fontRom, x, y, out, 1);
                 /* On to the next record: past the string, then past as many
                  * argument words as its codes asked for. */
                 at = str + (unsigned)len + 1 + (unsigned)fmt_args(str) * 2;
@@ -4065,28 +4131,30 @@ void app_render(void)
     if (mode == APP_MODE_DEVICE) {
         int i;
 
-        /* 0x07ae: every other tick, and 0x07bd/0x07c5 make it a triangle. */
-        if (!(ticks & 1)) {
-            if (devUp) {
-                if (++devPulse >= 15) { devPulse = 15; devUp = 0; }
-            } else {
-                if (--devPulse <= 0) { devPulse = 0; devUp = 1; }
-            }
-            device_palette();
-        }
+        /* sub_7518's ax = 0x0f is ah = 0, so it clears the screen. */
+        memset(scr.px, 0, sizeof scr.px);
+        if (!(ticks & 1)) bar_pulse();      /* 0x07ae, every other tick */
         ticks++;
-        /* sub_7518 fills VRAM with index 15, not with nothing. */
-        memset(scr.px, 15, sizeof scr.px);
+        /* 0x070e draws the message at VRAM 0x231b, which is row 112 byte 27 -
+         * (216, 112) - and 0x0717's menu descriptor puts its own lines below
+         * it.  The port had the whole block at (32, 192). */
         for (i = 0; i < dlg.lines; i++) {
             int chosen = dlg.count && i == dlg.first + dlg.pick;
-            int y = 12 * 16 + i * 16;
+            int y = 112 + i * 16;
 
-            /* Only entries 7 and 15 have a colour on this screen, so the
-             * selection is the one line drawn in 7 against the field's 15
-             * rather than a bar in some third colour the palette has blacked
-             * out. */
-            gfx_text_sjis(&scr, &font, &fontRom, 2 * 16, y, dlg.line[i],
-                          (unsigned char)(chosen ? 7 : 0));
+            /* sub_9239 repaints the chosen line's interior in colour 15,
+             * which is the entry the retrace animates. */
+            if (chosen) {
+                int j, k;
+
+                int wide = gfx_text_sjis_width(&fontRom, dlg.line[i]) + 8;
+
+                for (j = 0; j < 16; j++)
+                    for (k = 0; k < wide && 216 + k < SCR_W; k++)
+                        scr.px[(size_t)(y + j) * SCR_W + 216 + k] =
+                            BAR_COLOUR;
+            }
+            gfx_text_sjis(&scr, &font, &fontRom, 216, y, dlg.line[i], 7);
         }
         return;
     }
@@ -4101,6 +4169,7 @@ void app_render(void)
      * and that is the only way the world starts again.  The original has no
      * pause command because it does not need one - opening the panel IS the
      * pause. */
+    if (!(ticks & 1)) bar_pulse();       /* 0x07b6, with [0x32e0] set */
     if (running && dlg.what == DLG_NONE && panelIcon < 0) app_tick();
     /* No stage, no world.  [0x3bc2] is 0xffff until GO loads one, and until
      * then the map window keeps the frame's own artwork - so everything below
@@ -4477,9 +4546,13 @@ void app_render(void)
             if (chosen) {
                 int j, k;
 
+                /* sub_9239, and it is colour 15 rather than the 2 this port
+                 * picked: the bar is the window's own interior recoloured, and
+                 * 15 is the entry the retrace pulses. */
                 for (j = 0; j < 16; j++)
                     for (k = 0; k < cellsW * 16 - 8; k++)
-                        scr.px[(size_t)(ly + j) * SCR_W + x + 16 + k] = 2;
+                        scr.px[(size_t)(ly + j) * SCR_W + x + 16 + k] =
+                            BAR_COLOUR;
             }
             gfx_text_sjis(&scr, &font, &fontRom, x + 16, ly, dlg.line[i],
                           dlg.colour[i] ? dlg.colour[i] : 7);

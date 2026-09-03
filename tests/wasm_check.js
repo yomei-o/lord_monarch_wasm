@@ -426,6 +426,29 @@ LordMonarch().then((m) => {
                 `for the "taken" sound (${took.toString(16)})`);
     m._lm_key(KEY.BACK);                  // put it down
     m._lm_sound();
+    // 0x19be reads the cancel button and 0x1a9b plays 0x602 before jumping to
+    // 0x193f, where the panel loop is entered - so going into the panel sounds
+    // like a command being taken.  Moving the hand is silent (0x4dfc jumps
+    // straight to the redraw) and so is leaving (0x4e36 is a bare stc); the
+    // panel's own confirm is 0x601 at 0x4e2b.
+    m._lm_key(KEY.BACK);                  // into the panel
+    {
+        const got = m._lm_sound();
+        const ok = got === 0x0602;
+        console.log(`${ok ? 'ok  ' : 'FAIL'}  the panel opens with 0x602 ` +
+                    `(${got.toString(16)})`);
+        if (!ok) process.exit(1);
+    }
+    m._lm_key(KEY.DOWN);
+    {
+        const got = m._lm_sound();
+        const ok = got === 0;
+        console.log(`${ok ? 'ok  ' : 'FAIL'}  and the hand moves in silence ` +
+                    `(${got.toString(16)})`);
+        if (!ok) process.exit(1);
+    }
+    m._lm_key(KEY.BACK);                  // back to the map, silently
+    m._lm_sound();
     // Two squares up is the castle wall, where nothing of ours stands.
     m._lm_key(KEY.UP);
     m._lm_key(KEY.UP);
