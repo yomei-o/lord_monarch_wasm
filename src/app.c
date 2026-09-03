@@ -1094,12 +1094,18 @@ static void icon_press(int idx)
     if (mode != APP_MODE_MAP) return;
     switch (idx) {
     case ICON_GO:
-        /* The original's GO leaves the panel and the world starts moving. */
+        /* sub_1afa, and it is not a toggle.  It sets [0x3bd4] - the stage is
+         * under way - and then does "add sp, 2; ret" at 0x1b52 to throw away
+         * the return address and escape the panel loop.  There is no way for it
+         * to stop anything: the only refusal is at 0x1b10, when the stage is
+         * already under way AND a loss is pending, and that says so with a
+         * message and the 0x0702 sound.  Pausing is done by opening the panel,
+         * which is why pressing GO twice used to stop the world here and does
+         * not in the game. */
         app_sound(APP_SND_OK);
-        running = !running;
+        running = 1;
         panelIcon = -1;
-        snprintf(status, sizeof status, "GO: %s",
-                 running ? "running" : "paused");
+        snprintf(status, sizeof status, "GO");
         break;
     /* Every one of these is a panel command that was accepted, and the
      * original says so: 0x1a78 checks that the player has a side and then
@@ -1894,7 +1900,13 @@ void app_render(void)
      * is answered, so nothing in the world moves while one is open - the port
      * used to keep ticking behind them, which is why the day count and the
      * fighting ran on under the tax and info windows. */
-    if (running && dlg.what == DLG_NONE) app_tick();
+    /* And so is the panel, for the same reason: sub_1aa6 is a loop that sits on
+     * the input, so nothing in the world moves while the panel is up.  GO is
+     * what leaves it (0x1b52 discards the return address to escape the loop),
+     * and that is the only way the world starts again.  The original has no
+     * pause command because it does not need one - opening the panel IS the
+     * pause. */
+    if (running && dlg.what == DLG_NONE && panelIcon < 0) app_tick();
     /* Exactly as many squares as the window holds, and not one more: gfx_draw_map
      * does not clip, and the extra row and column this used to ask for spilled a
      * whole tile over the right and bottom edges of WAKU's frame - which reads

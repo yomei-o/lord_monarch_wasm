@@ -128,7 +128,9 @@ LordMonarch().then((m) => {
   }
   // GO has no dialog: it just starts the world.
   let st = icon(0);
-  const goOk = /^GO: /.test(st) && m._lm_dialog() === DLG.NONE;
+  // GO is not a toggle: sub_1afa sets the stage under way and escapes the panel
+  // loop at 0x1b52, and there is no path in it that stops anything.
+  const goOk = /^GO$/.test(st) && m._lm_dialog() === DLG.NONE;
   if (!goOk) panelFailed++;
   console.log(`${goOk ? 'ok  ' : 'FAIL'}  icon 0 GO: ${st}`);
   icon(0);                                 // and back to paused
