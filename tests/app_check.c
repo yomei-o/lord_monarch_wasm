@@ -422,6 +422,26 @@ int main(int argc, char **argv)
 
         app_show_map(0, 16);
         app_key(APP_KEY_RUN);
+
+        /* The world is not stepped once a frame.  0x1a34 waits for [0x32d1]
+         * to count down to nought and 0x1a3e puts 8 back, and what counts it
+         * down is the retrace - so eight drawn frames to one world step.  On
+         * top of that game_day only moves the calendar when the turn counter
+         * clears the mask 0xfe << [0x3c02], which at the shipped speed of 1 is
+         * every fourth step.  So a day is thirty-two frames, and if either
+         * divider goes missing this notices. */
+        {
+            int start = app_day(), frames = 0;
+            while (app_day() == start && frames < 400) {
+                app_render();
+                frames++;
+            }
+            checkf(frames >= app_step_frames() * 3 &&
+                   frames <= app_step_frames() * 5,
+                   "a day took %d frames, wanted about %d", frames,
+                   app_step_frames() * 4, 0);
+        }
+
         for (k = 0; k < 300; k++) app_render();
         was = app_day();
         checkf(was > 0, "the world reached day %d before saving",

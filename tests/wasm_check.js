@@ -37,7 +37,11 @@ LordMonarch().then((m) => {
     console.error('lm_init failed: ' + m.UTF8ToString(m._lm_status()));
     process.exit(1);
   }
-  const title = dump(m, 'wasm_title.raw');
+  /* The first frame is sub_06e7's display question, not the title: it is what
+   * lm_init leaves on the screen.  Two lines of text and the iridescent bar on
+   * a cleared ground is three colours, and that is right - the threshold below
+   * used to ask for four, from before this screen existed. */
+  const display = dump(m, 'wasm_display.raw');
 
   // The music each screen calls for.  0x00fe puts 4 in [0x3bc6] at boot and
   // 0x1945 works a map's out as 16 + 2 * (terrain / 10 - 1), so B_000 is
@@ -496,9 +500,9 @@ LordMonarch().then((m) => {
 
   const distinct = (b) => new Set(
     Array.from({length: b.length / 4}, (_, i) => b.readUInt32LE(i * 4))).size;
-  console.log(`distinct colours: title ${distinct(title)}, ` +
+  console.log(`distinct colours: display ${distinct(display)}, ` +
               `map000 ${distinct(map0)}, map014 ${distinct(map14)}`);
-  if (distinct(title) < 4 || distinct(map14) < 6) {
+  if (distinct(display) < 3 || distinct(map14) < 6) {
     console.error('a frame came out nearly blank');
     process.exit(1);
   }

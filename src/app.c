@@ -373,6 +373,10 @@ static Game game;
 static Map live;                /* the map as the simulation has it now */
 static int showCastles;
 static int running;
+
+/* 0x1a3e's `mov byte ptr [0x32d1], 8`: eight retraces to one world step. */
+#define STEP_FRAMES 8
+static int stepWait = STEP_FRAMES;
 static long ticks;
 static int hoverX = -1, hoverY = -1;      /* in cells */
 static int hoverIcon = -1;                /* a panel index, 0..13 */
@@ -3517,7 +3521,8 @@ void app_key(int key)
     case APP_KEY_TILE32:    app_show_map(mapNumber, 32); break;
     case APP_KEY_CASTLES:   showCastles = !showCastles; break;
     case APP_KEY_RUN:       running = !running; break;
-    case APP_KEY_STEP:      running = 0; app_tick(); break;
+    case APP_KEY_STEP:      running = 0; stepWait = STEP_FRAMES;
+                            app_tick(); break;
     case APP_KEY_TITLE:     app_show_title(); break;
     case APP_KEY_MONEY:
         /* stageLoaded as well, because before GO there is no side record worth
@@ -3915,6 +3920,7 @@ int app_tax(void)
 }
 
 int app_speed(void) { return game.speed; }
+int app_step_frames(void) { return STEP_FRAMES; }
 
 int app_dialog_lines(void) { return dlg.lines; }
 const char *app_dialog_line(int i)
@@ -4268,7 +4274,32 @@ void app_render(void)
      * pause command because it does not need one - opening the panel IS the
      * pause. */
     if (!(pulseTick++ & 1)) bar_pulse(); /* 0x07b6, with [0x32e0] set */
-    if (running && dlg.what == DLG_NONE && panelIcon < 0) app_tick();
+    /* THE WORLD DOES NOT MOVE ONCE A FRAME.  0x1a34 is
+     *
+     *     cmp byte ptr [0x32d1], 0
+     *     je 0x1a3e                  ; nought: do a world step
+     *     jmp 0x1998                 ; otherwise round again, doing nothing
+     *   0x1a3e:
+     *     mov byte ptr [0x32d1], 8   ; and put eight back
+     *     inc byte ptr [0x3be8]      ; the turn counter
+     *     ... the sweeps, the day, the endgame ...
+     *
+     * and 0x9a9e is `cmp byte ptr [0x32d1], 0 / jne 0x9a9e / ret`, a spin on
+     * the same byte - so it is counted down by an interrupt, not by the loop.
+     * That interrupt is the vertical retrace the game installs at INT 0Ah,
+     * which on a PC-98 in 640x400 is 56.42 Hz.  Eight of those to a world
+     * step puts the world at about seven steps a second.
+     *
+     * This port stepped the world on every frame it drew, so at a browser's
+     * 60 Hz it ran eight and a half times too fast.  [0x3c02], the in-game
+     * SPEED setting, was already honoured - it divides the sweep counts and
+     * the day - but that is a second divider on top of this one, not a
+     * replacement for it. */
+    if (stepWait > 0) stepWait--;
+    if (running && dlg.what == DLG_NONE && panelIcon < 0 && stepWait == 0) {
+        stepWait = STEP_FRAMES;
+        app_tick();
+    }
     /* No stage, no world.  [0x3bc2] is 0xffff until GO loads one, and until
      * then the map window keeps the frame's own artwork - so everything below
      * this, which is the board and the readouts beside it, has nothing to draw

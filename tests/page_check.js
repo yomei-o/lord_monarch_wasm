@@ -168,9 +168,14 @@ setTimeout(() => {
   check(press(' '), 'confirm is consumed by the display question');
   pump(4);
   check(puts.length > 0, 'the title frame reached putImageData');
+  /* Four frames in, the opening is still the two-value silhouette out of
+   * DS:0x24cb - three colours, which is right.  sub_c630's fade to DS:0x24fb
+   * only starts after the thirty-tick hold, so the frame has to be given time
+   * before the colour count means anything. */
+  pump(150);
   const titleColours = puts.length ? nonBlank(puts[puts.length - 1]) : 0;
   check(titleColours >= 4,
-        `the title frame has ${titleColours} distinct colours`);
+        `the faded title frame has ${titleColours} distinct colours`);
   check(els.status.textContent.length > 0,
         `status shows "${els.status.textContent}"`);
 
@@ -292,10 +297,10 @@ setTimeout(() => {
   // cell picks a unit up if one of ours is standing there; there is no way to
   // read that back from the page, so this only checks nothing throws and the
   // frame keeps coming.
-  const putsBefore = puts.length;
+  const putsBefore2 = puts.length;
   point('click', 400, 100);
   pump(4);
-  check(puts.length > putsBefore, 'clicking redrew the frame');
+  check(puts.length > putsBefore2, 'clicking redrew the frame');
 
   process.exit(failed ? 1 : 0);
 }, 400);

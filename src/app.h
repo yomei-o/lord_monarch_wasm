@@ -172,6 +172,10 @@ void app_render(void);
 /* One turn of the world - the cell sweep, the unit sweep and the castles. */
 void app_tick(void);
 
+/* How many drawn frames go by between world steps: 0x1a3e puts 8 into
+ * [0x32d1] and the retrace counts it down. */
+int app_step_frames(void);
+
 const Screen *app_screen(void);
 int app_mode(void);
 const char *app_status(void);
