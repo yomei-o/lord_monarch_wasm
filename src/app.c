@@ -217,6 +217,9 @@ static void device_lines(void);
 static void device_palette(void);
 static void dlg_cancel(void);
 static void dlg_confirm(void);
+/* The king, the country and the alliance, in the order the original says
+ * them - and the next one the moment the one before it is answered. */
+static void announce_pending(void);
 static void dlg_open_order2(void);
 static void dlg_open_force(unsigned tableAddr);
 static void dlg_open_drive(void);
@@ -3104,6 +3107,9 @@ static void dlg_cancel(void)
     case DLG_OVER:
     case DLG_REFUSED:
         dlg_confirm();              /* these only wait for a key */
+        /* 0xaa67: the country's window follows the king's inside the same
+         * interrupt, with no sweep between them. */
+        announce_pending();
         break;
     /* 0x53f1 and 0x5309 put the byte they saved on the way in back before they
      * leave, and both play 0x601 doing it.  The tax window does not restore
@@ -3147,15 +3153,19 @@ static void dlg_confirm(void)
     case DLG_INFO:
     case DLG_REFUSED:
     case DLG_VIEW:
+        dlg_close();
+        break;
     case DLG_KING:
     case DLG_ALLYBROKE:
         dlg_close();
+        announce_pending();
         break;
     /* 0xb1fa plays 0x0f03 once the window has been answered, the castle
      * levelled and the units handed on - a second noise the port had not. */
     case DLG_FELL:
         dlg_close();
         app_sound(0x0f03);
+        announce_pending();
         break;
     case DLG_OVER:
         dlg_close();
@@ -3648,37 +3658,26 @@ static int portrait_tile(const Unit *u, int turn)
     return (dl | (u->side << 3) | anim | (u->facing & 6)) & 0xff;
 }
 
-/* One turn of the world: the cell sweep and the unit sweep, then the castles
- * take their cut.  The original drives both from its main loop at 0x1a4d. */
-void app_tick(void)
+/* What the world did that the screen has to say.  Neither of these touches the
+ * run flag, and neither does the original: 0xb197 opens its window, plays
+ * 0x302, waits at sub_72ad and closes at sub_c921, and the code after that
+ * just carries on.  A window stops the world only because the wait is
+ * blocking, which is what app_frame does now - so closing one puts the game
+ * back exactly as it was, without a press of GO.
+ *
+ * The order is sub_a9ca's then sub_b102's: the king, the country, and the
+ * alliance the second fall dissolves.  Each waits for a key of its own.
+ *
+ * This is called from app_tick and again the moment one of those windows is
+ * answered, because the original runs the pair inside ONE interrupt: 0xaa50
+ * puts the king's window up, waits for a key, closes it, and calls sub_b102 at
+ * 0xaa67 straight after - no sweep in between.  The port used to leave the
+ * second window to the next tick, so a day went by between the two and the
+ * pair looked like two separate things happening to the same country.
+ */
+static void announce_pending(void)
 {
-    int i;
-    if (mode != APP_MODE_MAP || !stageLoaded) return;
-    /* The castles collect from inside the cell sweep, when the cursor lands on
-     * one - not once a tick.  0x3332 dispatches on the tile. */
-    /* 0x1a43 bumps the turn counter before the sweeps and 0x1a56 reads it
-     * after them, so the order here is the interrupt's. */
-    {
-        unsigned long was = game.human >= 0 && game.human < PLAYERS
-                            ? game.side[game.human].funds : 0;
-
-        game.turn = (game.turn + 1) & 0xff;
-        game_tick_cells(&game);
-        game_step(&game);
-        game_day(&game);
-        game.purseMoved = game.human >= 0 && game.human < PLAYERS &&
-                          game.side[game.human].funds != was;
-        game_endgame(&game);
-    }
-
-    /* What the world did that the screen has to say.  Neither of these touches
-     * the run flag, and neither does the original: 0xb197 opens its window,
-     * plays 0x302, waits at sub_72ad and closes at sub_c921, and the code
-     * after that just carries on.  A window stops the world only because the
-     * wait is blocking, which is what app_frame does now - so closing one puts
-     * the game back exactly as it was, without a press of GO. */
-    /* The order is sub_a9ca's then sub_b102's: the king, the country, and the
-     * alliance the second fall dissolves.  Each waits for a key of its own. */
+    if (dlg.what != DLG_NONE) return;           /* one window at a time */
     if (game.kingSide >= 0) {
         int who = game.kingSide;
 
@@ -3718,6 +3717,32 @@ void app_tick(void)
         app_sound(APP_SND_FALLEN);              /* 0xb27e */
         dlg_open_allybroke(a, b);
     }
+}
+
+/* One turn of the world: the cell sweep and the unit sweep, then the castles
+ * take their cut.  The original drives both from its main loop at 0x1a4d. */
+void app_tick(void)
+{
+    int i;
+    if (mode != APP_MODE_MAP || !stageLoaded) return;
+    /* The castles collect from inside the cell sweep, when the cursor lands on
+     * one - not once a tick.  0x3332 dispatches on the tile. */
+    /* 0x1a43 bumps the turn counter before the sweeps and 0x1a56 reads it
+     * after them, so the order here is the interrupt's. */
+    {
+        unsigned long was = game.human >= 0 && game.human < PLAYERS
+                            ? game.side[game.human].funds : 0;
+
+        game.turn = (game.turn + 1) & 0xff;
+        game_tick_cells(&game);
+        game_step(&game);
+        game_day(&game);
+        game.purseMoved = game.human >= 0 && game.human < PLAYERS &&
+                          game.side[game.human].funds != was;
+        game_endgame(&game);
+    }
+
+    announce_pending();
     for (i = 0; i < MAP_W * MAP_H; i++) live.cell[i] = game.cell[i].tile;
     ticks++;
     {
